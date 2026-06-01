@@ -6,15 +6,21 @@
 
 ```mermaid
 flowchart TB
-    subgraph per["Per agent · local"]
-        L1["Layer 1 — MEMORY.md + USER.md<br/>always in the prompt"]
-        L2["Layer 2 — SQLite FTS5<br/>session search, on demand"]
+    subgraph per["📁 Per agent · local"]
+        L1["Layer 1 — MEMORY.md + USER.md<br/>always in the prompt"]:::l1
+        L2["Layer 2 — SQLite FTS5<br/>session search · on demand"]:::l2
     end
-    subgraph hon["Layer 3 — Honcho · Mini · shared"]
-        user["user peer = YOU<br/>shared across all agents"]
-        peers["ai peers: kam, research, concierge,<br/>coder, writer — one per agent"]
+    subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
+        user["user peer = YOU<br/>shared across all agents"]:::user
+        peers["ai peers: kam, research, concierge,<br/>coder, writer — one per agent"]:::infra
     end
     per --> hon
+    classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
+    classDef l2 fill:#00ACC1,stroke:#006064,color:#fff
+    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
+    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    style per fill:#E3F2FD,stroke:#64B5F6,color:#0D47A1
+    style hon fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
 
 ## 9. Memory architecture
@@ -71,23 +77,31 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 
 #### Architecture
 
-```
-M4 Mini:
-├── OrbStack (Docker)
-│   ├── hermes-research        (agent container)
-│   ├── hermes-concierge       (agent container)
-│   ├── hermes-ops             (agent container)
-│   └── honcho-stack/          ← new
-│       ├── api               (FastAPI server, port 8000)
-│       ├── database          (Postgres + pgvector)
-│       ├── redis             (cache)
-│       ├── deriver           (background worker)
-│       └── summary           (background worker)
-└── Tailscale interface (100.x.y.z)
-
-MacBook Pro:
-├── hermes-coder, hermes-writer → connect to Honcho over Tailscale:
-│       http://hermes-mini.your-tailnet.ts.net:8000
+```mermaid
+flowchart TB
+    subgraph mini["🖥️ M4 Mini · 100.x.y.z (Tailscale)"]
+        subgraph orb["OrbStack (Docker)"]
+            ag["Agents<br/>hermes-general (Kam) · hermes-research (Mergen)<br/>hermes-concierge (Umay) · hermes-ops (Asena)"]:::mini
+            subgraph hs["honcho-stack/"]
+                api["api · FastAPI :8000"]:::svc
+                db[("database · Postgres + pgvector")]:::infra
+                redis[("redis · cache")]:::svc
+                deriver["deriver · worker"]:::infra
+                summary["summary · worker"]:::infra
+            end
+        end
+    end
+    subgraph mbp["💻 MacBook Pro"]
+        mbpag["hermes-coder (Ülgen) · hermes-writer (Korkut)"]:::mini
+    end
+    mbpag -. "Honcho over Tailscale<br/>http://hermes-mini…:8000" .-> api
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
+    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    style mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
+    style mbp fill:#FFF3E0,stroke:#FFB74D,color:#E65100
+    style orb fill:#ECEFF1,stroke:#90A4AE,color:#263238
+    style hs fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
 
 Honcho itself needs an LLM provider for its background work. The cheapest sensible choice is OpenRouter pointed at Gemini Flash or Claude Haiku — Honcho's reasoning calls are short, frequent, and don't need a top-tier model.

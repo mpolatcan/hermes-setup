@@ -6,13 +6,17 @@
 
 ```mermaid
 flowchart TB
-    subgraph vm["Each Mac · OrbStack Linux VM"]
-        a["hermes-general (Kam)<br/>own FS · own .env · 2G cap"]
-        b["hermes-research (Mergen)<br/>own FS · own .env · 3G cap"]
-        c["hermes-ops (Asena)<br/>own FS · own .env · 1G cap"]
+    subgraph vm["🖥️ Each Mac · OrbStack Linux VM"]
+        a["hermes-general · Kam<br/>own FS · own .env · 2G"]:::mini
+        b["hermes-research · Mergen<br/>own FS · own .env · 3G"]:::codex
+        c["hermes-ops · Asena<br/>own FS · own .env · 1G"]:::mini
     end
-    boundary["One container per agent = a kernel boundary.<br/>A rogue shell in one cannot read another's tokens or files."]
+    boundary["🔒 One container per agent = a kernel boundary.<br/>A rogue shell in one cannot read another's tokens or files."]:::danger
     vm --- boundary
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef danger fill:#E53935,stroke:#B71C1C,color:#fff
+    style vm fill:#ECEFF1,stroke:#90A4AE,color:#263238
 ```
 
 ## 1. Architectural decision: one container per agent

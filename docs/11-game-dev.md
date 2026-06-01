@@ -6,10 +6,13 @@
 
 ```mermaid
 flowchart LR
-    scout["Mergen · research<br/>weekly game-scout cron"] -->|raw opportunities| backlog["Kayra · producer<br/>backlog + rubric scoring<br/>(Phase B)"]
-    backlog -->|top 3| pick{You pick<br/>taste gate}
-    pick -->|graduate| prd["Korkut · writer<br/>lean 2-page PRD"]
-    prd --> proto["Ülgen · coder<br/>Godot prototype"]
+    scout["Mergen · research<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Kayra · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
+    backlog -->|top 3| pick{"You pick<br/>taste gate"}:::pick
+    pick -->|graduate| prd["Korkut · writer<br/>lean 2-page PRD"]:::codex
+    prd --> proto["Ülgen · coder<br/>Godot prototype"]:::mini
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef pick fill:#FDD835,stroke:#F57F17,color:#212121
 ```
 
 ## 16. Game development workstream — discovery-first
@@ -40,15 +43,7 @@ The pipeline surfaces candidates → scores them → you choose → you prototyp
 
 ### 16.2 The pipeline
 
-```
-research (Mini, always-on cron)   →   producer (MacBook, you drive)
-   opportunity scout                    backlog + scoring rubric
-        │                                       │
-        │  raw opportunities                    │  top 3 candidates
-        ▼  (Honcho workspace)                   ▼
-   ───────────────────────────────────────────────────
-   you pick ONE  →  writer (PRD, when picked)  →  coder (Godot prototype)
-```
+_(Pipeline diagram at the top of this page.)_
 
 The heavy, always-on web work lives in `research` on the Mini — it runs and delivers to Telegram whether or not your laptop is open. Judgment and curation live in `producer` on the MacBook — it scores when you sit down to review. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four agents, so `writer` and `coder` inherit the context when an idea graduates.
 

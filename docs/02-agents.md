@@ -6,17 +6,21 @@
 
 ```mermaid
 flowchart LR
-    subgraph Mini["M4 Mini · always-on"]
-        Kam["Kam · general<br/>talk anything · MiniMax"]
-        Mergen["Mergen · research<br/>any topic + game scout · Codex"]
-        Umay["Umay · concierge<br/>daily / digest · MiniMax"]
-        Asena["Asena · ops<br/>system watch · MiniMax-hs"]
+    subgraph Mini["🖥️ M4 Mini · always-on"]
+        Kam["Kam · general<br/>talk anything · MiniMax"]:::mini
+        Mergen["Mergen · research<br/>any topic + game scout · Codex"]:::codex
+        Umay["Umay · concierge<br/>daily / digest · MiniMax"]:::mini
+        Asena["Asena · ops<br/>system watch · MiniMax-hs"]:::mini
     end
-    subgraph MBP["MacBook Pro · on-demand"]
-        Ulgen["Ülgen · coder<br/>Godot / code · MiniMax"]
-        Korkut["Korkut · writer<br/>drafts / PRDs · Codex"]
-        Kayra["Kayra · producer<br/>game scoring · MiniMax · Phase B"]
+    subgraph MBP["💻 MacBook Pro · on-demand"]
+        Ulgen["Ülgen · coder<br/>Godot / code · MiniMax"]:::mini
+        Korkut["Korkut · writer<br/>drafts / PRDs · Codex"]:::codex
+        Kayra["Kayra · producer<br/>game scoring · MiniMax · Phase B"]:::mini
     end
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    style Mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
+    style MBP fill:#FFF3E0,stroke:#FFB74D,color:#E65100
 ```
 
 ## 2. Agent roster and machine assignment

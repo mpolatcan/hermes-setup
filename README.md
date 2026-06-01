@@ -4,29 +4,40 @@ A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com
 
 ```mermaid
 flowchart TB
-    you["📱 You · Telegram (7 bots)"]
-    you --> net((Tailscale mesh<br/>private · WireGuard-encrypted))
-    subgraph mini["M4 Mini · always-on"]
-        Kam["Kam"]
-        Mergen["Mergen"]
-        Umay["Umay"]
-        Asena["Asena"]
-        Honcho[("Honcho<br/>shared memory")]
-        SearXNG["SearXNG<br/>search fallback"]
+    you["📱 You · Telegram (7 bots)"]:::user
+    you --> net(["Tailscale mesh<br/>private · WireGuard"]):::net
+    subgraph mini["🖥️ M4 Mini · always-on"]
+        Kam["Kam"]:::mini
+        Mergen["Mergen"]:::codex
+        Umay["Umay"]:::mini
+        Asena["Asena"]:::mini
+        Honcho[("Honcho<br/>shared memory")]:::infra
+        SearXNG["SearXNG<br/>search fallback"]:::svc
     end
-    subgraph mbp["MacBook Pro · on-demand"]
-        Ulgen["Ülgen"]
-        Korkut["Korkut"]
-        Kayra["Kayra"]
+    subgraph mbp["💻 MacBook Pro · on-demand"]
+        Ulgen["Ülgen"]:::mini
+        Korkut["Korkut"]:::codex
+        Kayra["Kayra"]:::mini
     end
     net --> mini
     net --> mbp
     Ulgen -. memory .-> Honcho
     Korkut -. memory .-> Honcho
-    ext["External: TinyFish · MiniMax · Codex"]
+    ext["TinyFish · MiniMax · Codex · OpenRouter"]:::ext
     mini --> ext
     mbp --> ext
+    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
+    classDef net fill:#1E88E5,stroke:#0D47A1,color:#fff
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
+    classDef ext fill:#00897B,stroke:#004D40,color:#fff
+    style mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
+    style mbp fill:#FFF3E0,stroke:#FFB74D,color:#E65100
 ```
+
+**Colours:** green = MiniMax agents · orange = Codex agents · purple = Honcho · blue = network · indigo = you · teal = external/services · red = blocked.
 
 ## The fleet
 
@@ -78,13 +89,19 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 
 ## Repo layout
 
-```
-README.md             this file
-docs/01..11           the plan, split by concern
-scripts/
-  setup-bots.sh       configure all 7 bots + wire .env from one token file
-  bot-tokens.env.example
-archive/full-plan.md  the original single-file plan (full reference)
+```mermaid
+flowchart TB
+    root["📦 hermes-setup"]:::root
+    root --> readme["README.md"]:::doc
+    root --> docs["docs/ · 01-11<br/>the plan, split by concern"]:::doc
+    root --> scripts["scripts/"]:::svc
+    scripts --> sb["setup-bots.sh<br/>configure 7 bots + wire .env"]:::svc
+    scripts --> ex["bot-tokens.env.example"]:::svc
+    root --> arch["archive/full-plan.md<br/>original single-file plan"]:::neutral
+    classDef root fill:#3949AB,stroke:#1A237E,color:#fff
+    classDef doc fill:#1E88E5,stroke:#0D47A1,color:#fff
+    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
+    classDef neutral fill:#546E7A,stroke:#263238,color:#fff
 ```
 
 ## Security notes

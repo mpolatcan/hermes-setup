@@ -5,6 +5,7 @@
 ---
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'actorBkg':'#1E88E5','actorBorder':'#0D47A1','actorTextColor':'#ffffff','signalColor':'#37474F','signalTextColor':'#263238','noteBkgColor':'#FFF3E0','noteBorderColor':'#FFB74D','noteTextColor':'#E65100','sequenceNumberColor':'#ffffff'}}}%%
 sequenceDiagram
     actor You
     participant BF as BotFather

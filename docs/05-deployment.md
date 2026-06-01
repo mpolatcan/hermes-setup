@@ -6,8 +6,11 @@
 
 ```mermaid
 flowchart LR
-    P1["Phase 1 · day 1<br/>first agent end-to-end<br/>research, 24h soak"] --> P2["Phase 2 · day 2-3<br/>second agent<br/>prove isolation: marker + restart"]
-    P2 --> P3["Phase 3 · week 1+<br/>remaining agents<br/>copy the pattern"]
+    P1["Phase 1 · day 1<br/>first agent end-to-end<br/>research · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second agent<br/>prove isolation: marker + restart"]:::p2
+    P2 --> P3["Phase 3 · week 1+<br/>remaining agents<br/>copy the pattern"]:::p3
+    classDef p1 fill:#1E88E5,stroke:#0D47A1,color:#fff
+    classDef p2 fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef p3 fill:#8E24AA,stroke:#4A148C,color:#fff
 ```
 
 ## 3. Directory and naming conventions

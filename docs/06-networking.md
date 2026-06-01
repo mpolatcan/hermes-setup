@@ -6,12 +6,16 @@
 
 ```mermaid
 flowchart LR
-    phone["📱 Phone · Tailscale"] --- net((Tailnet · WireGuard))
-    laptop["💻 Other tailnet devices"] --- net
-    net --- mini["hermes-mini · 100.x.y.z<br/>ports 8642-8644, 8648"]
-    net --- mbp["hermes-mbp · 100.x.y.w<br/>ports 8645-8647"]
-    pub["🌐 Public internet / LAN"] -. blocked .- mini
+    phone["📱 Phone · Tailscale"]:::user --- net(["Tailnet · WireGuard"]):::net
+    laptop["💻 Other tailnet devices"]:::user --- net
+    net --- mini["hermes-mini · 100.x.y.z<br/>ports 8642-8644, 8648"]:::mini
+    net --- mbp["hermes-mbp · 100.x.y.w<br/>ports 8645-8647"]:::mini
+    pub["🌐 Public internet / LAN"]:::danger -. blocked .- mini
     pub -. blocked .- mbp
+    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
+    classDef net fill:#1E88E5,stroke:#0D47A1,color:#fff
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef danger fill:#E53935,stroke:#B71C1C,color:#fff
 ```
 
 ## 8. Tailscale networking

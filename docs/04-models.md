@@ -6,12 +6,20 @@
 
 ```mermaid
 flowchart LR
-    Mergen & Korkut --> codex["Codex · gpt-5.x<br/>(ChatGPT sub · accepted-risk)"]
-    Kam & Ulgen & Umay & Kayra --> mini["MiniMax · M2.7<br/>(subscription · primary · safe)"]
+    Mergen & Korkut --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
+    Kam & Ulgen & Umay & Kayra --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
     Asena --> mhs["MiniMax · M2.7-highspeed"]
-    aux["all agents · aux tasks<br/>(vision / summarize / compress)"] --> or["OpenRouter · Gemini Flash<br/>(API key · safe)"]
+    aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · safe"]
     codex -. fallback .-> mini
     mini -. fallback .-> or
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef ext fill:#00897B,stroke:#004D40,color:#fff
+    classDef neutral fill:#546E7A,stroke:#263238,color:#fff
+    class Mergen,Korkut,codex codex
+    class Kam,Ulgen,Umay,Kayra,mini,mhs mini
+    class or ext
+    class aux neutral
 ```
 
 ## 5. Model providers per agent
