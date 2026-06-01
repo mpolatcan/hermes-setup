@@ -1,0 +1,252 @@
+# Game Development Workstream
+
+[← All docs](../README.md)
+
+---
+
+```mermaid
+flowchart LR
+    scout["Mergen · research<br/>weekly game-scout cron"] -->|raw opportunities| backlog["Kayra · producer<br/>backlog + rubric scoring<br/>(Phase B)"]
+    backlog -->|top 3| pick{You pick<br/>taste gate}
+    pick -->|graduate| prd["Korkut · writer<br/>lean 2-page PRD"]
+    prd --> proto["Ülgen · coder<br/>Godot prototype"]
+```
+
+## 16. Game development workstream — discovery-first
+
+This is the concrete answer to "I want to start PC and mobile game development but have no time for research, PRDs, market research." You are **exploring**, not committed to a specific game. So this workstream is built as a **discovery engine** — agents surface and score opportunities, you pick one, *then* prototype. It is not a "build-this-game" machine, because you don't yet know the game.
+
+Engine direction: **Godot now, Unity later** (16.7). Provider reality: everything here runs on the **two providers you actually have — your MiniMax token plan and OpenAI Codex** — no Anthropic key, no OpenRouter required for this workstream.
+
+### 16.0 Rollout order — research first, build later
+
+Do not stand up the whole pipeline at once. It phases cleanly, and the early phase is nearly free.
+
+**Phase A (now) — research scout only.** Add the cron job in 16.5 to the `research` agent you are *already* deploying in the core plan. **No new container, no sixth bot, no producer.** It delivers a weekly ranked opportunity digest to Telegram; you read and curate by hand. At low volume, eyeballing beats automated scoring. This is the entire game-dev footprint until friction says otherwise.
+
+**Phase B (deferred — when the backlog earns it) — `producer`.** Stand up the sixth agent (16.3) only once raw opportunities pile up faster than you can skim, *or* you want systematic rubric scoring and a persistent backlog. The trigger is friction, not the calendar. Everything below tagged *(Phase B)* is spec'd now so it's ready, but stays unbuilt until then.
+
+**Phase C — `writer` PRD + `coder` Godot.** Only after you pick a candidate at the 16.9 gate.
+
+So at first sight: one cron on an agent you're building anyway. Nothing more.
+
+### 16.1 Shape and the one hard rule
+
+The pipeline surfaces candidates → scores them → you choose → you prototype. Four agents, reusing three you already have plus filling the spare slot.
+
+**The trap, stated plainly:** market research and PRDs are the *cheapest, lowest-risk* part of game development. The real bottlenecks are (1) finding fun — only a playable prototype tells you, (2) the production grind, (3) launch and discovery. A pile of agents generating weekly trend reports and 50-page design docs *feels* like progress but is procrastination in a suit. Left unchecked, this workstream becomes automated busywork.
+
+**The rule that prevents that:** **timebox discovery to 3–4 weeks**, then commit to exactly **one** prototype. Agents surface candidates; only you, prototyping, can feel whether the loop is fun. Discovery is a phase, not a permanent mode. See the decision gate in 16.9.
+
+### 16.2 The pipeline
+
+```
+research (Mini, always-on cron)   →   producer (MacBook, you drive)
+   opportunity scout                    backlog + scoring rubric
+        │                                       │
+        │  raw opportunities                    │  top 3 candidates
+        ▼  (Honcho workspace)                   ▼
+   ───────────────────────────────────────────────────
+   you pick ONE  →  writer (PRD, when picked)  →  coder (Godot prototype)
+```
+
+The heavy, always-on web work lives in `research` on the Mini — it runs and delivers to Telegram whether or not your laptop is open. Judgment and curation live in `producer` on the MacBook — it scores when you sit down to review. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four agents, so `writer` and `coder` inherit the context when an idea graduates.
+
+### 16.3 The sixth agent: `producer` *(Phase B — deferred)*
+
+> **Deferred.** Do not build this at first sight. Stand it up only when Phase A's research digests outpace hand-curation or you want rubric scoring. Spec kept here so the day you flip it on, it's a copy-paste, not a redesign.
+
+Fills the reserved MacBook slot from Section 2.
+
+| Field | Value |
+|---|---|
+| Role | Game-dev product lead: holds the idea backlog, scores opportunities, kills weak ones |
+| Personality | Skeptical, honest, anti-hype. Scores against the rubric, refuses to inflate. Kills stale ideas without sentiment. |
+| Machine | MacBook Pro (spare slot) |
+| Resources | 2 GB RAM, 1 CPU |
+| Port | `8647` → producer (dashboard `9124` if enabled) |
+| Telegram | **Kayra** — `kayra_<you>_bot` (Section 4 flow); full name Kayra Han |
+
+Compose addition (MacBook `~/hermes/docker-compose.yaml`):
+
+```yaml
+  hermes-producer:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-producer
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "${TAILSCALE_IP}:8647:8642"
+    volumes:
+      - ~/.hermes-producer:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+```
+
+### 16.4 Model assignment (MiniMax + Codex only)
+
+Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscription. **Phase A uses only the `research` row** — the rest activate as their agents come online in Phase B/C.
+
+| Agent | Role | Model | Provider | Rationale |
+|---|---|---|---|---|
+| `research` | opportunity scout | `gpt-5.x` (Codex) | `openai-codex` | Long-context web research, citation discipline; included in ChatGPT sub. Weekly cron = bounded volume, won't blow the daily cap. |
+| `producer` | backlog + scoring | `MiniMax-M2.7` | `minimax` | Reasoning over candidates is cheap and frequent; keeps the Codex quota free. |
+| `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
+| `coder` | Godot prototyping | `MiniMax-M2.7` | `minimax` | Heaviest and most variable volume — keep it **off** the ChatGPT sub so it can't rate-limit research/writer. Pay-per-token scales with active dev. Flip to Codex if GDScript quality disappoints. |
+
+- **Auxiliary tasks** (vision, summarization, context compression) for all four → `MiniMax-M2.7-highspeed`. This removes the OpenRouter dependency from 5.5 for the game-dev agents.
+- **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
+
+  `coder` (`~/.hermes-coder/config.yaml`):
+  ```yaml
+  model:
+    provider: minimax
+    default: MiniMax-M2.7
+  fallback_providers:
+    - provider: openai-codex
+      model: gpt-5.3
+  ```
+
+  `producer` (`~/.hermes-producer/config.yaml`):
+  ```yaml
+  model:
+    provider: minimax
+    default: MiniMax-M2.7
+  fallback_providers:
+    - provider: openai-codex
+      model: gpt-5.3
+  ```
+
+- **Wallet simplification:** because this workstream needs only MiniMax + Codex, you can drop Anthropic and OpenRouter from the *entire* plan if you want — two providers total. Trade-off: you lose Gemini-Flash-cheap aux (MiniMax-highspeed is pricier than Gemini Flash but still cheap) and the OpenRouter cross-provider fallback pool. For a personal setup, acceptable. Decide in week 2.
+
+### 16.5 `research` as opportunity scout (the cron)
+
+Add a scheduled job to the existing `research` agent. It runs Monday mornings, scans, and delivers a ranked raw-opportunity list to the Telegram home channel (`/sethome` in the research bot first, Section 4.9).
+
+```yaml
+# ~/.hermes-research/cron/game-scout.yaml
+schedule: "0 8 * * 1"        # Mondays 08:00 local
+deliver_to: telegram_home
+prompt: |
+  Run the weekly game-opportunity scout. Use the TinyFish search+fetch tools.
+  1. Steam — surface 5 genres/tags with rising wishlist demand AND weak or
+     aging competition (the gap). For each: tag, demand signal, why it's a gap.
+  2. Mobile — top-grossing plus fastest-climbing titles in 3 casual / casual-mid
+     categories. Note what mechanic is driving the climb.
+  3. Complaint mining (PRIORITY) — pull top critical reviews of 5 popular games
+     in the genres I track; extract concrete "I wish it had X" desires. Player
+     unmet-desire is the highest-signal seed, worth more than chart summaries.
+  4. Reddit r/gamedev + r/IndieGaming — recurring pain points, asset/tool gaps,
+     "why does no game do X" threads.
+  Output a ranked list of 5–8 raw opportunities, each as
+  {title, genre, signal, the-gap, solo-buildable?}. Write them to the Honcho
+  workspace so the producer agent can score them. Keep the Telegram digest
+  under 600 words.
+```
+
+Why complaint mining is flagged priority: chart-topper summaries tell you what everyone already knows sells (cozy, survival-craft, extraction). Unmet player desire in reviews of *existing* games is where a solo dev's edge actually hides.
+
+### 16.6 `producer` backlog + scoring rubric *(Phase B — deferred)*
+
+> **Until producer exists (Phase A):** the scout's weekly digest lands in Telegram and you curate by hand — star what interests you, ignore the rest. No backlog file, no automated scoring. The rubric below is still worth keeping in your head as you skim. When manual curation gets tedious, that's the signal to build producer and automate it.
+
+`producer` keeps a persistent backlog at `/opt/data/backlog.md` (→ `~/.hermes-producer/backlog.md` on the host, Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
+
+```yaml
+# ~/.hermes-producer/cron/score-backlog.yaml
+schedule: "0 9 * * 1"        # Mondays 09:00, after the 08:00 scout
+deliver_to: telegram_home
+prompt: |
+  Read this week's raw opportunities from the Honcho workspace and the existing
+  backlog at /opt/data/backlog.md. Score each NEW candidate 1–5 on:
+    - Buildable : solo prototype in under 3 months?
+    - Loop      : core loop expressible in one sentence?
+    - Discovery : niche, searchable, streamable — can players find it?
+    - Money     : monetization obvious (premium / ads+IAP / DLC)?
+  Do NOT score "fun" or taste — that gate belongs to the user alone.
+  Append each scored candidate to backlog.md with today's date and the four
+  scores. Strike through (kill) anything that has sat unpicked for >6 weeks.
+  Deliver the top 3 total-scorers as one-line pitches to Telegram.
+```
+
+The rubric, for reference:
+
+| Gate | Question | Scored by |
+|---|---|---|
+| Buildable | Solo prototype in <3 months? | producer |
+| Loop | Core loop in one sentence? | producer |
+| Discovery | Niche, searchable, streamable? | producer |
+| Money | Monetization obvious? | producer |
+| **Taste** | Do *you* want to build it for 6 months? | **you — never the agent** |
+
+The taste gate is deliberately outside the agent's reach. A high-scoring candidate you have no desire to build for half a year is a trap; a mid-scoring one you're itching to make is the right call. The agents narrow the field; you make the call.
+
+### 16.7 `coder`: Godot-first
+
+**Engine verdict for the exploration phase: Godot.** Free, no royalties, lightweight, and — critically for testing many throwaway prototypes — *fast iteration*. Excellent 2D, solid mobile export, and GDScript is very LLM-friendly so the `coder` agent writes it well. Cheap to build a prototype and cheaper to throw it away.
+
+**Unity is a commit trigger, not the default.** Switch a *chosen* game to Unity only when it needs mobile-monetization SDK depth (ads/IAP/analytics — LevelPlay, AppLovin, Firebase) or real 3D. Heavier, slower loop. Don't pay that tax while still exploring.
+
+Add a Godot projects volume to the `coder` service (MacBook compose):
+
+```yaml
+    volumes:
+      - ~/.hermes-coder:/opt/data
+      - ~/projects:/workspace/projects
+      - ~/godot-projects:/workspace/godot     # add this
+```
+
+The Godot *engine* runs on the host (you open the editor, play-test, export builds); the `coder` agent edits scripts and scenes in the mounted directory and can run `godot --headless` for quick checks. `--user $(id -u):$(id -g)` (already set for coder in Section 6) keeps created files owned by you, not root.
+
+### 16.8 SOUL.md seeds
+
+**`producer` SOUL.md:**
+
+```
+You are a skeptical game-dev product lead for a solo developer who is still
+exploring what to build. Your job is to keep an honest opportunity backlog,
+score candidates against a fixed rubric (buildable, loop clarity, discovery,
+monetization), and kill weak or stale ideas without sentiment. Never inflate a
+score to be encouraging. Never score "fun" or taste — that is the developer's
+call alone; surface the trade-offs and stop there. Bias toward small,
+solo-buildable scope. When you flag a top candidate, give a one-sentence pitch
+and the single biggest risk. Brevity over enthusiasm.
+```
+
+**`research` SOUL.md addendum** (append to the existing research personality):
+
+```
+For the weekly game-opportunity scout, weight concrete unmet player desire
+(mined from reviews of existing games) above generic trend summaries. A gap a
+solo dev can fill beats a hot genre a solo dev can't compete in.
+```
+
+**`writer` SOUL.md addendum:**
+
+```
+When drafting a game PRD or design doc, keep it lean — two pages, not fifty.
+Lead with the one-sentence core loop, the target player, and the single thing
+that makes it worth building. A short doc that ships beats a long doc that
+becomes the project.
+```
+
+### 16.9 Decision gate
+
+The discovery phase ends on a date, not on a feeling.
+
+- **Timebox:** 3–4 weeks of scout + score cycles. Set the end date when you stand up `producer`.
+- **Graduate to prototype** when a candidate clears the rubric *and* the taste gate — i.e. it scores well *and* you want to build it for six months. Then `writer` drafts the lean PRD and `coder` starts the Godot prototype.
+- **Kill criteria:** `producer` strikes any candidate unpicked after 6 weeks. If the *whole backlog* goes stale with nothing you want to build, that's signal too — widen the scout's genres or accept that exploration via agents has hit its limit and you need to prototype something rough to find your own taste.
+- **Hard stop:** at the end of the timebox, pick the best available candidate and prototype it even if it's imperfect. A flawed prototype teaches more than a fifth week of scoring.
+
+### 16.10 What this doesn't solve
+
+- **Fun is unprovable on paper.** No scout, no rubric, no PRD finds it. Only a playable prototype does. The entire pipeline exists to get you *to* a prototype faster, not to replace it.
+- **Taste is yours.** The agents narrow the field honestly; the choice of what's worth six months of your life is not delegable.
+- **Market data is shallow by default.** Agents surface the legible signal. Your edge is the illegible insight — the niche you understand that the charts don't show. Treat scout output as a starting point, not an answer.
+- **Docs over-produce if unchecked.** Re-read 16.1's trap monthly. If you have more design docs than playable builds, the workstream has inverted and needs correcting.
+
+---

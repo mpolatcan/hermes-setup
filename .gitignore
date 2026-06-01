@@ -1,0 +1,9 @@
+# Secrets — never commit real tokens or keys
+*.env
+!*.env.example
+
+# Local Hermes data dirs, if ever created inside the repo
+.hermes-*/
+
+# macOS
+.DS_Store
