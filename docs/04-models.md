@@ -6,133 +6,74 @@
 
 ```mermaid
 flowchart LR
-    Mergen & Korkut --> gpt["Codex · gpt-5.x<br/>(ChatGPT sub)"]
-    Kam & Ulgen & Umay & Kayra --> m["MiniMax · M2.7<br/>(token plan)"]
+    Mergen & Korkut --> codex["Codex · gpt-5.x<br/>(ChatGPT sub · accepted-risk)"]
+    Kam & Ulgen & Umay & Kayra --> mini["MiniMax · M2.7<br/>(subscription · primary · safe)"]
     Asena --> mhs["MiniMax · M2.7-highspeed"]
-    aux["all agents · aux tasks<br/>(vision / summarize / compress)"] --> mhs
-    gpt -. fallback .-> m
-    m -. fallback .-> gpt
+    aux["all agents · aux tasks<br/>(vision / summarize / compress)"] --> or["OpenRouter · Gemini Flash<br/>(API key · safe)"]
+    codex -. fallback .-> mini
+    mini -. fallback .-> or
 ```
 
 ## 5. Model providers per agent
 
-Six agents, three providers. Codex OAuth for the conversational agents (`research`, `concierge`'s text generation, `writer`), Anthropic API key for the coders (`coder`), MiniMax API key for the workhorses where MiniMax-M2.7 is competitive at lower cost (`concierge` reasoning, `ops`). One cheap auxiliary model across all seven for vision and summarization to keep token costs in check.
+The subscriptions actually on hand: **MiniMax**, **Codex** (ChatGPT), **Claude Code**, and **Gemini Antigravity**. Not all of them are *safe* to wire into a third-party agent like Hermes — "works technically" and "won't get your account flagged" are different questions. This doc maps them to a safe, sustainable stack:
+
+- **MiniMax = primary** (5 of 7 agents). Zero risk.
+- **Codex = accepted-risk extra** on the two low-volume agents (`research`, `writer`).
+- **OpenRouter API key** for cheap aux + cross-provider fallback. Safe.
+- **Claude** via a plain Anthropic API key *only if you want it* — not the Claude Code subscription.
+- **Gemini Antigravity = not usable.** Read 5.0.
+
+### 5.0 Provider safety & ToS — read first
+
+The distinction that governs everything below: **an API key (you pay per token) is always safe. A consumer *subscription* OAuth token piped into a third-party agent is a gray area — and in one case, a banned one.**
+
+| Subscription | Hermes provider | Works? | Safe? |
+|---|---|---|---|
+| **MiniMax** | `minimax` (API key) / `minimax-oauth` | ✅ | ✅ **Safe** — built for programmatic use |
+| **Codex** (ChatGPT) | `openai-codex` (OAuth) | ✅ | ⚠️ **Gray** — reuses ChatGPT sub auth in a non-OpenAI agent |
+| **Claude Code** | `anthropic` (OAuth, reads Claude Code's cred store) | ✅ | ⚠️ **Gray + high-stakes** — risks the sub you code with |
+| **Gemini Antigravity** | — (no API) | ❌ | 🚫 **Banned pattern** — use an AI Studio API key instead |
+
+- **MiniMax** — API key or its own browser OAuth. Designed for this. Make it your primary.
+- **Codex** — works via device-code OAuth, but it reuses your ChatGPT subscription outside OpenAI's own clients. Not officially blessed; heavy *automated* volume is what gets throttled or flagged. Keep it on **low-volume** agents only and isolate it so a flag can't take down the fleet.
+- **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
+- **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
+
+**The rule:** never put gray-area subscription-OAuth on an always-on agent that hammers it. Automated volume is the enforcement trigger — that's exactly what the Google ban hit. The assignment in 5.1 follows this rule: everything high-volume runs on pay-per-token MiniMax.
 
 ### 5.1 Per-agent model assignment
 
-| Agent | Main model | Provider | Why |
-|---|---|---|---|
-| `research` | `gpt-5.3` (Codex) | `openai-codex` | Long-context reasoning, web research depth, citation discipline |
-| `concierge` | `MiniMax-M2.7` | `minimax` | Strong reasoning at lower cost than GPT-5; daily-use volume |
-| `ops` | `MiniMax-M2.7-highspeed` | `minimax` | Fast, cheap, deterministic — `ops` doesn't need depth |
-| `coder` | `claude-sonnet-4-6` | `anthropic` | Best coding model with full agent tool support |
-| `writer` | `gpt-5.3` (Codex) | `openai-codex` | Voice, editorial nuance, long-form drafting |
-| *(spare)* | TBD | TBD | Pick when role is decided |
+| Slug | Bot | Main model | Provider | Safety | Why |
+|---|---|---|---|---|---|
+| `general` | Kam | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
+| `research` | Mergen | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
+| `concierge` | Umay | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
+| `ops` | Asena | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
+| `coder` | Ülgen | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
+| `writer` | Korkut | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
+| `producer` | Kayra | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
 
-For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter. Reasoning on this is in 5.6 below — short version: aux tasks fire often, are short, and don't need the main model's depth, so routing them to the cheapest fast model saves real money.
+For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
-### 5.2 Codex OAuth setup — the two paths
+Why Codex lands on `research` + `writer` specifically: those are the two **bounded-volume** agents, and gpt-5.x is genuinely strong at web research and long-form drafting. That's where the gray-area trade is worth it. Everything that runs hot — Kam (your main line), coder, the always-on Mini agents — stays on MiniMax so volume never triggers ChatGPT-side enforcement. If `coder`'s GDScript quality ever disappoints, flip it to Codex (`gpt-5.x`) per-session with `/model` and judge.
 
-Codex uses OAuth against your ChatGPT account. No API billing — your existing ChatGPT subscription pays for it. The token gets saved to `~/.hermes-<name>/auth.json` per agent and persists across container restarts via the bind mount.
+### 5.2 MiniMax setup — your primary (Kam, concierge, ops, coder, producer)
 
-The friction is bootstrapping the OAuth for three separate containers (`research`, `concierge`'s text gen if you want it on Codex, and `writer`). Two paths.
+Get an API key at platform.minimax.io. Two regional endpoints:
 
-#### Path A — Import existing Codex credentials (recommended if you already use ChatGPT Desktop or Codex CLI)
+- **Global** (`minimax`, `api.minimax.io`) — use this unless you're in mainland China.
+- **China** (`minimax-cn`, `api.minimaxi.com`) — for China-region accounts.
 
-If you have the Codex CLI installed on your Mac or are signed into ChatGPT Desktop, your credentials live at `~/.codex/auth.json`. Hermes auto-imports these on first container startup.
-
-For each Codex-using agent, copy the host's Codex auth file into the agent's data directory **before** first container start:
-
-```bash
-# On the M4 Mini, for research agent
-mkdir -p ~/.hermes-research
-cp ~/.codex/auth.json ~/.hermes-research/auth.json
-chmod 600 ~/.hermes-research/auth.json
-```
-
-Repeat for the MacBook's `writer` agent. The credentials are now scoped to each agent's data directory; refresh works automatically.
-
-Update each agent's `config.yaml`:
-
-```yaml
-model:
-  provider: openai-codex
-  default: gpt-5.3
-```
-
-That's it. Container starts, Hermes finds `/opt/data/auth.json`, uses it.
-
-#### Path B — Fresh OAuth inside each container (if you don't have Codex credentials yet)
-
-For each Codex-using agent, run the setup wizard interactively before background mode:
+One key works across every MiniMax agent (billed per token, no per-key restriction):
 
 ```bash
-docker run -it --rm \
-  -v ~/.hermes-research:/opt/data \
-  nousresearch/hermes-agent setup
+for agent in general concierge ops coder producer; do
+  echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes-${agent}/.env
+done
 ```
 
-When the wizard reaches the model step, pick **"OpenAI Codex"**. The container prints a URL and a device code. Open the URL on your Mac, paste the code, approve in browser. Hermes writes the token to `/opt/data/auth.json` (= `~/.hermes-research/auth.json` on the host).
-
-Repeat for each Codex-using agent. Three separate device-code flows. Annoying but one-time.
-
-#### Refresh and credential expiry
-
-Codex OAuth tokens refresh automatically — Hermes deduplicates concurrent refreshes and writes atomically. If you ever see `invalid_grant` errors in agent logs, that means the refresh token itself was revoked (likely a password change or remote signout on the ChatGPT side). Fix: redo Path A or B for that agent.
-
-#### One Codex account, three agents
-
-Important: all three Codex-using agents share the same underlying ChatGPT account quota. ChatGPT Plus ($20/mo) and Pro ($200/mo) have different daily message caps. Three active agents hammering at Codex simultaneously can chew through Plus's daily limit. If you find yourself rate-limited, options are: switch some agents to a different provider, queue heavy tasks via cron, or upgrade to Pro.
-
-### 5.3 Anthropic API key setup for `coder`
-
-Simplest of the three. Get an API key at console.anthropic.com → Settings → API Keys.
-
-Add to `coder`'s `.env`:
-
-```bash
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes-coder/.env
-```
-
-In `~/.hermes-coder/config.yaml`:
-
-```yaml
-model:
-  provider: anthropic
-  default: claude-sonnet-4-6
-```
-
-That's it. No OAuth, no device codes. The API key is pay-per-token via your Anthropic console — track usage at console.anthropic.com.
-
-#### Sonnet vs Opus
-
-Default is Sonnet 4.6 — fast, capable, ~70% the cost of Opus for most coding work. Switch to Opus for hard refactors or architecture work via `/model claude-opus-4-6` inside a session. The model lives in the same provider, so no separate setup needed.
-
-#### Why not Codex for coding too?
-
-Codex is genuinely good at code generation, but Claude has stronger agent-tool discipline — better at calling tools correctly, handling multi-step refactors, and staying focused across long sessions. For an agent that needs to run terminal commands, edit files, and verify its own work, Claude's edge matters. Spend the API tokens for the agent that needs them most.
-
-#### If you decide later to switch to Claude Max + credits
-
-The path exists: `hermes model` → Anthropic OAuth, requires Claude Max ($100/mo) plus separately purchased "extra usage" credits (not Pro). Worth considering if your Anthropic API bill exceeds $100/mo. For now, API key is the right call.
-
-### 5.4 MiniMax API key setup for `concierge` and `ops`
-
-Get an API key at platform.minimax.io. Two regional endpoints exist:
-
-- **Global** (`minimax`, `api.minimax.io`) — what to use unless you're in mainland China.
-- **China** (`minimax-cn`, `api.minimaxi.com`) — alternative for China-region accounts.
-
-Add to each MiniMax-using agent's `.env`:
-
-```bash
-echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes-concierge/.env
-echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes-ops/.env
-```
-
-You can use the same API key across both agents — MiniMax bills per token, no per-key restrictions.
-
-In `~/.hermes-concierge/config.yaml`:
+`config.yaml` — most MiniMax agents use `MiniMax-M2.7`:
 
 ```yaml
 model:
@@ -140,7 +81,7 @@ model:
   default: MiniMax-M2.7
 ```
 
-In `~/.hermes-ops/config.yaml`:
+`ops` (Asena) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
 
 ```yaml
 model:
@@ -148,36 +89,69 @@ model:
   default: MiniMax-M2.7-highspeed
 ```
 
-`-highspeed` is MiniMax's faster, cheaper variant — ideal for `ops` where you want quick deterministic responses, not deep reasoning.
+**MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-container OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
 
-#### Why not MiniMax OAuth?
+### 5.3 Codex OAuth setup — accepted-risk (research + writer only)
 
-MiniMax also offers a browser-OAuth path (`minimax-oauth`) with a free tier — same model, no API billing. The trade-off is per-container OAuth complexity (same as Codex) and a more limited rate cap on the free tier. For two persistent gateway agents (`concierge` runs cron jobs, `ops` runs monitoring), an API key is more reliable than OAuth tokens that can rate-limit during heavy use.
+> ⚠️ Gray area (5.0). Keep it to these two low-volume agents and don't let either run hot. If you'd rather avoid the risk entirely, put `research`/`writer` on MiniMax too and skip this section.
 
-If cost becomes a concern, flip to `minimax-oauth` — change `provider: minimax` to `provider: minimax-oauth` in the config and run the OAuth flow inside the container.
+Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes-<slug>/auth.json` per agent and survives restarts via the bind mount. Two ways to bootstrap.
+
+**Path A — import existing Codex credentials** (if you use ChatGPT Desktop or the Codex CLI). Your creds live at `~/.codex/auth.json`; Hermes auto-imports on first start:
+
+```bash
+mkdir -p ~/.hermes-research
+cp ~/.codex/auth.json ~/.hermes-research/auth.json
+chmod 600 ~/.hermes-research/auth.json
+# repeat for ~/.hermes-writer
+```
+
+**Path B — fresh device-code login** (if you don't have Codex creds yet):
+
+```bash
+docker run -it --rm -v ~/.hermes-research:/opt/data nousresearch/hermes-agent setup
+# at the model step pick "OpenAI Codex"; open the printed URL, paste the code, approve
+```
+
+Either way, `config.yaml`:
+
+```yaml
+model:
+  provider: openai-codex
+  default: gpt-5.3
+```
+
+**Shared quota.** Both Codex agents draw on the same ChatGPT account cap (Plus vs Pro differ). Two *low-volume* agents won't strain it — which is the whole reason only `research` + `writer` are here. `invalid_grant` in logs = the refresh token was revoked (password change / remote signout); redo Path A or B.
+
+### 5.4 Anthropic — optional, API key only (never the Claude Code sub)
+
+Not in the default stack. Add it only if you specifically want Claude for an agent (most likely `coder` on a hard refactor day). **Use an API key, not your Claude Code subscription** (5.0).
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes-coder/.env
+```
+
+```yaml
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6
+```
+
+Pay-per-token via console.anthropic.com. Switch to Opus for hard work with `/model claude-opus-4-6` in-session (same provider). **Do not** use `hermes model → Anthropic OAuth` with your Claude Code/Max login — that's the gray-area path that risks your coding subscription.
 
 ### 5.5 OpenRouter for auxiliary tasks (one key, all seven agents)
 
-Auxiliary tasks fire constantly: every time an agent uses vision, summarizes a web page, generates a session title, or compresses old context. Hermes defaults these to the main chat model unless you override. For agents on expensive main models (Claude Opus, GPT-5), this adds up fast.
+Aux tasks fire constantly — vision, page summaries, session titles, context compression. Hermes defaults them to the main chat model unless overridden. Routing them to a cheap fast model via OpenRouter saves real money, and — importantly — it's an **API key**, so this is the *safe* way to use Gemini (not the banned subscription-OAuth route from 5.0).
 
-The fix: route aux tasks to a cheap fast model via OpenRouter. Gemini Flash 2.5 at ~$0.075/M input tokens is roughly **100x cheaper** than Claude Sonnet for the same call. Same key works for all seven agents.
-
-Get an OpenRouter key at openrouter.ai → Keys. Add $5–10 of credit; for personal multi-agent use this lasts months.
-
-Add the key to **every** agent's `.env` (Mini and MacBook):
+Get a key at openrouter.ai → Keys, add $5–10 of credit (lasts months). Add it to **every** agent's `.env`:
 
 ```bash
-for agent in research concierge ops; do
-  echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes-${agent}/.env
-done
-
-# On the MacBook
-for agent in coder writer; do
+for agent in general research concierge ops coder writer producer; do
   echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes-${agent}/.env
 done
 ```
 
-Then in **every** agent's `config.yaml`, override auxiliary tasks:
+Then in **every** `config.yaml`:
 
 ```yaml
 auxiliary:
@@ -198,70 +172,33 @@ auxiliary:
     model: google/gemini-2.5-flash
 ```
 
-That's the entire override. Main chat stays on Codex/Claude/MiniMax; everything else routes through cheap Gemini Flash.
+Main chat stays on MiniMax/Codex; everything else routes through cheap Gemini Flash. Gemini Flash wins here on cost, sub-second latency, multimodal vision, and generous OpenRouter rate limits.
 
-#### Why Gemini Flash, not something else?
-
-- **Cost** — among the cheapest models with usable agent-tool reliability.
-- **Speed** — sub-second latency on aux tasks keeps the agent feeling responsive.
-- **Multimodal** — handles vision for image analysis, where many cheap models can't.
-- **Generous OpenRouter rate limits** — won't bottleneck seven agents calling concurrently.
-- **Doesn't add a new account** — you already need OpenRouter for fallback (5.7), so this is a free addition.
-
-Alternative if you want to use MiniMax-highspeed for aux (one fewer provider): change every `provider: openrouter` / `model: google/gemini-2.5-flash` pair above to `provider: minimax` / `model: MiniMax-M2.7-highspeed`. Same key as `concierge`/`ops`. Slightly more expensive than Gemini Flash but consolidates providers. Either works.
+**One-provider alternative:** to drop OpenRouter entirely, point aux at `provider: minimax` / `model: MiniMax-M2.7-highspeed` (same key as your MiniMax agents). Slightly pricier than Gemini Flash but consolidates to a single provider and removes even the OpenRouter dependency. Either is safe.
 
 ### 5.6 Cost ballpark (per month, personal use)
 
-Rough sketch assuming moderate daily use of all seven agents. Real numbers will vary.
+Moderate daily use of all seven. Real numbers vary; the big swing is `coder`.
 
-| Agent | Main provider | Estimate |
+| Agent | Provider | Estimate |
 |---|---|---|
-| `research` | Codex (ChatGPT Plus) | $0 — included in subscription |
-| `concierge` | MiniMax API | $2–8/mo at moderate daily use |
-| `ops` | MiniMax API (highspeed) | $1–3/mo |
-| `coder` | Anthropic API (Sonnet) | $5–30/mo depending on active dev hours |
-| `writer` | Codex (ChatGPT Plus) | $0 — included |
-| *Auxiliary (all seven)* | OpenRouter (Gemini Flash) | $1–4/mo |
-| **Total** | | **~$9–45/mo** plus your existing ChatGPT Plus ($20) |
+| `general` (Kam) | MiniMax | $3–10 — highest volume |
+| `research` (Mergen) | Codex (ChatGPT sub) | $0 — included |
+| `concierge` (Umay) | MiniMax | $2–8 |
+| `ops` (Asena) | MiniMax-highspeed | $1–3 |
+| `coder` (Ülgen) | MiniMax | $5–25 — scales with active dev |
+| `writer` (Korkut) | Codex (ChatGPT sub) | $0 — included |
+| `producer` (Kayra) | MiniMax | $0–3 — Phase B |
+| *Aux (all seven)* | OpenRouter (Gemini Flash) | $1–5 |
+| **Total** | | **~$12–55/mo** on top of your existing MiniMax + ChatGPT subscriptions |
 
-The variability is mostly `coder` — heavy refactoring days can spike. If you find Anthropic API bills regularly above $50/mo, that's the signal to consider Claude Max + credits.
-
-If you don't have ChatGPT Plus and don't want to pay $20/mo for it, replace Codex with OpenAI API key (provider: `openai`, set `OPENAI_API_KEY`) — pay-per-token via openai.com. Estimate $5–15/mo for `research` + `writer` combined at moderate use.
+No Anthropic line by default — Claude is opt-in (5.4). If MiniMax spend climbs, the `minimax-oauth` free tier (5.2) or cheaper OpenRouter models (5.11) are the levers.
 
 ### 5.7 Fallback chains per agent
 
-Hermes supports a fallback provider chain — if the main model fails (rate limit, server error, auth failure), it tries the next entry without losing the conversation. Configure once, gain resilience.
+Hermes retries a failed primary (rate limit, 5xx, auth) against the next provider in the chain without losing the conversation. Each agent falls back to a *different* provider so one outage can't take it down. The OpenRouter key from 5.5 covers all of these — **MiniMax agents fall back via OpenRouter so they never need Codex credentials.**
 
-Pattern per agent — pick a fallback that's a different provider so a single-provider outage doesn't take everything down.
-
-`research` (`config.yaml`):
-```yaml
-fallback_providers:
-  - provider: openrouter
-    model: openai/gpt-5
-  - provider: openrouter
-    model: anthropic/claude-sonnet-4-6
-```
-
-`writer` (`config.yaml`):
-```yaml
-fallback_providers:
-  - provider: openrouter
-    model: openai/gpt-5
-  - provider: openrouter
-    model: google/gemini-2.5-pro
-```
-
-`coder` (`config.yaml`):
-```yaml
-fallback_providers:
-  - provider: openrouter
-    model: anthropic/claude-sonnet-4-6
-  - provider: openrouter
-    model: openai/gpt-5
-```
-
-`concierge` (`config.yaml`):
+MiniMax-primary agents (`general`, `concierge`, `coder`, `producer`):
 ```yaml
 fallback_providers:
   - provider: openrouter
@@ -270,32 +207,29 @@ fallback_providers:
     model: google/gemini-2.5-flash
 ```
 
-`ops` (`config.yaml`):
+`ops` (MiniMax-highspeed — keep it light):
 ```yaml
 fallback_providers:
   - provider: openrouter
     model: google/gemini-2.5-flash
 ```
 
-The OpenRouter key you set up in 5.5 covers all of these — no extra credentials.
+Codex-primary agents (`research`, `writer`) — fall back to MiniMax (needs `MINIMAX_API_KEY` in their `.env` too), then OpenRouter:
+```yaml
+fallback_providers:
+  - provider: minimax
+    model: MiniMax-M2.7
+  - provider: openrouter
+    model: openai/gpt-5
+```
 
-#### What a fallback actually does
-
-If `coder`'s primary Anthropic call returns 503 or hits a rate limit, Hermes immediately retries the same request against `openrouter` with Claude Sonnet (a separate provider that proxies to Anthropic with its own routing pool). If that also fails, it falls to OpenAI GPT-5 via OpenRouter. The session continues without the user knowing anything happened. This is one of the most underrated features of Hermes — your agents don't break when one provider has a bad day.
+So if a Codex call 503s or rate-limits, the session silently continues on MiniMax. If MiniMax hiccups, agents ride OpenRouter. No single provider is a single point of failure.
 
 ### 5.8 Putting it together: per-agent `.env` summary
 
-For reference when wiring up each agent.
+`TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` are written by `setup-bots.sh` (see [Telegram Bots](03-telegram-bots.md)); the model keys below you add yourself.
 
-`~/.hermes-research/.env`:
-```bash
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_ALLOWED_USERS=...
-OPENROUTER_API_KEY=sk-or-...        # aux + fallback
-# Codex credentials in auth.json (not .env)
-```
-
-`~/.hermes-concierge/.env`:
+`~/.hermes-general/.env` (Kam):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -303,7 +237,16 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes-ops/.env`:
+`~/.hermes-research/.env` (Mergen):
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ALLOWED_USERS=...
+MINIMAX_API_KEY=mn_...        # for fallback
+OPENROUTER_API_KEY=sk-or-...
+# Codex credentials live in auth.json, not .env
+```
+
+`~/.hermes-concierge/.env` (Umay), `~/.hermes-ops/.env` (Asena), `~/.hermes-producer/.env` (Kayra):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -311,67 +254,79 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes-coder/.env`:
+`~/.hermes-coder/.env` (Ülgen):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
-ANTHROPIC_API_KEY=sk-ant-...
+MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
+# ANTHROPIC_API_KEY=sk-ant-...   # optional, only if you want Claude (5.4)
 ```
 
-`~/.hermes-writer/.env`:
+`~/.hermes-writer/.env` (Korkut):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
+MINIMAX_API_KEY=mn_...        # for fallback
 OPENROUTER_API_KEY=sk-or-...
-# Codex credentials in auth.json
+# Codex credentials live in auth.json
 ```
 
-`chmod 600` on every `.env` after writing. Bearer credentials, treat them like passwords.
+`chmod 600` on every `.env`. Bearer credentials — treat them like passwords. (`setup-bots.sh` already chmods the ones it writes.)
 
 ### 5.9 Verification
 
-Before starting an agent, sanity-check each provider is reachable. From the host:
+Sanity-check each provider from the host before starting agents:
 
 ```bash
-# OpenRouter (works for all aux + fallback)
+# OpenRouter (covers aux + all fallbacks)
 curl -s https://openrouter.ai/api/v1/models \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" | jq '.data | length'
-# Expect a number > 200
-
-# Anthropic API
-curl -s https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-haiku-4-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
-# Expect a JSON response with "content"
+# Expect a number > 300
 
 # MiniMax
 curl -s https://api.minimax.io/v1/text/chatcompletion_v2 \
   -H "Authorization: Bearer $MINIMAX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"MiniMax-M2.7-highspeed","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
-# Expect a JSON response with "choices"
+# Expect JSON with "choices"
+
+# Anthropic — only if you opted into 5.4
+curl -s https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-haiku-4-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+# Expect JSON with "content"
 ```
 
-Codex is harder to verify outside a Hermes container because the auth flow is bound to Hermes's credential store. The verification happens on first agent startup — if Codex auth is broken, the container will fail loudly with "invalid_grant" or "auth required" in logs.
+Codex can't be verified outside a Hermes container — its auth is bound to Hermes's credential store. It fails loudly on first startup (`invalid_grant` / `auth required` in logs) if broken.
 
 ### 5.10 Changing providers later
 
-Every agent's `config.yaml` is the source of truth. Switch a provider at any time:
+Each agent's `config.yaml` is the source of truth:
 
 ```bash
-# Edit the file
-nano ~/.hermes-research/config.yaml
-# Change model.provider and model.default
-
-# Restart that agent
-docker compose restart hermes-research
+nano ~/.hermes-general/config.yaml   # change model.provider / model.default
+docker compose restart hermes-general
 ```
 
-The agent picks up the new provider on next session. Conversation history, memory, skills all survive — those are provider-agnostic.
+History, memory, and skills are provider-agnostic and survive the switch. Use `/model <name>` inside a session to switch *temporarily* without editing the file; persistent changes need the config edit + restart.
 
-Use `/model <new-model>` inside an active chat session to switch *temporarily* without editing the file. Persistent changes need the config edit.
+### 5.11 Future — expanding via OpenRouter (Nemotron, DeepSeek V4, …)
+
+OpenRouter is already wired for aux + fallback, so adding more models is a **one-line config change, no new account**. When you want to experiment — NVIDIA Nemotron, DeepSeek V4, Qwen, GLM, etc. — just point an agent or an aux task at the OpenRouter slug:
+
+```yaml
+model:
+  provider: openrouter
+  default: deepseek/deepseek-v4        # example — use the exact slug from openrouter.ai/models
+```
+
+Good candidates to try as they mature:
+- **DeepSeek V4** — cheap strong reasoning; a possible MiniMax alternative for `concierge`/`producer`.
+- **NVIDIA Nemotron** — strong open models; worth testing on `coder` against MiniMax.
+- **Qwen / GLM / Kimi** — also first-class on OpenRouter (and Hermes has native `qwen-oauth`, `zai`, `kimi-coding` providers if you prefer direct).
+
+Workflow: try a candidate with `/model openrouter/<slug>` in a live session, judge it on your actual tasks, and only persist to `config.yaml` if it clearly beats the incumbent. **Keep MiniMax as primary until something demonstrably wins** — novelty isn't a reason to switch a working agent. All OpenRouter usage is API-key billing, so it's always on the safe side of 5.0.
 
 ---
