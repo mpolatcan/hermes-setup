@@ -207,11 +207,11 @@ For reference when wiring up each agent:
 
 | Agent | TinyFish MCP | Built-in `web` toolset | Fallback | Notes |
 |---|---|---|---|---|
-| `general` (Sıla) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
+| `general` (Derya) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
 | `research` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
 | `concierge` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
-| `ops` (Pınar) | No | Disabled entirely | None | Doesn't need web |
-| `coder` (Ece) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
+| `ops` (Nilay) | No | Disabled entirely | None | Doesn't need web |
+| `coder` (Naz) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
 | `writer` (Ozan) | Yes (light use) | Disabled | None | Layer 1 — research while drafting |
 | `producer` (Sarp) | No | Disabled | None | Offline rubric scoring (Phase B) |
 

@@ -7,8 +7,8 @@
 ```mermaid
 flowchart LR
     Doruk & Ozan --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
-    Sila["Sıla"] & Ece & Tuna & Sarp --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
-    Pinar["Pınar"] --> mhs["MiniMax · M2.7-highspeed"]
+    Derya & Naz & Tuna & Sarp --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
+    Nilay --> mhs["MiniMax · M2.7-highspeed"]
     aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · safe"]
     codex -. fallback .-> mini
     mini -. fallback .-> or
@@ -17,7 +17,7 @@ flowchart LR
     classDef ext fill:#00897B,stroke:#004D40,color:#fff
     classDef neutral fill:#546E7A,stroke:#263238,color:#fff
     class Doruk,Ozan,codex codex
-    class Sila,Ece,Tuna,Sarp,mini,mhs mini
+    class Derya,Naz,Tuna,Sarp,mini,mhs mini
     class or ext
     class aux neutral
 ```
@@ -54,19 +54,19 @@ The distinction that governs everything below: **an API key (you pay per token) 
 
 | Slug | Bot | Main model | Provider | Safety | Why |
 |---|---|---|---|---|---|
-| `general` | Sıla | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
+| `general` | Derya | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
 | `research` | Doruk | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
 | `concierge` | Tuna | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
-| `ops` | Pınar | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
-| `coder` | Ece | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
+| `ops` | Nilay | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
+| `coder` | Naz | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
 | `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
 | `producer` | Sarp | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
 
 For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
-Why Codex lands on `research` + `writer` specifically: those are the two **bounded-volume** agents, and gpt-5.x is genuinely strong at web research and long-form drafting. That's where the gray-area trade is worth it. Everything that runs hot — Sıla (your main line), coder, the always-on Mini agents — stays on MiniMax so volume never triggers ChatGPT-side enforcement. If `coder`'s GDScript quality ever disappoints, flip it to Codex (`gpt-5.x`) per-session with `/model` and judge.
+Why Codex lands on `research` + `writer` specifically: those are the two **bounded-volume** agents, and gpt-5.x is genuinely strong at web research and long-form drafting. That's where the gray-area trade is worth it. Everything that runs hot — Derya (your main line), coder, the always-on Mini agents — stays on MiniMax so volume never triggers ChatGPT-side enforcement. If `coder`'s GDScript quality ever disappoints, flip it to Codex (`gpt-5.x`) per-session with `/model` and judge.
 
-### 5.2 MiniMax setup — your primary (Sıla, concierge, ops, coder, producer)
+### 5.2 MiniMax setup — your primary (Derya, concierge, ops, coder, producer)
 
 Get an API key at platform.minimax.io. Two regional endpoints:
 
@@ -89,7 +89,7 @@ model:
   default: MiniMax-M2.7
 ```
 
-`ops` (Pınar) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
+`ops` (Nilay) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
 
 ```yaml
 model:
@@ -190,11 +190,11 @@ Moderate daily use of all seven. Real numbers vary; the big swing is `coder`.
 
 | Agent | Provider | Estimate |
 |---|---|---|
-| `general` (Sıla) | MiniMax | $3–10 — highest volume |
+| `general` (Derya) | MiniMax | $3–10 — highest volume |
 | `research` (Doruk) | Codex (ChatGPT sub) | $0 — included |
 | `concierge` (Tuna) | MiniMax | $2–8 |
-| `ops` (Pınar) | MiniMax-highspeed | $1–3 |
-| `coder` (Ece) | MiniMax | $5–25 — scales with active dev |
+| `ops` (Nilay) | MiniMax-highspeed | $1–3 |
+| `coder` (Naz) | MiniMax | $5–25 — scales with active dev |
 | `writer` (Ozan) | Codex (ChatGPT sub) | $0 — included |
 | `producer` (Sarp) | MiniMax | $0–3 — Phase B |
 | *Aux (all seven)* | OpenRouter (Gemini Flash) | $1–5 |
@@ -237,7 +237,7 @@ So if a Codex call 503s or rate-limits, the session silently continues on MiniMa
 
 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` are written by `setup-bots.sh` (see [Telegram Bots](03-telegram-bots.md)); the model keys below you add yourself.
 
-`~/.hermes/general/.env` (Sıla):
+`~/.hermes/general/.env` (Derya):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -254,7 +254,7 @@ OPENROUTER_API_KEY=sk-or-...
 # Codex credentials live in auth.json, not .env
 ```
 
-`~/.hermes/concierge/.env` (Tuna), `~/.hermes/ops/.env` (Pınar), `~/.hermes/producer/.env` (Sarp):
+`~/.hermes/concierge/.env` (Tuna), `~/.hermes/ops/.env` (Nilay), `~/.hermes/producer/.env` (Sarp):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -262,7 +262,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/coder/.env` (Ece):
+`~/.hermes/coder/.env` (Naz):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...

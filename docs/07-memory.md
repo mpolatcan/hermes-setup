@@ -80,7 +80,7 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 ```mermaid
 flowchart TB
     subgraph mini["🖥️ M4 Mini · single host"]
-        ag["Native agents (launchd)<br/>general (Sıla) · research (Doruk) · concierge (Tuna)<br/>ops (Pınar) · coder (Ece) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
+        ag["Native agents (launchd)<br/>general (Derya) · research (Doruk) · concierge (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
         subgraph orb["OrbStack (Docker)"]
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
@@ -162,7 +162,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 
 | Agent | Built-in memory | Session search | Honcho | Notes |
 |---|---|---|---|---|
-| `general` (Sıla) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
+| `general` (Derya) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
 | `research` | Yes | Yes | Yes (peer: `research`) | Tracks topic interests, source preferences, depth |
 | `concierge` | Yes | Yes | Yes (peer: `concierge`) | Models daily rhythms, what reminders land |
 | `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization (deferred) |

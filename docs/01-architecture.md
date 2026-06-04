@@ -8,12 +8,12 @@
 flowchart TB
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes"]
-            k["Sıla · general"]:::mini
+            k["Derya · general"]:::mini
             m["Doruk · research"]:::codex
             u["Tuna · concierge"]:::mini
             w["Ozan · writer"]:::codex
-            c["Ece · coder<br/>Metal GPU · Godot GUI"]:::mini
-            o["Pınar · ops · deferred"]:::mini
+            c["Naz · coder<br/>Metal GPU · Godot GUI"]:::mini
+            o["Nilay · ops · deferred"]:::mini
             p["Sarp · producer · Phase B"]:::mini
         end
         subgraph svc["Docker · services only"]

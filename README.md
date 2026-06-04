@@ -8,11 +8,11 @@ flowchart TB
     you --> tg(["Telegram cloud"]):::net
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes · launchd"]
-            general["Sıla · director"]:::mini
+            general["Derya · director"]:::mini
             research["Doruk · analyst"]:::codex
             concierge["Tuna · manager"]:::mini
-            ops["Pınar · DevOps · deferred"]:::mini
-            coder["Ece · programmer · Metal GPU"]:::mini
+            ops["Nilay · DevOps · deferred"]:::mini
+            coder["Naz · programmer · Metal GPU"]:::mini
             writer["Ozan · writer"]:::codex
             producer["Sarp · producer · Phase B"]:::mini
         end
@@ -46,11 +46,11 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 
 | Bot | Slug | Mode | Role | Model |
 |---|---|---|---|---|
-| **Sıla** | `general` | always-on | Founder / creative director — your main line | MiniMax |
+| **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
 | **Doruk** | `research` | always-on | Market analyst — research any topic + game scout | Codex |
 | **Tuna** | `concierge` | always-on | Studio manager — reminders, morning digest | MiniMax |
-| **Pınar** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax-highspeed |
-| **Ece** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | MiniMax |
+| **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax-highspeed |
+| **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | MiniMax |
 | **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
 | **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
 
@@ -65,7 +65,7 @@ The earlier draft ran one Docker container per agent across two Macs. We dropped
 The plan is split by concern. Original section numbers (`## 1` … `## 17`) are preserved, so inline cross-references like "Section 13.7" resolve across files.
 
 1. [Architecture & Isolation](docs/01-architecture.md) — native single-install multi-profile; what isolation we keep and give up
-2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the seven agents, Sıla spec, comic studio SOULs
+2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the seven agents, Derya spec, comic studio SOULs
 3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, the `setup-bots.sh` shortcut
 4. [Model Providers](docs/04-models.md) — MiniMax + Codex routing, fallback chains
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
@@ -91,9 +91,9 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 
 ## Rollout status
 
-- **Phase A (now)** — research (**Doruk**) + **Sıla** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
-- **Phase B** — add Tuna, Ece, Ozan + self-hosted Honcho memory. Add **Pınar** (ops) once there's a fleet to watch; add **Sarp** (producer) once the game-idea backlog outpaces hand-curation.
-- **Phase C** — game-dev: a picked idea graduates to a lean PRD (Ozan) → Godot prototype (Ece), native on the Mini's GPU.
+- **Phase A (now)** — research (**Doruk**) + **Derya** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
+- **Phase B** — add Tuna, Naz, Ozan + self-hosted Honcho memory. Add **Nilay** (ops) once there's a fleet to watch; add **Sarp** (producer) once the game-idea backlog outpaces hand-curation.
+- **Phase C** — game-dev: a picked idea graduates to a lean PRD (Ozan) → Godot prototype (Naz), native on the Mini's GPU.
 
 ## Repo layout
 

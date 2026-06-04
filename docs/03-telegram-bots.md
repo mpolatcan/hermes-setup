@@ -164,15 +164,15 @@ That marks the current chat as where the agent should send scheduled outputs. Us
 
 ### 4.10 Bot-to-agent mapping reference
 
-Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rename-safe — like the Honcho peer); the **display name** in the chat list is the persona, set via `/setname` (Section 4.9). So `@general_<you>_bot` shows as "Sıla". Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames must be globally unique, so suffix with your handle.
+Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rename-safe — like the Honcho peer); the **display name** in the chat list is the persona, set via `/setname` (Section 4.9). So `@general_<you>_bot` shows as "Derya". Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames must be globally unique, so suffix with your handle.
 
 | Slug | Display (chat) | Username | Token (first 10) | Role at a glance |
 |---|---|---|---|---|
-| `general` | Sıla | `general_<you>_bot` | `…` | Founder / creative director — your main line |
+| `general` | Derya | `general_<you>_bot` | `…` | Founder / creative director — your main line |
 | `research` | Doruk | `research_<you>_bot` | `…` | Market analyst — research + game scout |
 | `concierge` | Tuna | `concierge_<you>_bot` | `…` | Studio manager — reminders, digest |
-| `ops` | Pınar | `ops_<you>_bot` | `…` | DevOps — watches the host |
-| `coder` | Ece | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
+| `ops` | Nilay | `ops_<you>_bot` | `…` | DevOps — watches the host |
+| `coder` | Naz | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
 | `writer` | Ozan | `writer_<you>_bot` | `…` | Narrative designer — drafts & PRDs |
 | `producer` | Sarp | `producer_<you>_bot` | `…` | Producer — scores game ideas (Phase B) |
 
@@ -181,8 +181,8 @@ Save this. Seven similar bots in a chat list blur together without notes.
 **Telegram profile text — paste per bot in BotFather.** `/setabouttext` is the short line in the bot's info card; `/setdescription` is the longer blurb shown on the empty-chat screen. These double as your "which agent does what" reference.
 
 ```
-Sıla     (general)
-  about:       Sıla — studio founder & creative director. Ask anything.
+Derya     (general)
+  about:       Derya — studio founder & creative director. Ask anything.
   description: Founder and creative director. Your main line: open conversation,
                brainstorming, quick answers, hand-offs to the crew. Dry, has seen every pitch.
 
@@ -196,13 +196,13 @@ Tuna     (concierge)
   description: Studio manager and the actual adult. Calendar, reminders, your morning
                digest. Warm, brief, herds the cats so things ship on time.
 
-Pınar    (ops)
-  about:       Pınar — DevOps. Watches the host.
+Nilay    (ops)
+  about:       Nilay — DevOps. Watches the host.
   description: DevOps and sysadmin. Monitors the host and the agent fleet, status
                reports, scheduled checks. Terse. Certain it's never the server.
 
-Ece      (coder)
-  about:       Ece — lead programmer. Writes & runs code.
+Naz      (coder)
+  about:       Naz — lead programmer. Writes & runs code.
   description: Lead programmer. Godot-first game code, refactors, debugging. Blunt,
                shows diffs, tests her own work. "Works on my machine" is not a status update.
 

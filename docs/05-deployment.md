@@ -22,10 +22,10 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
 ```
 ~/.hermes/
 ├── research/      ← Doruk
-├── general/       ← Sıla
+├── general/       ← Derya
 ├── concierge/     ← Tuna
-├── ops/           ← Pınar  (deferred — Section 15)
-├── coder/         ← Ece
+├── ops/           ← Nilay  (deferred — Section 15)
+├── coder/         ← Naz
 ├── writer/        ← Ozan
 ├── producer/      ← Sarp  (Phase B)
 ├── kanban.db      ← shared board (created only if/when kanban is enabled — Section 17)
@@ -121,7 +121,7 @@ Send the bot a message; confirm a new session file appears under `~/.hermes/rese
 
 ### Phase 2 — second profile, validate coexistence (day 2–3)
 
-Stand up `general` (Sıla). The point of this phase is to prove **two profiles run side-by-side with separate state**, supervised independently.
+Stand up `general` (Derya). The point of this phase is to prove **two profiles run side-by-side with separate state**, supervised independently.
 
 **Step 2.1: Replicate the pattern**
 
@@ -210,7 +210,7 @@ The `kanban` row is **opt** on the studio pipeline (`research`, `writer`, plus `
 **Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
 
 ```yaml
-# general (Sıla)  — conversational; keeps web/vision/tts/cronjob
+# general (Derya)  — conversational; keeps web/vision/tts/cronjob
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 
@@ -245,7 +245,7 @@ hermes tools --list --profile <name>   # active vs available-but-disabled
 
 **One flag worth remembering:** native, **`terminal` is the real host.** A `coder` or `ops` shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason only those two get a shell and `coder` is fenced in [Section 13](09-security.md).
 
-**Phase A relevance:** only `research` (and then `Sıla`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
+**Phase A relevance:** only `research` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
 
 ---
 

@@ -9,7 +9,7 @@ flowchart LR
     scout["Doruk · research<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
     backlog -->|top 3| pick{"You pick<br/>taste gate"}:::pick
     pick -->|graduate| prd["Ozan · writer<br/>lean 2-page PRD"]:::codex
-    prd --> proto["Ece · coder<br/>Godot prototype"]:::mini
+    prd --> proto["Naz · coder<br/>Godot prototype"]:::mini
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
     classDef pick fill:#FDD835,stroke:#F57F17,color:#212121

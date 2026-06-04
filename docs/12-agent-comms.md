@@ -9,15 +9,15 @@ flowchart TB
     you["📱 You · 7 Telegram bots"]:::user
     subgraph install["native Hermes · one install · ~/.hermes"]
         direction LR
-        sila["Sıla · router"]:::mini
+        derya["Derya · router"]:::mini
         others["research · concierge<br/>writer · producer · coder"]:::mini
         honcho[("Honcho<br/>shared user model")]:::infra
         board[("kanban.db<br/>off — flip later")]:::off
     end
     you -->|pick a bot| install
-    sila -.->|hand-off / native| others
+    derya -.->|hand-off / native| others
     others -.-> honcho
-    sila -.-> honcho
+    derya -.-> honcho
     others -. "opt · when earned" .-> board
     classDef user fill:#3949AB,stroke:#1A237E,color:#fff
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
@@ -34,7 +34,7 @@ The single-machine, single-install decision (Section 1) **collapses this whole t
 
 The default coordination mechanism is **you**. Each agent has its own Telegram bot; you pick the agent by picking the chat. Research belongs to Doruk? Open Doruk's chat. This covers ~100% of normal use at zero infrastructure, and it keeps the human taste-gate (the point of the game-dev pipeline, Section 16) exactly where it should be.
 
-**Sıla assists the routing socially, not over the wire.** Sıla's SOUL (Section 6.7) knows the crew: *"Doruk digs up market data, Ece writes the code, Ozan the story… when a task is clearly someone's, say so and offer to pass it over."* So Sıla's "hand-off" is a suggestion to you — "this is research, want me to ask Doruk?" — not a background RPC. For a solo operator that is usually enough and always the safest.
+**Derya assists the routing socially, not over the wire.** Derya's SOUL (Section 6.7) knows the crew: *"Doruk digs up market data, Naz writes the code, Ozan the story… when a task is clearly someone's, say so and offer to pass it over."* So Derya's "hand-off" is a suggestion to you — "this is research, want me to ask Doruk?" — not a background RPC. For a solo operator that is usually enough and always the safest.
 
 ### 17.2 The three native coordination layers
 
