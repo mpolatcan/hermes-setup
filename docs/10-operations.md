@@ -10,13 +10,14 @@ Evaluate the system on three independent axes. Build a small personal eval suite
 
 ### Layer 1 — host and infrastructure health
 
-For each machine, weekly check:
+On the Mini, weekly check:
 
-- All expected containers running: `docker ps` shows the right count
-- No container memory cap pressure: `docker stats --no-stream` shows usage well under limits
-- No crash loops: `docker ps --filter "status=restarting"` returns empty
-- Logs clean: `docker logs --tail 200 hermes-<name>` shows no repeated errors
-- Gateway reconnection working: kill the Wi-Fi briefly, confirm gateways reconnect
+- All expected gateways running: `hermes profile list` + `launchctl list | grep com.hermes` show the right count
+- No memory pressure: `vmm_stat` / Activity Monitor shows the Mini well under 16 GB; no runaway profile (native has no per-agent cap — Section 1.1)
+- No crash loops: `launchctl print gui/$(id -u)/com.hermes.<profile>` shows a stable PID and no climbing failure count (`launchctl list` shows the current PID/exit code, not a restart history)
+- Logs clean: `tail -n 200 ~/.hermes/logs/gateways/<name>/current` shows no repeated errors
+- Services up: `docker compose ps` shows Honcho + SearXNG running
+- Gateway reconnection working: kill Wi-Fi briefly, confirm gateways reconnect
 
 ### Layer 2 — per-agent quality
 
@@ -34,9 +35,9 @@ Run the suite, log results, repeat weekly. Patterns will emerge — which agents
 
 This is what differentiates Hermes from other agent frameworks. Track over a month:
 
-- **Skill creation.** How many skills did each agent autonomously create? Inspect `~/.hermes-<name>/skills/` weekly. Are they useful or noise?
+- **Skill creation.** How many skills did each agent autonomously create? Inspect `~/.hermes/<name>/skills/` weekly. Are they useful or noise?
 - **Skill reuse.** When the same kind of task recurs, does the agent reuse a skill it created earlier, or recreate it from scratch?
-- **Memory accumulation.** Check `~/.hermes-<name>/memories/USER.md` and `MEMORY.md` over time. Is the agent building an accurate model of you and the work, or accumulating noise?
+- **Memory accumulation.** Check `~/.hermes/<name>/memories/USER.md` and `MEMORY.md` over time. Is the agent building an accurate model of you and the work, or accumulating noise?
 - **Cross-session continuity.** Reference something from a prior conversation without re-explaining it. Does the agent pick it up?
 
 The learning loop is the long-tail value. A one-shot benchmark misses the entire point. Plan to evaluate this over weeks, not minutes.
@@ -46,32 +47,48 @@ The learning loop is the long-tail value. A one-shot benchmark misses the entire
 
 ## 14. Upgrade and maintenance
 
-**Routine upgrade (monthly or when a release ships):**
+Native install = **one `hermes` binary** for all profiles. Upgrade via the same channel you installed from (Homebrew formula or the official installer), then restart the gateways.
+
+**The single-install trade-off — name it:** one binary means **you cannot stage per-agent upgrades.** Upgrading bumps *every* profile at once (the container-per-agent draft could roll one agent and soak it; native can't). So upgrade **deliberately**, on a quiet day, and be ready to roll back the whole install if a release misbehaves.
+
+**Routine upgrade (monthly, or when a release you want ships):**
 
 ```bash
-docker compose pull
-docker compose up -d
+# 1. note the current version in case you roll back
+hermes --version
+
+# 2. upgrade the binary
+brew upgrade hermes-agent          # or rerun the official installer
+
+# 3. restart every gateway so they pick up the new binary
+launchctl kickstart -k gui/$(id -u)/com.hermes.research
+launchctl kickstart -k gui/$(id -u)/com.hermes.general
+# ...repeat per loaded profile (or `launchctl list | grep com.hermes` to enumerate)
+
+# 4. smoke-test: message 2–3 agents, tail their logs
+tail -n 50 ~/.hermes/logs/gateways/research/current
 ```
 
-The data directory (`~/.hermes-<name>/`) is untouched. Skills, memories, sessions, config all survive.
-
-**Backup strategy:**
-
-See Section 9.7 for the full memory backup plan. In summary: `~/.hermes-*/memories/`, `~/.hermes-*/sessions/`, and `~/.hermes-*/skills/` go into whatever you already back up (Time Machine, Restic, rsync). The Honcho Postgres on the Mini needs a weekly `pg_dump`. Verify at least one restore works before relying on it.
+The state under `~/.hermes/<profile>/` is untouched — skills, memories, sessions, config all survive; only the binary changes. **Honcho + SearXNG** upgrade separately, via Docker (`docker compose pull && docker compose up -d` — Section 7); keep their image tags pinned, not floating on `latest`.
 
 **Rollback:**
 
-If an upgrade breaks an agent, pin to the previous image tag in `docker-compose.yaml`:
+If an upgrade breaks the fleet, reinstall the previous version and restart:
 
-```yaml
-image: nousresearch/hermes-agent:v0.X.Y
+```bash
+brew install hermes-agent@<previous-version>   # or reinstall the prior installer build
+# then kickstart the profiles as above
 ```
 
-Then `docker compose up -d` reverts that one agent without touching the others.
+Because it's one binary, rollback is **all-or-nothing** — there is no per-agent revert. This is the cost of the single-install simplicity; the upside is there is only ever one version to reason about.
+
+**Backup strategy:**
+
+See Section 9.7 for the full memory backup plan. In summary: `~/.hermes/*/memories/`, `~/.hermes/*/sessions/`, and `~/.hermes/*/skills/` go into whatever you already back up (Time Machine, Restic, rsync) — Time Machine on the Mini already covers `~/.hermes/` if enabled. The Honcho Postgres needs a weekly `pg_dump`. Verify at least one restore works before relying on it.
 
 **Log management:**
 
-Per-agent logs live in `~/.hermes-<name>/logs/`. They grow indefinitely. Add a monthly rotation cron job or set up `logrotate` if disk becomes an issue.
+Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotates these — 10 archives × 1 MB). launchd stdout/stderr at `~/.hermes/logs/launchd/` grow unbounded; add a monthly rotation if disk becomes an issue.
 
 ---
 
@@ -80,9 +97,9 @@ Per-agent logs live in `~/.hermes-<name>/logs/`. They grow indefinitely. Add a m
 
 These are decisions worth deferring until you have real usage data:
 
-- **Should `coder-server` exist?** Originally pitched as a Mini-resident heavy-compute coder. Worth standing up only if `coder` on the laptop hits CPU limits frequently.
+- **Does `coder` need its own machine after all?** It runs native on the Mini for the Metal GPU. If Godot builds start starving the always-on agents (no per-profile RAM cap exists natively — Section 1.1), the clean escalation is to bring the shelved MacBook Pro back online as a dedicated `coder` host — which also restores `coder`'s credential isolation from the fleet ([Section 13](09-security.md)). Revisit only if you feel the resource or blast-radius pressure.
 - **Should `ops` get Honcho after all?** Section 9 keeps it off because determinism is the goal. After a month, if `ops` feels too generic or repeats explanations you've given before, flip it on with `aiPeer: "ops"`.
 - **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (ops, concierge title generation) makes sense. Revisit once you have a month of usage data.
-- **Sixth agent's role?** Earmarked for `producer`, the game-development scoring agent (Section 16) — but **deferred**. Phase A is research-only (a single cron on the `research` agent). Build `producer` into the slot only when the opportunity backlog outpaces hand-curation. Until then the slot stays open.
+- **When to build `producer`?** Sarp, the game-development scoring agent (Section 16), is spec'd but **deferred**. Phase A is research-only (a single cron on the `research` agent). Stand up the `producer` profile only when the opportunity backlog outpaces hand-curation. Until then it stays unbuilt.
 
 ---

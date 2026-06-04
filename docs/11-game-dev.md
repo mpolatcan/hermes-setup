@@ -6,10 +6,10 @@
 
 ```mermaid
 flowchart LR
-    scout["Mergen · research<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Kayra · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
+    scout["Doruk · research<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
     backlog -->|top 3| pick{"You pick<br/>taste gate"}:::pick
-    pick -->|graduate| prd["Korkut · writer<br/>lean 2-page PRD"]:::codex
-    prd --> proto["Ülgen · coder<br/>Godot prototype"]:::mini
+    pick -->|graduate| prd["Ozan · writer<br/>lean 2-page PRD"]:::codex
+    prd --> proto["Ece · coder<br/>Godot prototype"]:::mini
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
     classDef pick fill:#FDD835,stroke:#F57F17,color:#212121
@@ -25,9 +25,9 @@ Engine direction: **Godot now, Unity later** (16.7). Provider reality: everythin
 
 Do not stand up the whole pipeline at once. It phases cleanly, and the early phase is nearly free.
 
-**Phase A (now) — research scout only.** Add the cron job in 16.5 to the `research` agent you are *already* deploying in the core plan. **No new container, no sixth bot, no producer.** It delivers a weekly ranked opportunity digest to Telegram; you read and curate by hand. At low volume, eyeballing beats automated scoring. This is the entire game-dev footprint until friction says otherwise.
+**Phase A (now) — research scout only.** Add the cron job in 16.5 to the `research` agent you are *already* deploying in the core plan. It delivers a weekly ranked opportunity digest to Telegram; you read and curate by hand. At low volume, eyeballing beats automated scoring. **No new profile, no `producer` bot, no Sarp.** This is the entire game-dev footprint until friction says otherwise.
 
-**Phase B (deferred — when the backlog earns it) — `producer`.** Stand up the sixth agent (16.3) only once raw opportunities pile up faster than you can skim, *or* you want systematic rubric scoring and a persistent backlog. The trigger is friction, not the calendar. Everything below tagged *(Phase B)* is spec'd now so it's ready, but stays unbuilt until then.
+**Phase B (deferred — when the backlog earns it) — `producer`.** Stand up the `producer` profile (16.3) only once raw opportunities pile up faster than you can skim, *or* you want systematic rubric scoring and a persistent backlog. The trigger is friction, not the calendar. Everything below tagged *(Phase B)* is spec'd now so it's ready, but stays unbuilt until then.
 
 **Phase C — `writer` PRD + `coder` Godot.** Only after you pick a candidate at the 16.9 gate.
 
@@ -35,7 +35,7 @@ So at first sight: one cron on an agent you're building anyway. Nothing more.
 
 ### 16.1 Shape and the one hard rule
 
-The pipeline surfaces candidates → scores them → you choose → you prototype. Four agents, reusing three you already have plus filling the spare slot.
+The pipeline surfaces candidates → scores them → you choose → you prototype. Four agents, reusing three you already have plus the deferred `producer` profile (Sarp, Phase B).
 
 **The trap, stated plainly:** market research and PRDs are the *cheapest, lowest-risk* part of game development. The real bottlenecks are (1) finding fun — only a playable prototype tells you, (2) the production grind, (3) launch and discovery. A pile of agents generating weekly trend reports and 50-page design docs *feels* like progress but is procrastination in a suit. Left unchecked, this workstream becomes automated busywork.
 
@@ -45,41 +45,31 @@ The pipeline surfaces candidates → scores them → you choose → you prototyp
 
 _(Pipeline diagram at the top of this page.)_
 
-The heavy, always-on web work lives in `research` on the Mini — it runs and delivers to Telegram whether or not your laptop is open. Judgment and curation live in `producer` on the MacBook — it scores when you sit down to review. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four agents, so `writer` and `coder` inherit the context when an idea graduates.
+All four agents are profiles in the one native install on the Mini, so the **entire pipeline is single-host**. `research` runs its always-on scout cron and delivers to Telegram; `producer` scores when you sit down to review; `writer` and `coder` pick up graduated ideas. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four, and — because they co-locate — the pipeline is **`kanban`-ready** (16.11): a single board could auto-promote `research → producer → writer → coder` if the cadence ever justifies it. It doesn't yet; a flat `backlog.md` is the right altitude (16.6).
 
-### 16.3 The sixth agent: `producer` *(Phase B — deferred)*
+### 16.3 The `producer` agent — Sarp *(Phase B — deferred)*
 
 > **Deferred.** Do not build this at first sight. Stand it up only when Phase A's research digests outpace hand-curation or you want rubric scoring. Spec kept here so the day you flip it on, it's a copy-paste, not a redesign.
 
-Fills the reserved MacBook slot from Section 2.
+A new profile in the native install (Section 2).
 
 | Field | Value |
 |---|---|
 | Role | Game-dev product lead: holds the idea backlog, scores opportunities, kills weak ones |
 | Personality | Skeptical, honest, anti-hype. Scores against the rubric, refuses to inflate. Kills stale ideas without sentiment. |
-| Machine | MacBook Pro (spare slot) |
-| Resources | 2 GB RAM, 1 CPU |
-| Port | `8647` → producer (dashboard `9124` if enabled) |
-| Telegram | **Kayra** — `kayra_<you>_bot` (Section 4 flow); full name Kayra Han |
+| Machine | Mac Mini M4 (native profile) |
+| Footprint | ~2 GB working set; on-demand (weekly scoring cron), not held resident |
+| Telegram | **Sarp** — `producer_<you>_bot` (Section 4 flow) |
 
-Compose addition (MacBook `~/hermes/docker-compose.yaml`):
+Stand it up like any other profile (Section 6, Phase 3):
 
-```yaml
-  hermes-producer:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-producer
-    restart: unless-stopped
-    command: gateway run
-    ports:
-      - "${TAILSCALE_IP}:8647:8642"
-    volumes:
-      - ~/.hermes-producer:/opt/data
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
+```bash
+hermes profile create producer
+hermes setup --profile producer          # Sarp bot token, MiniMax model, keys
+# write SOUL.md (16.8), prune toolsets (Section 6.6), add a launchd LaunchAgent
 ```
+
+No container, no port, no compose — just a profile under `~/.hermes/producer/`.
 
 ### 16.4 Model assignment (MiniMax + Codex only)
 
@@ -95,7 +85,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → `MiniMax-M2.7-highspeed`. This removes the OpenRouter dependency from 5.5 for the game-dev agents.
 - **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
 
-  `coder` (`~/.hermes-coder/config.yaml`):
+  `coder` (`~/.hermes/coder/config.yaml`):
   ```yaml
   model:
     provider: minimax
@@ -105,7 +95,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
       model: gpt-5.3
   ```
 
-  `producer` (`~/.hermes-producer/config.yaml`):
+  `producer` (`~/.hermes/producer/config.yaml`):
   ```yaml
   model:
     provider: minimax
@@ -122,7 +112,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
 Add a scheduled job to the existing `research` agent. It runs Monday mornings, scans, and delivers a ranked raw-opportunity list to the Telegram home channel (`/sethome` in the research bot first, Section 4.9).
 
 ```yaml
-# ~/.hermes-research/cron/game-scout.yaml
+# ~/.hermes/research/cron/game-scout.yaml
 schedule: "0 8 * * 1"        # Mondays 08:00 local
 deliver_to: telegram_home
 prompt: |
@@ -148,15 +138,15 @@ Why complaint mining is flagged priority: chart-topper summaries tell you what e
 
 > **Until producer exists (Phase A):** the scout's weekly digest lands in Telegram and you curate by hand — star what interests you, ignore the rest. No backlog file, no automated scoring. The rubric below is still worth keeping in your head as you skim. When manual curation gets tedious, that's the signal to build producer and automate it.
 
-`producer` keeps a persistent backlog at `/opt/data/backlog.md` (→ `~/.hermes-producer/backlog.md` on the host, Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
+`producer` keeps a persistent backlog at `~/.hermes/producer/backlog.md` (Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
 
 ```yaml
-# ~/.hermes-producer/cron/score-backlog.yaml
+# ~/.hermes/producer/cron/score-backlog.yaml
 schedule: "0 9 * * 1"        # Mondays 09:00, after the 08:00 scout
 deliver_to: telegram_home
 prompt: |
   Read this week's raw opportunities from the Honcho workspace and the existing
-  backlog at /opt/data/backlog.md. Score each NEW candidate 1–5 on:
+  backlog at ~/.hermes/producer/backlog.md. Score each NEW candidate 1–5 on:
     - Buildable : solo prototype in under 3 months?
     - Loop      : core loop expressible in one sentence?
     - Discovery : niche, searchable, streamable — can players find it?
@@ -185,16 +175,17 @@ The taste gate is deliberately outside the agent's reach. A high-scoring candida
 
 **Unity is a commit trigger, not the default.** Switch a *chosen* game to Unity only when it needs mobile-monetization SDK depth (ads/IAP/analytics — LevelPlay, AppLovin, Firebase) or real 3D. Heavier, slower loop. Don't pay that tax while still exploring.
 
-Add a Godot projects volume to the `coder` service (MacBook compose):
+**`coder` runs native on the Mini — this is why the container draft was dropped.** Containers on macOS get **no GPU** (no Metal passthrough), so a containerized Godot has no GPU-accelerated editor or rendered play-test — headless use only. Native, `coder` runs on the Mini's **Metal GPU with the full Godot GUI** — it can open the editor, run and render a scene, export a real build, and export to macOS natively (all of which a Linux container either can't do or does buggily).
+
+Point `coder` at your Godot projects in its `config.yaml` (no mounts — it already has your user's filesystem):
 
 ```yaml
-    volumes:
-      - ~/.hermes-coder:/opt/data
-      - ~/projects:/workspace/projects
-      - ~/godot-projects:/workspace/godot     # add this
+# ~/.hermes/coder/config.yaml
+project_roots:
+  - ~/godot-projects
 ```
 
-The Godot *engine* runs on the host (you open the editor, play-test, export builds); the `coder` agent edits scripts and scenes in the mounted directory and can run `godot --headless` for quick checks. `--user $(id -u):$(id -g)` (already set for coder in Section 6) keeps created files owned by you, not root.
+Division of labor: `coder` edits scripts/scenes, runs tests, and can drive Godot itself (headless for quick checks or the GUI for a real run); **you** still own the taste call — open the editor, play it, decide if it's fun (16.10). Because `coder` runs natively as your user, it can read your files and your other profiles' `.env` — that residual risk is fenced with `approvals: smart` + redaction + blocklist in [Section 13](09-security.md). Treat a permissive approval mode on `coder` as handing an LLM your shell.
 
 ### 16.8 SOUL.md seeds
 
@@ -243,5 +234,11 @@ The discovery phase ends on a date, not on a feeling.
 - **Taste is yours.** The agents narrow the field honestly; the choice of what's worth six months of your life is not delegable.
 - **Market data is shallow by default.** Agents surface the legible signal. Your edge is the illegible insight — the niche you understand that the charts don't show. Treat scout output as a starting point, not an answer.
 - **Docs over-produce if unchecked.** Re-read 16.1's trap monthly. If you have more design docs than playable builds, the workstream has inverted and needs correcting.
+
+### 16.11 `kanban` for the pipeline — available, off, flip-when-earned
+
+All four pipeline agents are profiles in one native install on the Mini, so Hermes' single-host `kanban` board *could* orchestrate the whole chain — `research → producer → writer → coder`, auto-promoting each card as the prior stage completes. The single-machine move (Section 1) is what unlocked this: the board's dispatcher spawns sibling profiles as local processes, which only works when they share a host and install.
+
+**Keep it off.** This pipeline is solo, weekly-cadence, and human-gated at the taste gate (16.9) — `backlog.md` + your curation is the right altitude, and a board here would manufacture process without removing real work. The value of co-location is that turning kanban on later is a **config flip, not a migration** (toolset `kanban` is already listed *opt* for these agents in Section 6.6). The trigger to flip it: you can name specific recurring handoffs you want claimed automatically without you sequencing them — not before. Full reasoning in [Section 17](12-agent-comms.md).
 
 ---

@@ -6,14 +6,14 @@
 # *after* you have the tokens.
 #
 # Usage:
-#   1. In @BotFather: /newbot  x7  (usernames: kam_<you>_bot, mergen_<you>_bot, …)
+#   1. In @BotFather: /newbot  x7  (slug-based usernames: general_<you>_bot, research_<you>_bot, …)
 #      Grab each token.
 #   2. cp bot-tokens.env.example bot-tokens.env  &&  chmod 600 bot-tokens.env
 #      Fill in your numeric Telegram user ID (ALLOWED_USERS, from @userinfobot)
 #      and the seven tokens (slug=token per line).
 #   3. ./setup-bots.sh
 #      → sets each bot's profile (name/about/description/commands) AND writes
-#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS into ~/.hermes-<slug>/.env
+#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS into ~/.hermes/<slug>/.env
 #        (chmod 600, non-destructive — other keys in the file are preserved).
 #
 # Still manual afterward (BotFather-only, ~10s each):
@@ -62,28 +62,28 @@ setup() { # slug name about description
   call "$token" setMyDescription      "{\"description\":\"$desc\"}"     || true
   call "$token" setMyCommands         "$commands"                       || true
   # 2) Wire token + allowed-user into the agent's data-dir .env (non-destructive)
-  local env="$HOME/.hermes-$slug/.env"
+  local env="$HOME/.hermes/$slug/.env"
   upsert_env "$env" TELEGRAM_BOT_TOKEN     "$token"
   upsert_env "$env" TELEGRAM_ALLOWED_USERS "$ALLOWED_USERS"
   echo "  wired $env"
-  if curl -s "$API/bot$token/getMe" | grep -q '"ok":true'; then echo "  ok"; fi
+  if curl -s "$API/bot$token/getMe" | grep -q '"ok":true'; then echo "  ok ($slug token valid)"; else echo "  ! WARNING: $slug token failed getMe — bad/revoked token, fix before deploying"; fi
 }
 
-setup general   "Kam"    "Kam Ata — your shaman. Ask anything." \
-  "Father Shaman. Your main line: open conversation, brainstorming, quick answers, and hand-offs to the specialists. Talk about anything."
-setup research  "Mergen" "Mergen Han — research, any topic." \
-  "Lord of wisdom. Researches any domain — game markets, history, academic sources. Cites every source. Runs the weekly game scout."
-setup concierge "Umay"   "Umay Ana — daily life & digests." \
-  "Mother of the hearth. Calendar, reminders, and your morning digest. Warm, brief, action-first."
-setup ops       "Asena"  "Asena Ana — watches the system." \
-  "The wolf-mother, ever vigilant. Monitors the agent fleet and host, sends status reports, runs scheduled checks. Terse and factual."
-setup coder     "Ülgen"  "Bay Ülgen — writes & runs code." \
-  "The maker. Your development pair: Godot-first game code, refactors, debugging. Direct, shows diffs, tests its own work."
-setup writer    "Korkut" "Dede Korkut — drafts & edits." \
-  "The legendary bard. Drafts, edits, brainstorms — prose, store copy, game PRDs. Playful and generative."
-setup producer  "Kayra"  "Kayra Han — scores game ideas." \
-  "The creator. Game-dev discovery: keeps the opportunity backlog and scores ideas against the rubric. Activates in Phase B."
+setup general   "Sıla"  "Sıla — studio founder & creative director. Ask anything." \
+  "Founder and creative director. Your main line: open conversation, brainstorming, quick answers, hand-offs to the crew. Dry, calm, has seen every pitch."
+setup research  "Doruk" "Doruk — market analyst. Research, any topic." \
+  "The studio's market analyst and scout. Researches any domain — game markets, history, academic. Cites every source, quietly smug. Runs the weekly game scout."
+setup concierge "Tuna"  "Tuna — studio manager. Keeps your day running." \
+  "Studio manager and the actual adult. Calendar, reminders, your morning digest. Warm, brief, herds the cats so things ship on time."
+setup ops       "Pınar" "Pınar — DevOps. Watches the host." \
+  "DevOps and sysadmin. Monitors the host and the agent fleet, status reports, scheduled checks. Terse. Certain it's never the server."
+setup coder     "Ece"   "Ece — lead programmer. Writes & runs code." \
+  "Lead programmer. Godot-first game code, refactors, debugging. Blunt, shows diffs, tests her own work. 'Works on my machine' is not a status update."
+setup writer    "Ozan"  "Ozan — narrative designer. Drafts & edits." \
+  "Narrative designer. Drafts, edits, brainstorms — prose, store copy, game PRDs. Everything's a metaphor, but he delivers. Lean PRDs, brilliant briefly."
+setup producer  "Sarp"  "Sarp — producer. Scores game ideas." \
+  "Producer and product lead. Holds the budget; scores ideas against the rubric and kills the hype. Skeptical, anti-inflation. Activates in Phase B."
 
 echo
-echo "Done. Profiles set + tokens wired into ~/.hermes-<slug>/.env."
+echo "Done. Profiles set + tokens wired into ~/.hermes/<slug>/.env."
 echo "Two settings still need BotFather (per bot): /setprivacy Disable, /setjoingroups Disable."

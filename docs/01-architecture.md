@@ -6,42 +6,75 @@
 
 ```mermaid
 flowchart TB
-    subgraph vm["🖥️ Each Mac · OrbStack Linux VM"]
-        a["hermes-general · Kam<br/>own FS · own .env · 2G"]:::mini
-        b["hermes-research · Mergen<br/>own FS · own .env · 3G"]:::codex
-        c["hermes-ops · Asena<br/>own FS · own .env · 1G"]:::mini
+    subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
+        subgraph hermes["native Hermes · one install · ~/.hermes"]
+            k["Sıla · general"]:::mini
+            m["Doruk · research"]:::codex
+            u["Tuna · concierge"]:::mini
+            w["Ozan · writer"]:::codex
+            c["Ece · coder<br/>Metal GPU · Godot GUI"]:::mini
+            o["Pınar · ops · deferred"]:::mini
+            p["Sarp · producer · Phase B"]:::mini
+        end
+        subgraph svc["Docker · services only"]
+            Honcho[("Honcho<br/>shared memory")]:::infra
+            SearXNG["SearXNG<br/>search fallback"]:::svc
+        end
     end
-    boundary["🔒 One container per agent = a kernel boundary.<br/>A rogue shell in one cannot read another's tokens or files."]:::danger
-    vm --- boundary
+    phone["📱 You · Telegram + Tailscale"]:::user --> mini
+    note["One install = one trust domain.<br/>Profiles share ~/.hermes — NOT filesystem sandboxes.<br/>Isolation = single-tenant host + toolset hygiene + coder guardrails."]:::danger
+    hermes --- note
+    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
     classDef danger fill:#E53935,stroke:#B71C1C,color:#fff
-    style vm fill:#ECEFF1,stroke:#90A4AE,color:#263238
+    style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
+    style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
+    style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-## 1. Architectural decision: one container per agent
+## 1. Architectural decision: one native install, many profiles, one machine
 
-**The official default changed — and we deliberately diverge from it.** Since the s6-supervision migration, Hermes' own Docker guide recommends the *opposite* of what older write-ups (including an earlier draft of this plan) claimed: *"the s6 supervision tree treats each profile as a first-class supervised service, so the recommended deployment is one container hosting all profiles."* That single-container, multi-profile path is now the simple default — `hermes profile create <name>` inside one shared container, with s6 supervising each gateway.
+**We run the official default.** Since the s6-supervision migration, Hermes' own guide says: *"the s6 supervision tree treats each profile as a first-class supervised service, so the recommended deployment is one container hosting all profiles."* We take the same shape **without the container** — a single **native** Hermes install on the Mac Mini M4, with one **profile per agent** (`hermes profile create <name>`), all sharing `~/.hermes`. macOS **launchd** plays the supervision role s6 plays inside the image.
 
-We don't take it. The same guide lists exactly when one-container-per-profile is the right call: *"resource isolation, independent image pinning, network segmentation, or compliance."* Our setup hits three of those four, so we run **one container per agent** — each a fully independent container with its own host directory (`~/.hermes-<name>/`), its own bot token, its own personality, and its own lifecycle. The container itself *is* the isolation boundary.
+An earlier draft of this plan did the opposite — one Docker container per agent, split across a Mac Mini and a MacBook Pro, for hard kernel-level isolation. We dropped it. The reasons that justified container-per-agent (*"resource isolation, independent image pinning, network segmentation, compliance"*) are **multi-tenant** concerns. This is a **single-tenant, single-user, single-machine** setup: every agent is yours, every token is yours, everything runs on one Mac you own. Paying the container tax to isolate yourself from yourself is the wrong trade.
 
-This is a conscious trade-off. We give up the single-container conveniences (s6 auto-restart per profile, a shared interpreter cache, the `hermes profile` UX) in exchange for hard kernel-level boundaries between agents. `docker compose` (Section 7) recovers most of the management simplicity. The reasons the trade is worth it for seven agents:
+What dropping containers buys us:
 
-- **True isolation.** Each container has its own filesystem, process table, and resource limits. A crash or runaway session in one agent cannot affect the others.
-- **Independent lifecycle.** Restart, upgrade, pause, or roll back each agent on its own. `docker restart hermes-research` leaves the other five untouched.
-- **Clean port separation.** Each gateway binds its own host port. No risk of cross-talk between chat platforms or API servers.
-- **No concurrent-write risk.** The docs warn that two gateways must never run against the same data directory. Container-per-agent makes this structurally impossible.
-- **One directory per agent.** Backups, migrations, and permissions all follow the bind-mounted directory — no shared state to disentangle, no `--profile` flags to remember.
-- **Credential isolation.** Hermes profiles are explicitly *not* filesystem sandboxes — a shell in one profile can read another profile's `.env`, i.e. its bot token and API keys. Separate containers close that gap: `coder` (the only agent running arbitrary code, with your projects mounted) cannot reach the other agents' credentials. See Section 13's execution-sandboxing notes.
+- **`coder` gets a real game engine.** Containers on macOS get **no GPU** — Hypervisor.framework exposes no virtual GPU, and there is no Metal passthrough. So a containerized Godot has no GPU-accelerated editor or rendered play-test; you're limited to headless use. Native, `coder` runs on the Mini's Metal GPU with the full Godot GUI. This alone settles the container question for a game-dev fleet.
+- **One machine, no cross-host plumbing.** The MacBook Pro M2 is shelved for now. All agents share one host, so agent-to-agent work is **local** — no HTTP-over-Tailscale, no per-gateway API keys, no "the laptop is asleep" dead ends (see [Section 17](12-agent-comms.md)).
+- **Native `kanban`.** Hermes' multi-agent board is deliberately single-host: a dispatcher claims tasks from `~/.hermes/kanban.db` and spawns the assigned profile as a **local child process**. A native single install is exactly that environment — the whole pipeline (`research → producer → writer → coder`) is now reachable by one board. We keep it **off** at first (a flat `backlog.md` is the right altitude for a solo, weekly-cadence pipeline), but the option is free and clean. See [Section 16](11-game-dev.md) and [Section 17](12-agent-comms.md).
+- **Less overhead.** No OrbStack VM (~1.5 GB reclaimed), no image pull/upgrade machinery, no bind-mount and port-binding juggling.
+
+## 1.1 What isolation we keep, and what we give up
+
+Be honest about the trade. Profiles are **not filesystem sandboxes** — Hermes is explicit: a shell in one profile can read another profile's `.env` (its bot token and API keys). With one native install, that boundary is gone by design.
+
+| Layer | Native single-install reality |
+|---|---|
+| **Per-profile data** | Each agent still gets its own `~/.hermes/<profile>/` — sessions, memories, skills, config are separate. Built-in session search never crosses profiles. |
+| **Filesystem sandbox** | **None between profiles.** A shell-capable profile can read any sibling's files, including `.env`. |
+| **Process isolation** | None — all gateways run under your macOS user. launchd supervises each; one crash doesn't take the others, but there is no resource cap per profile. |
+| **Host sandbox** | **None.** A shell or code-exec on the `local` backend runs directly on macOS with your user's access. The container that used to be the boundary is gone. |
+
+So isolation is no longer *structural*. It comes from three things instead:
+
+1. **Single tenant.** Every agent, token, and file is yours. Cross-profile reads are you reading your own data — not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another.
+2. **Toolset hygiene.** Only **two** of the agents have a shell at all — `coder` (`terminal` + `code_execution`) and `ops` (`terminal`). The other five have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever.
+3. **`coder` guardrails.** `coder` is the one arbitrary-code agent sharing the install, so it carries the residual risk. It is fenced with `approvals: smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
+
+The payoff of the old container choice (a kernel boundary) is replaced by **a much smaller attack surface** (five no-shell agents) plus **focused guardrails on the one agent that can do damage**. For a solo operator that is the right altitude.
 
 ---
 
+## 11. Native-install notes (macOS)
 
-## 11. OrbStack-specific notes
-
-- **Verify default context.** Run `docker context ls` and confirm OrbStack is the default. If Docker Desktop was ever installed, the context may need switching with `docker context use orbstack`.
-- **Memory ceiling.** OrbStack auto-scales its VM, but you can set a hard cap in OrbStack settings if you want to prevent it from eating the whole machine. With seven agents totaling 6 GB across two machines, OrbStack itself should stay around 1–2 GB.
-- **Service auto-start.** OrbStack starts on login by default. Verify in OrbStack settings → General. If disabled, your agents won't come back after a reboot.
-- **launchd vs container restart.** `--restart unless-stopped` handles container crashes, but if the Mac reboots and OrbStack doesn't auto-start, nothing runs. Two redundant safeguards: enable OrbStack auto-start + use `--restart unless-stopped` on every container.
+- **Install path.** Native Hermes via the official installer / Homebrew formula (see [Section 14](10-operations.md) for the exact upgrade story). All state lives under `~/.hermes/`.
+- **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, you wire one **launchd LaunchAgent per profile** (`~/Library/LaunchAgents/com.hermes.<profile>.plist`) so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
+- **Start-at-login.** LaunchAgents load at user login. The Mini must therefore **auto-login** after a reboot (System Settings → Users & Groups → Automatic login) or the agents won't come back unattended.
+- **Docker stays — for services only.** Honcho (Postgres) and SearXNG are infrastructure, not agents, and are far easier to run as containers. Keep a minimal Docker/OrbStack install for **those two only**; no agent runs in a container.
+- **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, on-demand agents (`coder`, `writer`, `producer`) are started only when used, and `ops` (once built) watches RAM — which it can finally do, since native it actually sees the host.
 
 ---

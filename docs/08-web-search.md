@@ -52,24 +52,19 @@ Start with single shared key. Upgrade only if you observe rate-limit errors in a
 
 #### Step 3: Store the key in each agent's `.env`
 
-Edit each agent's host-side env file. On the Mini:
+Edit each agent's env file. On the Mini:
 
 ```bash
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes-research/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes-concierge/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/research/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/concierge/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/coder/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/writer/.env
 # ops can skip — it doesn't need web search
-```
-
-On the MacBook:
-
-```bash
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes-coder/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes-writer/.env
 ```
 
 #### Step 4: Configure the MCP server in each agent's `config.yaml`
 
-The agent reads its config from `/opt/data/config.yaml` inside the container, which is `~/.hermes-<name>/config.yaml` on the host. Add:
+The agent reads its config from `~/.hermes/<name>/config.yaml`. Add:
 
 ```yaml
 mcp:
@@ -81,13 +76,13 @@ mcp:
       enabled: true
 ```
 
-Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the `.env` file inside the container's data dir, which is the file we wrote in Step 3.
+Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the `.env` file in the profile's data dir (`~/.hermes/<name>/.env`), which is the file we wrote in Step 3.
 
 #### Step 5: Restart the agent and verify
 
 ```bash
-docker compose restart hermes-research
-docker compose logs --tail 50 hermes-research | grep -i "mcp\|tinyfish"
+launchctl kickstart -k gui/$(id -u)/com.hermes.research
+tail -n 50 ~/.hermes/logs/gateways/research/current | grep -i "mcp\|tinyfish"
 ```
 
 You should see TinyFish MCP server registered and the agent picking up `tinyfish_search` and `tinyfish_fetch` tools. From a chat with the agent, ask "what tools do you have for web search?" — `tinyfish_search` and `tinyfish_fetch` should appear in the list.
@@ -139,11 +134,11 @@ Add to the Mini's compose file:
     container_name: searxng
     restart: unless-stopped
     ports:
-      - "${TAILSCALE_IP}:8888:8080"
+      - "127.0.0.1:8888:8080"
     volumes:
       - ~/.searxng:/etc/searxng:rw
     environment:
-      - BASE_URL=http://hermes-mini.your-tailnet.ts.net:8888/
+      - BASE_URL=http://127.0.0.1:8888/
       - INSTANCE_NAME=hermes-search-fallback
     deploy:
       resources:
@@ -174,13 +169,13 @@ web:
 And the env var:
 
 ```bash
-echo "SEARXNG_URL=http://hermes-mini.your-tailnet.ts.net:8888" >> ~/.hermes-research/.env
-echo "SEARXNG_URL=http://hermes-mini.your-tailnet.ts.net:8888" >> ~/.hermes-concierge/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/research/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/concierge/.env
 ```
 
 Now the agent has TinyFish as primary (via MCP), SearXNG as fallback (via built-in `web_search`). If TinyFish rate-limits or goes down, the agent still has working search.
 
-Resource impact: SearXNG adds ~500 MB to the Mini. With Honcho (5 containers, ~1.5 GB), three agents (6 GB), and SearXNG (~500 MB), the Mini sits at ~10–11 GB used. Tight but still within budget.
+Resource impact: SearXNG adds ~500 MB to the Mini. With Honcho (~1.5 GB) and SearXNG (~500 MB) in Docker plus the native agents, the Mini sits at ~11–13 GB out of 16 GB. Tight but still within budget.
 
 ### 10.5 Verifying TinyFish is actually being used
 
@@ -189,7 +184,7 @@ Two checks to run after first setup, and periodically afterward.
 **Check 1: Tool usage in agent logs.**
 
 ```bash
-docker compose logs --tail 200 hermes-research | grep -i "tool_use\|tinyfish_search\|web_search"
+tail -n 200 ~/.hermes/logs/gateways/research/current | grep -i "tool_use\|tinyfish_search\|web_search"
 ```
 
 You want to see `tinyfish_search` and `tinyfish_fetch` calls dominating, with `web_search` (the built-in fallback) only firing rarely or never.
@@ -212,12 +207,13 @@ For reference when wiring up each agent:
 
 | Agent | TinyFish MCP | Built-in `web` toolset | Fallback | Notes |
 |---|---|---|---|---|
-| `research` | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
-| `concierge` | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
-| `ops` | No | Disabled entirely | None | Doesn't need web |
-| `coder` | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
-| `writer` | Yes (light use) | Disabled | None | Layer 1 — research while drafting |
-| *(spare)* | TBD | TBD | TBD | — |
+| `general` (Sıla) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
+| `research` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
+| `concierge` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
+| `ops` (Pınar) | No | Disabled entirely | None | Doesn't need web |
+| `coder` (Ece) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
+| `writer` (Ozan) | Yes (light use) | Disabled | None | Layer 1 — research while drafting |
+| `producer` (Sarp) | No | Disabled | None | Offline rubric scoring (Phase B) |
 
 ### 10.7 Per-agent skill for TinyFish (optional but recommended)
 
@@ -226,13 +222,13 @@ TinyFish ships an "Agent Skill" — a `SKILL.md` file that teaches the agent whe
 ```bash
 # In each agent that uses TinyFish, install the skill
 # (Run from inside the agent's CLI or via skill_manage)
-hermes -p <not-applicable-for-docker> skills install use-tinyfish
+hermes -p research skills install use-tinyfish
 ```
 
-Inside the Docker setup, the equivalent is to drop the skill into the agent's skills directory:
+If you'd rather install it manually, the equivalent is to drop the skill into the profile's skills directory:
 
 ```bash
-mkdir -p ~/.hermes-research/skills/use-tinyfish
+mkdir -p ~/.hermes/research/skills/use-tinyfish
 # Get the SKILL.md from https://github.com/tinyfish-io/tinyfish-cookbook
 # Copy it into the skill directory
 ```

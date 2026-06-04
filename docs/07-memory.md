@@ -12,7 +12,7 @@ flowchart TB
     end
     subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
         user["user peer = YOU<br/>shared across all agents"]:::user
-        peers["ai peers: kam, research, concierge,<br/>coder, writer — one per agent"]:::infra
+        peers["ai peers (= slugs): general, research,<br/>concierge, coder, writer, producer — one per agent"]:::infra
     end
     per --> hon
     classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
@@ -25,7 +25,7 @@ flowchart TB
 
 ## 9. Memory architecture
 
-Memory is the *defining* feature of Hermes — the whole reason for this setup rather than six chatbot wrappers. It's worth treating as a first-class part of the design, not an afterthought.
+Memory is the *defining* feature of Hermes — the whole reason for this setup rather than seven chatbot wrappers. It's worth treating as a first-class part of the design, not an afterthought.
 
 ### 9.1 The three layers
 
@@ -33,7 +33,7 @@ Hermes memory has three layers that complement each other. Knowing which layer d
 
 **Layer 1 — Built-in memory (always on, per-agent).**
 
-Two agent-curated markdown files under each agent's `~/.hermes-<name>/memories/`:
+Two agent-curated markdown files under each agent's `~/.hermes/<name>/memories/`:
 
 - `MEMORY.md` — facts about the world, projects, environment. Hard cap ~2,200 chars by default.
 - `USER.md` — facts about you from this agent's perspective. Hard cap ~1,375 chars by default.
@@ -42,11 +42,11 @@ Injected into the system prompt as a frozen snapshot at session start. The agent
 
 **Layer 2 — Session search (always on, per-agent, local).**
 
-Every CLI and messaging session is stored in SQLite at `~/.hermes-<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions and uses an auxiliary LLM (Gemini Flash by default) to summarize matches.
+Every CLI and messaging session is stored in SQLite at `~/.hermes/<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions and uses an auxiliary LLM (Gemini Flash by default) to summarize matches.
 
 The distinction that matters: **Layer 1 is for facts that should *always* be in the prompt. Layer 2 is for facts that *might* be relevant if you ask.** Different jobs.
 
-This layer is local to each container and never crosses agent boundaries. `coder` cannot search `writer`'s sessions. That's correct behavior — you don't want them blending — but it means cross-agent recall requires Layer 3.
+This layer is local to each profile and never crosses agent boundaries. `coder` cannot search `writer`'s sessions. That's correct behavior — you don't want them blending — but it means cross-agent recall requires Layer 3.
 
 **Layer 3 — External memory provider (optional, additive).**
 
@@ -79,9 +79,9 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 
 ```mermaid
 flowchart TB
-    subgraph mini["🖥️ M4 Mini · 100.x.y.z (Tailscale)"]
+    subgraph mini["🖥️ M4 Mini · single host"]
+        ag["Native agents (launchd)<br/>general (Sıla) · research (Doruk) · concierge (Tuna)<br/>ops (Pınar) · coder (Ece) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
         subgraph orb["OrbStack (Docker)"]
-            ag["Agents<br/>hermes-general (Kam) · hermes-research (Mergen)<br/>hermes-concierge (Umay) · hermes-ops (Asena)"]:::mini
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
                 db[("database · Postgres + pgvector")]:::infra
@@ -91,15 +91,11 @@ flowchart TB
             end
         end
     end
-    subgraph mbp["💻 MacBook Pro"]
-        mbpag["hermes-coder (Ülgen) · hermes-writer (Korkut)"]:::mini
-    end
-    mbpag -. "Honcho over Tailscale<br/>http://hermes-mini…:8000" .-> api
+    ag -. "Honcho over loopback<br/>http://127.0.0.1:8000" .-> api
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef svc fill:#00ACC1,stroke:#006064,color:#fff
     classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
     style mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
-    style mbp fill:#FFF3E0,stroke:#FFB74D,color:#E65100
     style orb fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hs fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
@@ -141,19 +137,11 @@ Verify the API is responding:
 curl -s http://localhost:8000/openapi.json | head -1
 ```
 
-The compose file binds port 8000 to `127.0.0.1` by default — which is correct, because we want it on Tailscale, not the LAN or the internet. Override the port binding to use Tailscale:
-
-```yaml
-# In ~/honcho-stack/server/docker-compose.yml, on the api service:
-ports:
-  - "${TAILSCALE_IP}:8000:8000"
-```
-
-Then `docker compose up -d` to apply. Verify with `lsof`:
+The compose file binds port 8000 to `127.0.0.1` by default — which is correct, because the agents now run natively on the same Mini and reach Honcho over loopback, not the LAN or the internet. Leave the binding as-is and verify with `lsof`:
 
 ```bash
 sudo lsof -iTCP -sTCP:LISTEN -P -n | grep 8000
-# Should show 100.x.y.z.8000, not *.8000
+# Should show 127.0.0.1.8000, not *.8000
 ```
 
 #### Resource impact on the Mini
@@ -166,7 +154,7 @@ The Honcho stack adds roughly 1.5–2 GB to the Mini's memory footprint:
 - Deriver worker: ~300 MB
 - Summary worker: ~300 MB
 
-Combined with three agent containers (6 GB) + OrbStack (1–2 GB) + macOS (~2 GB), the Mini will sit at ~10–12 GB used out of 16 GB. Workable but not loose. Watch `docker stats` during the first week; if pressure shows up, lower one agent's RAM cap (probably `ops` since it's the most stable).
+Combined with the native agents (~7–9 GB across the always-on set) + macOS (~2 GB), the Mini sits at ~11–13 GB out of 16 GB. Watch Activity Monitor during the first week; if pressure shows, run fewer on-demand agents concurrently.
 
 ### 9.4 Per-agent memory configuration
 
@@ -174,12 +162,13 @@ Not every agent needs the full memory stack. Match the configuration to what the
 
 | Agent | Built-in memory | Session search | Honcho | Notes |
 |---|---|---|---|---|
+| `general` (Sıla) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
 | `research` | Yes | Yes | Yes (peer: `research`) | Tracks topic interests, source preferences, depth |
 | `concierge` | Yes | Yes | Yes (peer: `concierge`) | Models daily rhythms, what reminders land |
-| `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization |
+| `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization (deferred) |
 | `coder` | Yes | Yes | Yes (peer: `coder`) | Language preferences, project conventions |
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
-| *(spare)* | TBD | TBD | TBD | — |
+| `producer` (Phase B) | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
 
 `ops` is the deliberate exception. The more personalized it gets, the more it drifts from doing exactly what you asked. Keep it lean. In its `config.yaml`:
 
@@ -191,13 +180,13 @@ memory:
   provider: none                # no external provider
 ```
 
-For all the other agents that *do* use Honcho, each needs a config file telling Hermes where the Honcho server is and what AI peer name to use. Hermes looks for it at `$HERMES_HOME/honcho.json` (which inside the container resolves to `/opt/data/honcho.json` → on the host, `~/.hermes-<name>/honcho.json`).
+For all the other agents that *do* use Honcho, each needs a config file telling Hermes where the Honcho server is and what AI peer name to use. Hermes looks for it at `~/.hermes/<name>/honcho.json`.
 
 Create one per agent. Example for `coder`:
 
 ```json
 {
-  "baseUrl": "http://hermes-mini.your-tailnet.ts.net:8000",
+  "baseUrl": "http://127.0.0.1:8000",
   "hosts": {
     "hermes": {
       "enabled": true,
@@ -214,7 +203,7 @@ Create one per agent. Example for `coder`:
 
 Key fields:
 
-- `baseUrl` — Honcho server on the Mini, reached over Tailscale.
+- `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
 - `aiPeer` — **unique per agent** (`coder`, `writer`, `research`, `concierge`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
 - `workspace` — keep as `hermes` for all seven. The workspace is what binds them into one shared environment.
@@ -228,7 +217,7 @@ memory:
   provider: honcho
 ```
 
-Restart the agent's container for changes to take effect.
+Restart the gateway (`launchctl kickstart -k gui/$(id -u)/com.hermes.<name>`) for changes to take effect.
 
 ### 9.5 Initial seed: don't make the agent discover everything
 
@@ -243,7 +232,7 @@ Don't make the agent learn everything from scratch over conversation. Seed each 
 - Timezone: Europe/Istanbul
 - Location: Istanbul
 - Languages: <primary>, <secondary>
-- OS: macOS (M4 Mini for always-on; M2 MacBook Pro for portable)
+- OS: macOS — Mac Mini M4 (single host, always-on)
 - Working hours: <typical hours>
 - Communication preference: <concise vs detailed>, <when to ask vs when to act>
 - Decision style: <how you want trade-offs presented>
@@ -267,7 +256,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
 
 **Week 1, per agent (15 min each):**
 
-- Open `~/.hermes-<name>/memories/MEMORY.md` and `USER.md` — read every line.
+- Open `~/.hermes/<name>/memories/MEMORY.md` and `USER.md` — read every line.
 - Delete anything wrong, outdated, or weirdly phrased. Edits stick.
 - If memory is near the character limit and the agent is consolidating poorly, raise the limit in `config.yaml`:
   ```yaml
@@ -275,7 +264,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
     memory_char_limit: 4000
     user_char_limit: 2000
   ```
-- Confirm sessions are being persisted: `ls ~/.hermes-<name>/sessions/` should show files.
+- Confirm sessions are being persisted: `ls ~/.hermes/<name>/sessions/` should show files.
 
 **Week 4 (30 min total):**
 
@@ -286,7 +275,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
 **Month 3 (1 hour):**
 
 - Pruning pass: each agent's MEMORY.md and USER.md will have grown things you didn't expect. Read through and remove genuinely stale facts. The agent may have written `User is working on Project Y` and Project Y ended a month ago.
-- Skills review: `ls ~/.hermes-<name>/skills/` for each agent. Useful skills get reused; dead skills accumulate. Delete dead ones.
+- Skills review: `ls ~/.hermes/<name>/skills/` for each agent. Useful skills get reused; dead skills accumulate. Delete dead ones.
 - Honcho representation export: from any agent, ask *"export your user representation"* — the agent can use `honcho_profile` or read the peer card directly. Save these; they're useful to compare across months and to back up.
 
 ### 9.7 Backups
@@ -295,13 +284,13 @@ Memory is the asset that compounds. Plan backups now, not after six months.
 
 **What to back up:**
 
-- `~/.hermes-*/memories/` on both Macs — agent-curated MEMORY.md and USER.md.
-- `~/.hermes-*/skills/` on both Macs — agent-created skills.
-- `~/.hermes-*/sessions/` on both Macs — conversation history (FTS5 index lives in `state.db`).
-- `~/.hermes-*/honcho.json` configs — provider settings per agent.
+- `~/.hermes/*/memories/` on the Mini — agent-curated MEMORY.md and USER.md.
+- `~/.hermes/*/skills/` on the Mini — agent-created skills.
+- `~/.hermes/*/sessions/` on the Mini — conversation history (FTS5 index lives in `state.db`).
+- `~/.hermes/*/honcho.json` configs — provider settings per agent.
 - The Honcho Postgres database on the Mini — this holds Honcho's accumulated observations, conclusions, user peer card, AI peer cards.
 
-**Hermes side (both Macs):**
+**Hermes side (on the Mini):**
 
 Trivial — these are just directories. Add them to whatever you already use (Time Machine, Restic, rsync to external). Daily for `memories/`, weekly for `sessions/`.
 
@@ -329,7 +318,6 @@ Verify a backup is restorable at least once. Sometime in month 1, do a test rest
 ### 9.8 Failure modes to know about
 
 - **Honcho server down.** Agents configured with `provider: honcho` will degrade — their built-in memory still works (MEMORY.md, USER.md, session search), but Honcho-injected context disappears and `honcho_*` tools fail. Not catastrophic; agents stay usable. Restart with `docker compose up -d` in the honcho-stack directory.
-- **Tailscale link drops between MacBook and Mini.** The two MacBook agents lose their Honcho connection while the link is down. Same degradation as above. Restoring Tailscale immediately restores access.
 - **Memory file corruption (rare).** If MEMORY.md or USER.md gets into a weird state, the agent might refuse to write to it. Solution: restore from yesterday's backup, or in the worst case, delete the file — the agent will create a fresh one on next session. You lose accumulated memory in that agent but nothing else.
 - **Honcho LLM provider quota exhausted.** Deriver/dialectic/summary/dream calls will fail. The Postgres data is intact; just background processing pauses. Top up the provider, restart the deriver/summary workers. No data loss, but observations from the queue-up period may need to be reprocessed.
 - **Memory hit character limit and agent is dropping things.** Either raise the limit in `config.yaml`, or accept that the agent is keeping its memory focused on what's most recent and relevant — which is the design. The header tells you when memory is near full.
@@ -339,7 +327,7 @@ Verify a backup is restorable at least once. Sometime in month 1, do a test rest
 A few things worth being explicit about:
 
 - **`ops` won't develop personality over time.** That's deliberate. If you want it to, flip its config to use Honcho with its own AI peer. But the value of `ops` is determinism.
-- **The sixth agent's memory profile is undefined.** When you decide what the sixth agent is for, choose its memory config then. Don't pre-allocate.
+- **`producer` (Sarp) memory stays minimal until Phase B.** It's deferred; when you build it, its Honcho peer (`producer`) and the backlog workspace get configured then. Don't pre-allocate.
 - **You still need to actually talk to the agents.** The system can only learn from interactions that happen. An agent that gets one message per week will have a thin user model regardless of how good the memory stack is.
 - **Cross-agent reasoning isn't automatic.** Honcho's user peer is shared, but each AI peer reasons independently. If `coder` learned something that `concierge` should know, you may need to tell `concierge` once. The agents do not auto-broadcast knowledge to each other.
 

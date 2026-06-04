@@ -10,7 +10,7 @@ sequenceDiagram
     actor You
     participant BF as BotFather
     participant API as Telegram Bot API
-    participant ENV as ~/.hermes-*/.env
+    participant ENV as ~/.hermes/*/.env
     You->>BF: /newbot ×7
     BF-->>You: 7 tokens
     You->>You: fill bot-tokens.env (7 tokens + ALLOWED_USERS)
@@ -63,7 +63,7 @@ need it in step 4.4. Then for the same bot, run these to harden settings:
 
 Suggested username pattern: `<role>_<yourname>_bot`. So `research_alice_bot`, `concierge_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
 
-By the end, you have six tokens. Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
+By the end, you have seven tokens (six if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
 
 ### 4.4 Distribute tokens into each agent's `.env`
 
@@ -71,7 +71,7 @@ This is the bridge between Telegram's side and Hermes's side. Each agent needs t
 
 ```bash
 # On the Mini, for the research agent:
-cat >> ~/.hermes-research/.env <<EOF
+cat >> ~/.hermes/research/.env <<EOF
 TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
 TELEGRAM_ALLOWED_USERS=123456789
 EOF
@@ -83,11 +83,11 @@ Important formatting rules:
 
 - **No quotes around the token value.** Telegram tokens contain a colon, which some env parsers misinterpret under quoting. Plain `TOKEN=value` form only.
 - **`TELEGRAM_ALLOWED_USERS` is comma-separated.** Single value for a personal setup. If you want a friend to also be able to talk to a specific bot, add their user ID separated by a comma (no spaces).
-- **Permissions on the `.env` file.** `chmod 600 ~/.hermes-*/.env` so only your user can read them. The tokens are bearer credentials.
+- **Permissions on the `.env` file.** `chmod 600 ~/.hermes/*/.env` so only your user can read them. The tokens are bearer credentials.
 
 ### 4.5 Per-agent config
 
-In each agent's `~/.hermes-<name>/config.yaml`, enable the Telegram gateway:
+In each agent's `~/.hermes/<name>/config.yaml`, enable the Telegram gateway:
 
 ```yaml
 gateway:
@@ -103,13 +103,13 @@ The token and allowed-users values are read from `.env` automatically — they d
 
 ### 4.6 Token collision protection (Hermes-side)
 
-Hermes detects if two agents accidentally use the same bot token and refuses to start the second one. *"If two profiles accidentally use the same bot token, the second gateway will be blocked with a clear error naming the conflicting profile."* Same protection applies across containers — first-write wins on a shared token, second one gets an explicit failure rather than silently competing.
+Hermes detects if two agents accidentally use the same bot token and refuses to start the second one. *"If two profiles accidentally use the same bot token, the second gateway will be blocked with a clear error naming the conflicting profile."* Same protection applies across profiles — first-write wins on a shared token, second one gets an explicit failure rather than silently competing.
 
 If you ever see `Token already in use by hermes-<other>` in logs, two of your agents have the same token. Most common cause: copy-paste error in step 4.4. Re-issue a fresh token for one bot via `/revoke` in BotFather and update the right `.env`.
 
 ### 4.7 Verify each bot before starting the agent
 
-Before bringing the agent container up, sanity-check the bot exists on Telegram's side:
+Before starting the gateway, sanity-check the bot exists on Telegram's side:
 
 ```bash
 TOKEN="7123456789:AAH..."
@@ -118,22 +118,22 @@ curl -s "https://api.telegram.org/bot${TOKEN}/getMe" | jq
 
 Expected output includes `"ok": true` and the bot's username. If you get `"ok": false` or 401, the token is wrong — re-copy from BotFather.
 
-Do this for each of the six tokens. Takes 30 seconds total and catches typos before they cause weird container startup failures.
+Do this for each token. Takes 30 seconds total and catches typos before they cause weird gateway startup failures.
 
 ### 4.8 First contact after bringing the agent up
 
-After `docker compose up -d hermes-research`, open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
+After starting the research gateway (`launchctl load ~/Library/LaunchAgents/com.hermes.research.plist`), open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
 
 If it doesn't reply:
 
 ```bash
-docker logs --tail 100 hermes-research | grep -i telegram
+tail -n 100 ~/.hermes/logs/gateways/research/current | grep -i telegram
 ```
 
 Common issues and fixes:
 
 - **`401 Unauthorized`** — token wrong or revoked. Re-issue via BotFather.
-- **`Conflict: terminated by other getUpdates request`** — another process is polling the same bot. Find it (`docker ps | grep <agent>` or check launchd) and stop the duplicate.
+- **`Conflict: terminated by other getUpdates request`** — another process is polling the same bot. Find it (`launchctl list | grep com.hermes` or check Activity Monitor) and stop the duplicate.
 - **No log line about Telegram at all** — gateway not enabled in `config.yaml`. Recheck step 4.5.
 - **`TELEGRAM_ALLOWED_USERS not configured, denying`** — user ID missing or wrong. Check `.env`, verify with @userinfobot.
 
@@ -164,70 +164,70 @@ That marks the current chat as where the agent should send scheduled outputs. Us
 
 ### 4.10 Bot-to-agent mapping reference
 
-Seven bots, seven agents. Display names are the short Turkic forms; the full honorific form plus the role go in each bot's profile (Section 4.9 `/setdescription` and `/setabouttext`). Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames are ASCII, lowercase, and must be globally unique (`Ülgen` → `ulgen`).
+Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rename-safe — like the Honcho peer); the **display name** in the chat list is the persona, set via `/setname` (Section 4.9). So `@general_<you>_bot` shows as "Sıla". Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames must be globally unique, so suffix with your handle.
 
-| Slug | Display (chat) | Username | Token (first 10) | Full name | Role at a glance |
-|---|---|---|---|---|---|
-| `general` | Kam | `kam_<you>_bot` | `…` | Kam Ata | Talk about anything — your main line |
-| `research` | Mergen | `mergen_<you>_bot` | `…` | Mergen Han | Research any topic + game scout |
-| `concierge` | Umay | `umay_<you>_bot` | `…` | Umay Ana | Daily life, reminders, digest |
-| `ops` | Asena | `asena_<you>_bot` | `…` | Asena Ana | Watches the system |
-| `coder` | Ülgen | `ulgen_<you>_bot` | `…` | Bay Ülgen | Writes & runs code |
-| `writer` | Korkut | `korkut_<you>_bot` | `…` | Dede Korkut | Drafts & edits prose |
-| `producer` | Kayra | `kayra_<you>_bot` | `…` | Kayra Han | Scores game ideas (Phase B) |
+| Slug | Display (chat) | Username | Token (first 10) | Role at a glance |
+|---|---|---|---|---|
+| `general` | Sıla | `general_<you>_bot` | `…` | Founder / creative director — your main line |
+| `research` | Doruk | `research_<you>_bot` | `…` | Market analyst — research + game scout |
+| `concierge` | Tuna | `concierge_<you>_bot` | `…` | Studio manager — reminders, digest |
+| `ops` | Pınar | `ops_<you>_bot` | `…` | DevOps — watches the host |
+| `coder` | Ece | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
+| `writer` | Ozan | `writer_<you>_bot` | `…` | Narrative designer — drafts & PRDs |
+| `producer` | Sarp | `producer_<you>_bot` | `…` | Producer — scores game ideas (Phase B) |
 
 Save this. Seven similar bots in a chat list blur together without notes.
 
 **Telegram profile text — paste per bot in BotFather.** `/setabouttext` is the short line in the bot's info card; `/setdescription` is the longer blurb shown on the empty-chat screen. These double as your "which agent does what" reference.
 
 ```
-Kam      (general)
-  about:       Kam Ata — your shaman. Ask anything.
-  description: Father Shaman. Your main line: open conversation, brainstorming,
-               quick answers, and hand-offs to the specialists. Talk about anything.
+Sıla     (general)
+  about:       Sıla — studio founder & creative director. Ask anything.
+  description: Founder and creative director. Your main line: open conversation,
+               brainstorming, quick answers, hand-offs to the crew. Dry, has seen every pitch.
 
-Mergen   (research)
-  about:       Mergen Han — research, any topic.
-  description: Lord of wisdom. Researches any domain — game markets, history,
-               academic sources. Cites every source. Runs the weekly game scout.
+Doruk    (research)
+  about:       Doruk — market analyst. Research, any topic.
+  description: The studio's market analyst and scout. Researches any domain — game
+               markets, history, academic. Cites every source, quietly smug. Runs the weekly scout.
 
-Umay     (concierge)
-  about:       Umay Ana — daily life & digests.
-  description: Mother of the hearth. Calendar, reminders, and your morning digest.
-               Warm, brief, action-first.
+Tuna     (concierge)
+  about:       Tuna — studio manager. Keeps your day running.
+  description: Studio manager and the actual adult. Calendar, reminders, your morning
+               digest. Warm, brief, herds the cats so things ship on time.
 
-Asena    (ops)
-  about:       Asena Ana — watches the system.
-  description: The wolf-mother, ever vigilant. Monitors the agent fleet and host,
-               sends status reports, runs scheduled checks. Terse and factual.
+Pınar    (ops)
+  about:       Pınar — DevOps. Watches the host.
+  description: DevOps and sysadmin. Monitors the host and the agent fleet, status
+               reports, scheduled checks. Terse. Certain it's never the server.
 
-Ülgen    (coder)
-  about:       Bay Ülgen — writes & runs code.
-  description: The maker. Your development pair: Godot-first game code, refactors,
-               debugging. Direct, shows diffs, tests its own work.
+Ece      (coder)
+  about:       Ece — lead programmer. Writes & runs code.
+  description: Lead programmer. Godot-first game code, refactors, debugging. Blunt,
+               shows diffs, tests her own work. "Works on my machine" is not a status update.
 
-Korkut   (writer)
-  about:       Dede Korkut — drafts & edits.
-  description: The legendary bard. Drafts, edits, brainstorms — prose, store copy,
-               game PRDs. Playful and generative.
+Ozan     (writer)
+  about:       Ozan — narrative designer. Drafts & edits.
+  description: Narrative designer. Drafts, edits, brainstorms — prose, store copy,
+               game PRDs. Everything's a metaphor, but he delivers. Lean PRDs, brilliant briefly.
 
-Kayra    (producer)
-  about:       Kayra Han — scores game ideas.
-  description: The creator. Game-dev discovery: keeps the opportunity backlog and
-               scores ideas against the rubric. (Activates in Phase B.)
+Sarp     (producer)
+  about:       Sarp — producer. Scores game ideas.
+  description: Producer and product lead. Holds the budget; scores ideas against the
+               rubric and kills the hype. Skeptical, anti-inflation. (Activates in Phase B.)
 ```
 
 ### 4.11 Things to know about Telegram + Hermes specifically
 
 A few details that matter for our setup:
 
-**Voice memos auto-transcribe.** If you record a voice message in Telegram, Hermes transcribes it via the configured STT provider and processes it as a normal message. For local-only transcription with no API key, `stt.provider: local` uses `faster-whisper` on the machine running Hermes. Install with `pip install faster-whisper` in the container — or just leave it at the default and accept that the first voice message in each session takes longer while the model downloads.
+**Voice memos auto-transcribe.** If you record a voice message in Telegram, Hermes transcribes it via the configured STT provider and processes it as a normal message. For local-only transcription with no API key, `stt.provider: local` uses `faster-whisper` on the machine running Hermes. Install with `pip install faster-whisper` on the Mini — or just leave it at the default and accept that the first voice message in each session takes longer while the model downloads.
 
 **TTS replies are native voice bubbles.** If an agent uses `text_to_speech`, the result is delivered as Telegram's inline-playable voice format, not a file attachment. Configure per-agent in `config.yaml` under `tts:` — Edge TTS is free and decent quality.
 
 **Markdown tables get auto-flattened.** Telegram's MarkdownV2 doesn't support tables. Hermes detects them and either flattens small tables into bulleted lists or wraps larger ones in code blocks. You don't need to configure anything — the adapter handles it.
 
-**File attachments require host-readable paths.** When the agent sends a file via `MEDIA:/...`, the path must be readable on the host where the gateway runs, not inside the container. Since our gateway runs *inside* the container, this means the file has to be in a host-mounted volume. For `writer`, that's why we set up `~/Documents/writer-output:/output` — files written to `/output/` inside the container are visible at `~/Documents/writer-output/` on the host, and that's the path the gateway can read.
+**File attachments use any path your user can read.** When the agent sends a file via `MEDIA:/...`, the path just needs to be readable by your user. Since the gateway runs natively on the Mini as you, any such path works directly — no mounts involved. For `writer`, point its output at `~/Documents/writer-output/` directly in config; files written there are immediately readable by the gateway.
 
 **Group chats are off by default.** With `/setjoingroups Disable` from step 4.3, the bots can't be added to groups at all. If you ever want a bot in a group (probably `concierge` for a family group), re-enable `/setjoingroups` and also set the per-platform `group_allow_from` allowlist in `config.yaml` to restrict who can invoke the bot.
 
@@ -241,9 +241,10 @@ Bot *creation* (4.3) is the only manual part; Telegram has no API for it. Once t
 # from the repo root
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
 # edit scripts/bot-tokens.env: paste ALLOWED_USERS (your @userinfobot ID) + the 7 tokens
-./scripts/setup-bots.sh```
+./scripts/setup-bots.sh
+```
 
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes-<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Idempotent: rerun anytime to update the profile text.
+For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Idempotent: rerun anytime to update the profile text.
 
 Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
 

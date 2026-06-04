@@ -6,9 +6,9 @@
 
 ```mermaid
 flowchart LR
-    Mergen & Korkut --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
-    Kam & Ulgen & Umay & Kayra --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
-    Asena --> mhs["MiniMax · M2.7-highspeed"]
+    Doruk & Ozan --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
+    Sila["Sıla"] & Ece & Tuna & Sarp --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
+    Pinar["Pınar"] --> mhs["MiniMax · M2.7-highspeed"]
     aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · safe"]
     codex -. fallback .-> mini
     mini -. fallback .-> or
@@ -16,8 +16,8 @@ flowchart LR
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef ext fill:#00897B,stroke:#004D40,color:#fff
     classDef neutral fill:#546E7A,stroke:#263238,color:#fff
-    class Mergen,Korkut,codex codex
-    class Kam,Ulgen,Umay,Kayra,mini,mhs mini
+    class Doruk,Ozan,codex codex
+    class Sila,Ece,Tuna,Sarp,mini,mhs mini
     class or ext
     class aux neutral
 ```
@@ -54,19 +54,19 @@ The distinction that governs everything below: **an API key (you pay per token) 
 
 | Slug | Bot | Main model | Provider | Safety | Why |
 |---|---|---|---|---|---|
-| `general` | Kam | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
-| `research` | Mergen | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
-| `concierge` | Umay | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
-| `ops` | Asena | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
-| `coder` | Ülgen | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
-| `writer` | Korkut | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
-| `producer` | Kayra | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
+| `general` | Sıla | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
+| `research` | Doruk | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
+| `concierge` | Tuna | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
+| `ops` | Pınar | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
+| `coder` | Ece | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
+| `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
+| `producer` | Sarp | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
 
 For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
-Why Codex lands on `research` + `writer` specifically: those are the two **bounded-volume** agents, and gpt-5.x is genuinely strong at web research and long-form drafting. That's where the gray-area trade is worth it. Everything that runs hot — Kam (your main line), coder, the always-on Mini agents — stays on MiniMax so volume never triggers ChatGPT-side enforcement. If `coder`'s GDScript quality ever disappoints, flip it to Codex (`gpt-5.x`) per-session with `/model` and judge.
+Why Codex lands on `research` + `writer` specifically: those are the two **bounded-volume** agents, and gpt-5.x is genuinely strong at web research and long-form drafting. That's where the gray-area trade is worth it. Everything that runs hot — Sıla (your main line), coder, the always-on Mini agents — stays on MiniMax so volume never triggers ChatGPT-side enforcement. If `coder`'s GDScript quality ever disappoints, flip it to Codex (`gpt-5.x`) per-session with `/model` and judge.
 
-### 5.2 MiniMax setup — your primary (Kam, concierge, ops, coder, producer)
+### 5.2 MiniMax setup — your primary (Sıla, concierge, ops, coder, producer)
 
 Get an API key at platform.minimax.io. Two regional endpoints:
 
@@ -77,7 +77,7 @@ One key works across every MiniMax agent (billed per token, no per-key restricti
 
 ```bash
 for agent in general concierge ops coder producer; do
-  echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes-${agent}/.env
+  echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes/${agent}/.env
 done
 ```
 
@@ -89,7 +89,7 @@ model:
   default: MiniMax-M2.7
 ```
 
-`ops` (Asena) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
+`ops` (Pınar) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
 
 ```yaml
 model:
@@ -97,27 +97,27 @@ model:
   default: MiniMax-M2.7-highspeed
 ```
 
-**MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-container OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
+**MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-profile OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
 
 ### 5.3 Codex OAuth setup — accepted-risk (research + writer only)
 
 > ⚠️ Gray area (5.0). Keep it to these two low-volume agents and don't let either run hot. If you'd rather avoid the risk entirely, put `research`/`writer` on MiniMax too and skip this section.
 
-Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes-<slug>/auth.json` per agent and survives restarts via the bind mount. Two ways to bootstrap.
+Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes/<slug>/auth.json` per profile and survives restarts (persisted under `~/.hermes/<slug>/`). Two ways to bootstrap.
 
 **Path A — import existing Codex credentials** (if you use ChatGPT Desktop or the Codex CLI). Your creds live at `~/.codex/auth.json`; Hermes auto-imports on first start:
 
 ```bash
-mkdir -p ~/.hermes-research
-cp ~/.codex/auth.json ~/.hermes-research/auth.json
-chmod 600 ~/.hermes-research/auth.json
-# repeat for ~/.hermes-writer
+# after: hermes profile create research
+cp ~/.codex/auth.json ~/.hermes/research/auth.json
+chmod 600 ~/.hermes/research/auth.json
+# repeat for ~/.hermes/writer
 ```
 
 **Path B — fresh device-code login** (if you don't have Codex creds yet):
 
 ```bash
-docker run -it --rm -v ~/.hermes-research:/opt/data nousresearch/hermes-agent setup
+hermes setup --profile research
 # at the model step pick "OpenAI Codex"; open the printed URL, paste the code, approve
 ```
 
@@ -136,7 +136,7 @@ model:
 Not in the default stack. Add it only if you specifically want Claude for an agent (most likely `coder` on a hard refactor day). **Use an API key, not your Claude Code subscription** (5.0).
 
 ```bash
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes-coder/.env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes/coder/.env
 ```
 
 ```yaml
@@ -155,7 +155,7 @@ Get a key at openrouter.ai → Keys, add $5–10 of credit (lasts months). Add i
 
 ```bash
 for agent in general research concierge ops coder writer producer; do
-  echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes-${agent}/.env
+  echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes/${agent}/.env
 done
 ```
 
@@ -190,13 +190,13 @@ Moderate daily use of all seven. Real numbers vary; the big swing is `coder`.
 
 | Agent | Provider | Estimate |
 |---|---|---|
-| `general` (Kam) | MiniMax | $3–10 — highest volume |
-| `research` (Mergen) | Codex (ChatGPT sub) | $0 — included |
-| `concierge` (Umay) | MiniMax | $2–8 |
-| `ops` (Asena) | MiniMax-highspeed | $1–3 |
-| `coder` (Ülgen) | MiniMax | $5–25 — scales with active dev |
-| `writer` (Korkut) | Codex (ChatGPT sub) | $0 — included |
-| `producer` (Kayra) | MiniMax | $0–3 — Phase B |
+| `general` (Sıla) | MiniMax | $3–10 — highest volume |
+| `research` (Doruk) | Codex (ChatGPT sub) | $0 — included |
+| `concierge` (Tuna) | MiniMax | $2–8 |
+| `ops` (Pınar) | MiniMax-highspeed | $1–3 |
+| `coder` (Ece) | MiniMax | $5–25 — scales with active dev |
+| `writer` (Ozan) | Codex (ChatGPT sub) | $0 — included |
+| `producer` (Sarp) | MiniMax | $0–3 — Phase B |
 | *Aux (all seven)* | OpenRouter (Gemini Flash) | $1–5 |
 | **Total** | | **~$12–55/mo** on top of your existing MiniMax + ChatGPT subscriptions |
 
@@ -237,7 +237,7 @@ So if a Codex call 503s or rate-limits, the session silently continues on MiniMa
 
 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` are written by `setup-bots.sh` (see [Telegram Bots](03-telegram-bots.md)); the model keys below you add yourself.
 
-`~/.hermes-general/.env` (Kam):
+`~/.hermes/general/.env` (Sıla):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -245,7 +245,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes-research/.env` (Mergen):
+`~/.hermes/research/.env` (Doruk):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -254,7 +254,7 @@ OPENROUTER_API_KEY=sk-or-...
 # Codex credentials live in auth.json, not .env
 ```
 
-`~/.hermes-concierge/.env` (Umay), `~/.hermes-ops/.env` (Asena), `~/.hermes-producer/.env` (Kayra):
+`~/.hermes/concierge/.env` (Tuna), `~/.hermes/ops/.env` (Pınar), `~/.hermes/producer/.env` (Sarp):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -262,7 +262,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes-coder/.env` (Ülgen):
+`~/.hermes/coder/.env` (Ece):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -271,7 +271,7 @@ OPENROUTER_API_KEY=sk-or-...
 # ANTHROPIC_API_KEY=sk-ant-...   # optional, only if you want Claude (5.4)
 ```
 
-`~/.hermes-writer/.env` (Korkut):
+`~/.hermes/writer/.env` (Ozan):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -307,15 +307,15 @@ curl -s https://api.anthropic.com/v1/messages \
 # Expect JSON with "content"
 ```
 
-Codex can't be verified outside a Hermes container — its auth is bound to Hermes's credential store. It fails loudly on first startup (`invalid_grant` / `auth required` in logs) if broken.
+Codex can't be verified outside Hermes — its auth is bound to Hermes's credential store. It fails loudly on first startup (`invalid_grant` / `auth required` in logs) if broken.
 
 ### 5.10 Changing providers later
 
 Each agent's `config.yaml` is the source of truth:
 
 ```bash
-nano ~/.hermes-general/config.yaml   # change model.provider / model.default
-docker compose restart hermes-general
+nano ~/.hermes/general/config.yaml   # change model.provider / model.default
+launchctl kickstart -k gui/$(id -u)/com.hermes.general
 ```
 
 History, memory, and skills are provider-agnostic and survive the switch. Use `/model <name>` inside a session to switch *temporarily* without editing the file; persistent changes need the config edit + restart.

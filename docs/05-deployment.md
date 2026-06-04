@@ -1,4 +1,4 @@
-# Deployment — Dirs, Ports, Phases, Toolsets, Compose
+# Deployment — Dirs, Profiles, Phases, Toolsets, Supervision
 
 [← All docs](../README.md)
 
@@ -6,242 +6,188 @@
 
 ```mermaid
 flowchart LR
-    P1["Phase 1 · day 1<br/>first agent end-to-end<br/>research · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second agent<br/>prove isolation: marker + restart"]:::p2
-    P2 --> P3["Phase 3 · week 1+<br/>remaining agents<br/>copy the pattern"]:::p3
+    P1["Phase 1 · day 1<br/>native install + first profile<br/>research · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second profile<br/>prove per-profile state + launchd"]:::p2
+    P2 --> P3["Phase 3 · week 1+<br/>remaining profiles<br/>copy the pattern"]:::p3
     classDef p1 fill:#1E88E5,stroke:#0D47A1,color:#fff
     classDef p2 fill:#43A047,stroke:#1B5E20,color:#fff
     classDef p3 fill:#8E24AA,stroke:#4A148C,color:#fff
 ```
 
-## 3. Directory and naming conventions
+Everything runs **native** on one Mac Mini M4 — one Hermes install, one profile per agent under `~/.hermes/`. No agent runs in a container. Docker is used **only** for Honcho and SearXNG (Section 7).
 
-Each agent gets a dedicated host directory and a predictable container name.
+## 3. Directory, profile, and port conventions
+
+A single install keeps all profiles under `~/.hermes/`. Each agent is a profile; its slug is the profile name.
 
 ```
-~/.hermes-general/     ← bind-mounts to /opt/data inside hermes-general container   (Kam)
-~/.hermes-research/    ← bind-mounts to /opt/data inside hermes-research container  (Mergen)
-~/.hermes-concierge/   ← bind-mounts to /opt/data inside hermes-concierge container (Umay)
-~/.hermes-ops/         ← bind-mounts to /opt/data inside hermes-ops container       (Asena)
-~/.hermes-coder/       ← bind-mounts to /opt/data inside hermes-coder container     (Ülgen)
-~/.hermes-writer/      ← bind-mounts to /opt/data inside hermes-writer container    (Korkut)
-~/.hermes-producer/    ← bind-mounts to /opt/data inside hermes-producer container  (Kayra, Phase B)
+~/.hermes/
+├── research/      ← Doruk
+├── general/       ← Sıla
+├── concierge/     ← Tuna
+├── ops/           ← Pınar  (deferred — Section 15)
+├── coder/         ← Ece
+├── writer/        ← Ozan
+├── producer/      ← Sarp  (Phase B)
+├── kanban.db      ← shared board (created only if/when kanban is enabled — Section 17)
+└── logs/gateways/<profile>/current   ← per-profile rotated logs
 ```
 
-Each directory contains the full state for that agent:
+Each profile directory holds the full state for that agent:
 
 | Path | Contents |
 |---|---|
-| `.env` | API keys and bot tokens |
+| `.env` | API keys and bot token |
 | `config.yaml` | Hermes configuration |
 | `SOUL.md` | Agent personality and instructions |
 | `sessions/` | Conversation history |
 | `memories/` | Persistent memory store (USER.md, MEMORY.md) |
 | `skills/` | Agent-created and bundled skills |
 | `cron/` | Scheduled job definitions |
-| `logs/` | Runtime logs |
 
-**Port allocation** (each gateway needs a unique host port; container-internal stays at 8642):
+**Ports.** Each gateway reaches Telegram **outbound** (long-poll), so it needs **no inbound port** to function. A host port is required only if you turn on a per-profile feature that listens:
 
-- `8642` → research (Mergen)
-- `8643` → concierge (Umay)
-- `8644` → ops (Asena)
-- `8645` → coder (Ülgen)
-- `8646` → writer (Korkut)
-- `8647` → producer (Kayra, Phase B)
-- `8648` → general (Kam)
-- `9119–9126` → dashboards if enabled (one per agent)
+- the **HTTP API server** (`api_server`) — not needed for Telegram or for agent-to-agent, which is local now ([Section 17](12-agent-comms.md)); enable only for the dashboard or external HTTP clients
+- the **dashboard** — one port per profile if you enable it (`9119+`)
 
-**Important:** Ports are bound to the Tailscale interface only, never `0.0.0.0`. See Section 8 (Tailscale networking) for the exact bind syntax. This means each port is reachable from your other tailnet devices but invisible to your LAN and the public internet.
+If you do expose any port, bind it to the Tailscale interface only and key it — see [Section 8](06-networking.md). Most profiles expose nothing.
 
 ---
 
-
 ## 6. Deployment plan — phased
 
-Do not stand up all seven at once. Build in three phases so problems get isolated as they arise.
+Do not stand up all agents at once. Build in three phases so problems get isolated as they arise.
 
-**Prerequisites:** Section 4 done (seven bots exist, six tokens saved, your user ID in hand) and Section 5 done (API keys obtained from Anthropic, MiniMax, OpenRouter, and Codex credentials available either via existing `~/.codex/auth.json` or you're ready to do device-code OAuth inside containers). Deployment assumes both are complete — keys and tokens get pasted during the per-agent setup wizard.
+**Prerequisites:** Section 4 done (bots exist, tokens saved, your Telegram user ID in hand) and Section 5 done (API keys from MiniMax, OpenRouter, and Codex credentials available). Keys and tokens get pasted during per-profile setup.
 
-### Phase 1 — first agent end-to-end (day 1)
+### Phase 1 — native install + first profile (day 1)
 
-Pick one agent (recommend `research` — gateway-mode, single platform, no project mounts) and get it fully working before touching anything else.
+Pick one agent (recommend `research` — single platform, no project mounts) and get it fully working before touching anything else.
 
-**Step 1.1: Create the host directory**
+**Step 1.1: Install Hermes natively**
 
-```bash
-mkdir -p ~/.hermes-research
-```
-
-**Step 1.2: Run the setup wizard interactively**
+Install via the official installer / Homebrew formula (exact command in [Section 14](10-operations.md)). Confirm:
 
 ```bash
-docker run -it --rm \
-  -v ~/.hermes-research:/opt/data \
-  nousresearch/hermes-agent setup
+hermes --version
 ```
 
-Configure: the model provider for this agent (per Section 5.1 — `research` uses Codex OAuth), the relevant API keys from Section 5, and the Telegram bot token from Section 4. The wizard writes everything to `~/.hermes-research/.env`. If you already populated `.env` and `auth.json` manually per Section 5's per-agent summary, the wizard will detect existing values and let you skip those prompts.
+All state will live under `~/.hermes/`.
+
+**Step 1.2: Create the profile and run setup**
+
+```bash
+hermes profile create research
+hermes setup --profile research        # verify the exact flag with `hermes setup --help`
+```
+
+Configure: the model provider (`research` uses Codex OAuth per Section 5.1), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/research/.env`.
 
 **Step 1.3: Edit the SOUL.md**
 
 ```bash
-nano ~/.hermes-research/SOUL.md
+nano ~/.hermes/research/SOUL.md
 ```
 
-Write the personality. Example for research:
+Write the personality (the full SOUL is in Section 6.7; an example early draft):
 
 ```
-You are a methodical research assistant. Your job is to find primary sources,
-synthesize them faithfully, and surface what you don't know. Cite every
-non-trivial claim with the source URL. Prefer two reliable sources over one.
-When the evidence is mixed, say so explicitly — do not flatten disagreement.
-Default to concise output; expand only when asked.
+You are a methodical research assistant. Find primary sources, synthesize them
+faithfully, and surface what you don't know. Cite every non-trivial claim with
+its URL. Prefer two reliable sources over one. When evidence is mixed, say so —
+do not flatten disagreement. Concise by default; expand only when asked.
 ```
 
-**Step 1.4: Start in gateway mode**
+**Step 1.4: Run the gateway**
 
 ```bash
-docker run -d \
-  --name hermes-research \
-  --restart unless-stopped \
-  --memory=3g --cpus=1 \
-  --shm-size=1g \
-  -v ~/.hermes-research:/opt/data \
-  -p ${TAILSCALE_IP}:8642:8642 \
-  nousresearch/hermes-agent gateway run
+hermes gateway run --profile research   # verify flag with `hermes gateway --help`
 ```
 
-The `-p ${TAILSCALE_IP}:8642:8642` syntax binds the port to the Mac's Tailscale interface only — not `0.0.0.0`, not the LAN. The port is reachable from your tailnet devices and from nowhere else. Find your Tailscale IP with `tailscale ip -4` (it'll be `100.x.y.z`). See Section 8 for full Tailscale setup.
-
-The `--shm-size=1g` flag is required if you want browser tools to work (Playwright/Chromium needs shared memory).
+Confirm it connects and responds to a Telegram message. Once it works in the foreground, supervise it with launchd so it survives logout/reboot (Section 7).
 
 **Step 1.5: Verify**
 
 ```bash
-docker ps                                  # container is running
-docker logs --tail 50 hermes-research      # no errors at startup
-docker stats hermes-research               # memory and CPU within limits
+hermes profile list                                    # research is present
+tail -f ~/.hermes/logs/gateways/research/current       # no errors at startup
 ```
 
-Then send a Telegram message to the bot. Confirm it responds. Confirm `~/.hermes-research/sessions/` has a new session file. Leave it running overnight and check it's still healthy in the morning.
+Send the bot a message; confirm a new session file appears under `~/.hermes/research/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
 
 **Acceptance criteria for Phase 1:**
-- Gateway stays up for 24+ hours without crashing
-- Memory stays within the 3 GB cap (`docker stats` confirms)
-- A skill gets created and persists across container restarts
-- A new session can pick up context from a memory file written in an earlier session
+- Gateway stays up for 24+ hours (under launchd) without crashing
+- A skill gets created and persists across a gateway restart
+- A new session picks up context from a memory file written in an earlier session
 
-### Phase 2 — second agent, validate isolation (day 2–3)
+### Phase 2 — second profile, validate coexistence (day 2–3)
 
-Stand up `concierge`. The point of this phase is to **prove isolation works** before scaling further.
+Stand up `general` (Sıla). The point of this phase is to prove **two profiles run side-by-side with separate state**, supervised independently.
 
 **Step 2.1: Replicate the pattern**
 
 ```bash
-mkdir -p ~/.hermes-concierge
-
-docker run -it --rm \
-  -v ~/.hermes-concierge:/opt/data \
-  nousresearch/hermes-agent setup
+hermes profile create general
+hermes setup --profile general          # different bot token, different SOUL.md
 ```
 
-Use a **different Telegram bot token** for concierge. Edit its SOUL.md with a different personality.
+**Step 2.2: Supervise it too**
 
-**Step 2.2: Start with a different port**
+Add a launchd LaunchAgent for `general` (Section 7) and load it. Both gateways now run.
 
-```bash
-docker run -d \
-  --name hermes-concierge \
-  --restart unless-stopped \
-  --memory=2g --cpus=1 \
-  --shm-size=1g \
-  -v ~/.hermes-concierge:/opt/data \
-  -p ${TAILSCALE_IP}:8643:8642 \
-  nousresearch/hermes-agent gateway run
-```
+**Step 2.3: Per-profile state test** *(replaces the old container marker test)*
 
-**Step 2.3: Run the isolation test**
+From a chat with `research`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `research`'s sessions). Confirm each profile has its own `~/.hermes/<profile>/sessions/` and `memories/`.
 
-This is the non-negotiable check. From a chat with `research`, ask the agent to create a file at `/opt/data/marker-research.txt`. From a chat with `concierge`, ask it to list files in `/opt/data/`. The marker file should not appear — concierge sees its own `/opt/data`, which is a different host directory.
+> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why only `coder` and `ops` get a shell, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
 
-If `concierge` can see `research`'s files, something is wrong with the bind mounts and the entire isolation story collapses. Fix before continuing.
+**Step 2.4: Independent-lifecycle test**
 
-**Step 2.4: Cross-restart test**
-
-`docker restart hermes-research`. Confirm `concierge` keeps running and responding normally throughout. This validates the independent-lifecycle claim.
+`launchctl kickstart -k` the `research` agent (force-restart). Confirm `general` keeps running and responding throughout. launchd supervises each profile independently — one bouncing doesn't disturb the other.
 
 **Acceptance criteria for Phase 2:**
-- Both gateways run simultaneously without conflict
-- Filesystem isolation confirmed (marker test passes)
-- Lifecycle isolation confirmed (restart test passes)
+- Both gateways run simultaneously under launchd without conflict
+- Per-profile state separation confirmed (recall test)
+- Independent lifecycle confirmed (restart test)
 - Different bot tokens, different personalities, both reachable
 
-### Phase 3 — remaining agents (week 1+)
+### Phase 3 — remaining profiles (week 1+)
 
-Once Phase 2 passes, the remaining four are mechanical. Copy the pattern, change names, ports, RAM caps, SOUL.md.
+Once Phase 2 passes, the rest are mechanical. Copy the pattern, change names, SOUL.md, toolsets.
 
 For each new agent:
-1. Create `~/.hermes-<name>/` directory
-2. Run interactive setup with that directory as the data mount
+1. `hermes profile create <name>`
+2. `hermes setup --profile <name>` (unique bot token, model, keys)
 3. Write the SOUL.md
-4. Configure a unique bot token
-5. `docker run -d` with the right name, port, and resource caps
+4. Prune toolsets in `config.yaml` (Section 6.6)
+5. Add a launchd LaunchAgent and load it
 
 **Special considerations per agent:**
 
-- **`coder` (MacBook Pro):** Add a volume mount for your projects directory. Set `docker_run_as_host_user: true` equivalent by passing `--user $(id -u):$(id -g)` so created files are owned by you, not root. Example:
-
-  ```bash
-  docker run -d \
-    --name hermes-coder \
-    --restart unless-stopped \
-    --memory=4g --cpus=2 \
-    --shm-size=1g \
-    --user $(id -u):$(id -g) \
-    -v ~/.hermes-coder:/opt/data \
-    -v ~/projects:/workspace/projects \
-    -p ${TAILSCALE_IP}:8645:8642 \
-    nousresearch/hermes-agent gateway run
-  ```
-
-- **`ops`:** Tightest resource caps. Probably doesn't need browser tools, so `--shm-size` can be smaller or omitted. Consider disabling browser toolset entirely in its `config.yaml`:
-
-  ```yaml
-  agent:
-    disabled_toolsets:
-      - browser
-      - web
-  ```
-
-- **`writer`:** Add a `/output` volume mount for finished drafts you want to retrieve from the host:
-
-  ```bash
-  -v ~/Documents/writer-output:/output
-  ```
+- **`coder`** — the only agent that runs code, and it runs **natively** for Metal GPU + the Godot GUI ([Section 16](11-game-dev.md)). Mount nothing; it already has your user's filesystem. Fence it: `approvals: smart`, credential redaction, website blocklist, optional `docker` code-exec backend ([Section 13](09-security.md)). Point it at your projects directory in config (e.g. `~/godot-projects`).
+- **`ops`** — deferred (Section 15). When built, it keeps the tightest iteration budget and — being native — can finally see the host it's meant to monitor. Treat its `terminal` access with care; native, that shell is your real Mac.
+- **`writer`** — if you want finished drafts in a tidy spot, set its file output to `~/Documents/writer-output/` in config.
 
 ### 6.6 Toolset hygiene — disable what each agent doesn't need
 
-Hermes loads **~17 toolsets by default**, and each enabled toolset injects its tool schemas into *every* prompt that agent sends. Pruning them is the single cheapest lever you have on three things at once: **token cost** (fewer schemas per prompt), **risk surface** (`terminal`, `code_execution`, `browser` = shell, arbitrary code, full browser automation), and **focus** (fewer tempting wrong tools, which matters most for `ops`).
+Hermes loads **~17 toolsets by default**, and each enabled toolset injects its schemas into *every* prompt that agent sends. Pruning is the single cheapest lever on three things at once: **token cost** (fewer schemas per prompt), **risk surface** (`terminal`, `code_execution`, `browser` = shell, arbitrary code, full browser automation), and **focus** (fewer tempting wrong tools). With no container boundary, **toolset pruning is now a primary security control**, not just a cost lever — a no-shell agent simply cannot run host commands.
 
 First, separate three things people conflate:
 
 | Thing | What it is | Token cost | What to do |
 |---|---|---|---|
 | **Toolsets** | Capabilities injected into the system prompt | **High** — schemas sit in every prompt | **Prune per agent (this section)** |
-| **Skills** | On-demand knowledge docs (progressive disclosure) | ~0 until the agent opens one | Don't prune; only *add* useful ones (e.g. the TinyFish skill, 10.7) |
-| **Plugins** | Memory providers / context engines / model providers / platform adapters | Pick one of each | Almost nothing to disable — you pick **Honcho** as the memory provider (Section 9); the rest auto-load |
-
-So nearly all the "disable unneeded" effort is **toolsets**. Skills are lazy-loaded and effectively free; plugins are a one-pick decision already made.
+| **Skills** | On-demand knowledge docs (progressive disclosure) | ~0 until the agent opens one | Don't prune; only *add* useful ones (e.g. the TinyFish skill) |
+| **Plugins** | Memory / context / model / platform providers | Pick one of each | You pick **Honcho** as the memory provider (Section 9); the rest auto-load |
 
 **The high-value disables** (all default-on, rarely needed):
 
-- **`browser`** — heavy (≈10 tools, needs Chromium + `--shm-size=1g`). We use **TinyFish via MCP** (Section 10) for web. Disable browser on every agent → this also lets you **drop `--shm-size=1g`** from those containers and reclaim the RAM. Re-enable browser (and shm) only on an agent that genuinely needs interactive page automation (none do, at first).
-- **`terminal`** — shell access. Only `coder` and `ops` need it.
-- **`code_execution`** — runs Python. Only `coder`.
-- **`image_gen`** — default-on but requires a FAL.ai key you don't have, so it's dead schema weight. Disable everywhere.
-- **`delegation`** — default-on, spawns subagents = surprise token spend. Disable until you deliberately want multi-agent fan-out.
+- **`browser`** — heavy (≈10 tools, needs Chromium). We use **TinyFish via MCP** (Section 10) for web. Disable everywhere; re-enable only on an agent that genuinely needs interactive page automation (none do, at first).
+- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. Only `coder` and `ops` get it. Everyone else: off.
+- **`code_execution`** — runs Python on the host. Only `coder`.
+- **`image_gen`** — requires a FAL.ai key you don't have; dead schema weight. Disable everywhere.
+- **`delegation`** — spawns in-process subagents = surprise token spend. Disable until you deliberately want fan-out.
 
-**Per-agent matrix** (core toolsets always kept — `memory`, `session_search`, `skills`, `clarify`, `safe` — are omitted; `ops` keeps `memory` tight per 9.4):
+**Per-agent matrix** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
 
 | Toolset | research | concierge | ops | coder | writer |
 |---|:--:|:--:|:--:|:--:|:--:|
@@ -256,16 +202,17 @@ So nearly all the "disable unneeded" effort is **toolsets**. Skills are lazy-loa
 | `cronjob` | ✓ | ✓ | ✓ | ✗ | ✗ |
 | `messaging` | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `delegation` | ✗ | ✗ | ✗ | opt | ✗ |
+| `kanban` | opt | ✗ | ✗ | opt | opt |
 | `todo` | ✗ | ✗ | ✗ | ✓ | ✗ |
 
-The `web` row matches the decisions already made elsewhere: `ops` kills web (Section 6 special-considerations), `coder`/`writer` are TinyFish-only (Section 10.6, Layer 1), `research`/`concierge` keep built-in web as the SearXNG fallback (Section 10.6, Layer 2).
+The `kanban` row is **opt** on the studio pipeline (`research`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). Everything else is off where unused.
 
 **Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
 
 ```yaml
-# general (Kam)  — keeps web/vision/tts/cronjob; it's a conversational agent
+# general (Sıla)  — conversational; keeps web/vision/tts/cronjob
 agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo]
+  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 
 # research
 agent:
@@ -273,11 +220,11 @@ agent:
 
 # concierge
 agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo]
+  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 
-# ops  (determinism — keep it lean; terminal + cronjob are its job)
+# ops  (deferred; terminal + cronjob are its job)
 agent:
-  disabled_toolsets: [browser, web, image_gen, vision, tts, code_execution, delegation, messaging, todo, session_search]
+  disabled_toolsets: [browser, web, image_gen, vision, tts, code_execution, delegation, messaging, todo, kanban, session_search]
 
 # coder  (the only agent with shell + code execution)
 agent:
@@ -288,131 +235,76 @@ agent:
   disabled_toolsets: [terminal, code_execution, browser, web, image_gen, cronjob, messaging, delegation, todo]
 ```
 
-Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `kanban`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off** — do not list them. Enable an integration only when you specifically want it (e.g. `homeassistant` on `concierge` later if you run a smart home; needs `HASS_TOKEN`).
-
-Verify the live result per agent with:
+Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off** — do not list them. Verify the live result per agent:
 
 ```bash
-hermes tools --list   # shows active toolsets vs available-but-disabled
+hermes tools --list --profile <name>   # active vs available-but-disabled
 ```
 
-**`producer` (Phase B, deferred):** when you build it, disable `[terminal, code_execution, browser, web, image_gen, vision, tts, delegation]`. It keeps `file` (writes `backlog.md`), `cronjob` (weekly scoring), plus the core memory/skills/clarify set. Nothing heavier.
+**`producer` (Phase B):** disable `[terminal, code_execution, browser, web, image_gen, vision, tts, delegation, messaging]`. Keeps `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
 
-**Two flags worth remembering:**
+**One flag worth remembering:** native, **`terminal` is the real host.** A `coder` or `ops` shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason only those two get a shell and `coder` is fenced in [Section 13](09-security.md).
 
-- **Drop `--shm-size=1g` once browser is disabled.** Sections 6 and 7 set `shm_size: 1gb` on agents for browser support. With `browser` disabled everywhere, that shared-memory allocation is wasted — remove it from each container's `docker run`/compose entry to reclaim RAM. Add it back only on an agent where you later re-enable `browser`.
-- **`ops` `terminal` sees the container, not the host.** A containerized `ops` agent's shell operates inside its own container — it cannot see host disk usage, the Docker daemon, or other containers without explicit host access (a mounted Docker socket or a host-metrics path). Before relying on `ops` for real infrastructure monitoring, decide how it reaches the host; the `terminal` toolset alone only gives it visibility into its own sandbox.
+**Phase A relevance:** only `research` (and then `Sıla`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
 
-**Phase A relevance:** only `research` is live at first, so its disable list is the only one you need on day one. The rest apply as each agent comes online.
+---
 
+## 7. Supervision — launchd LaunchAgents (one per profile)
 
-## 7. Docker Compose — recommended for managing seven containers
+The s6 supervision tree only exists inside the Docker image. Native, **launchd** is the supervisor: it starts each gateway at login and restarts it on crash — the native equivalent of `--restart unless-stopped`.
 
-Once Phase 3 is underway, six `docker run` commands become annoying to maintain. Consolidate into one `docker-compose.yaml` per machine.
+Create one LaunchAgent per profile at `~/Library/LaunchAgents/com.hermes.<profile>.plist`:
 
-### M4 Mini `~/hermes/docker-compose.yaml`
-
-Set `TAILSCALE_IP` once in a `.env` file alongside the compose file (`echo "TAILSCALE_IP=$(tailscale ip -4)" > ~/hermes/.env`), then Compose substitutes it into every port binding.
-
-```yaml
-services:
-  hermes-research:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-research
-    restart: unless-stopped
-    command: gateway run
-    ports:
-      - "${TAILSCALE_IP}:8642:8642"
-    volumes:
-      - ~/.hermes-research:/opt/data
-    shm_size: 1gb
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: "1.0"
-
-  hermes-concierge:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-concierge
-    restart: unless-stopped
-    command: gateway run
-    ports:
-      - "${TAILSCALE_IP}:8643:8642"
-    volumes:
-      - ~/.hermes-concierge:/opt/data
-    shm_size: 1gb
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-
-  hermes-ops:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-ops
-    restart: unless-stopped
-    command: gateway run
-    ports:
-      - "${TAILSCALE_IP}:8644:8642"
-    volumes:
-      - ~/.hermes-ops:/opt/data
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: "0.5"
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.hermes.research</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/hermes</string>
+        <string>gateway</string>
+        <string>run</string>
+        <string>--profile</string>
+        <string>research</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>
+    <key>KeepAlive</key>        <true/>   <!-- restart on crash -->
+    <key>StandardErrorPath</key> <string>/Users/YOU/.hermes/logs/launchd/research.err</string>
+    <key>StandardOutPath</key>   <string>/Users/YOU/.hermes/logs/launchd/research.out</string>
+</dict>
+</plist>
 ```
 
-### MacBook Pro `~/hermes/docker-compose.yaml`
-
-Same pattern — create a `.env` file with `TAILSCALE_IP` set to the MacBook's tailnet IP.
-
-```yaml
-services:
-  hermes-coder:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-coder
-    restart: unless-stopped
-    command: gateway run
-    user: "501:20"  # adjust to your host UID:GID — check with `id`
-    ports:
-      - "${TAILSCALE_IP}:8645:8642"
-    volumes:
-      - ~/.hermes-coder:/opt/data
-      - ~/projects:/workspace/projects
-    shm_size: 1gb
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: "2.0"
-
-  hermes-writer:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-writer
-    restart: unless-stopped
-    command: gateway run
-    ports:
-      - "${TAILSCALE_IP}:8646:8642"
-    volumes:
-      - ~/.hermes-writer:/opt/data
-      - ~/Documents/writer-output:/output
-    shm_size: 1gb
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-```
-
-Operations become simple:
+Create the log directory first (launchd fails silently if the parent is missing), then load / manage. On modern macOS prefer `bootstrap`/`bootout` over the legacy `load`/`unload` (both still work):
 
 ```bash
-docker compose up -d              # start all agents on this machine
-docker compose logs -f hermes-research   # follow research logs
-docker compose restart hermes-coder      # restart just coder
-docker compose pull && docker compose up -d   # upgrade all agents
+mkdir -p ~/.hermes/logs/launchd
+
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hermes.research.plist   # start + enable
+launchctl kickstart -k gui/$(id -u)/com.hermes.research                              # force-restart one agent
+launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.hermes.research.plist   # stop + disable
+# legacy equivalents: launchctl load / unload <plist>
 ```
+
+**Two redundant safeguards** so the fleet survives a reboot:
+- LaunchAgents load at **login** — so enable **automatic login** on the Mini (System Settings → Users & Groups), or nothing starts after an unattended reboot.
+- `KeepAlive` handles process crashes; auto-login handles machine reboots. Run both.
+
+### Docker — services only
+
+The two stateful **services** stay containerized (far easier than native Postgres/SearXNG). Nothing else uses Docker.
+
+- **Honcho** is a **five-container stack** (API, Postgres+pgvector, Redis, deriver, dream workers) — use the compose from [Section 9.3](07-memory.md), bound to `127.0.0.1:8000`. Do not hand-roll a single-container `honcho` here; follow docs/07.
+- **SearXNG** is one container — see [Section 10.4](08-web-search.md). Bind it to `127.0.0.1:8888:8080` (the `8888` host port the agents are configured against in docs/08).
+
+Both bind to `127.0.0.1` — the native agents reach them over loopback; nothing is exposed off-box. Start them with `docker compose up -d` from their compose directory; upgrade with `docker compose pull && docker compose up -d`. Agent upgrades are native (Section 14), not Docker.
+
+```bash
+docker compose up -d            # start Honcho + SearXNG
+docker compose pull && docker compose up -d   # upgrade the services
+```
+
+Agent upgrades are native, not Docker — see [Section 14](10-operations.md).
 
 ---
