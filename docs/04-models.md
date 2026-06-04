@@ -7,7 +7,7 @@
 ```mermaid
 flowchart LR
     Doruk & Ozan --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
-    Derya & Naz & Tuna & Sarp & Nilay --> mini["MiniMax · M2.7 standard<br/>$20 token plan · ~4.5k req/5h"]
+    Derya & Naz & Tuna & Sarp & Nilay --> mini["MiniMax · M3 standard<br/>$20 token plan · ~4.5k req/5h"]
     aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · pay-per-token · overflow valve"]
     codex -. fallback .-> mini
     mini -. fallback/overflow .-> or
@@ -53,13 +53,13 @@ The distinction that governs everything below: **an API key (you pay per token) 
 
 | Slug | Bot | Main model | Provider | Safety | Why |
 |---|---|---|---|---|---|
-| `general` | Derya | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → $20 token plan; 5h quota is generous for solo use |
+| `general` | Derya | `MiniMax-M3` | `minimax` | ✅ | Highest-volume daily driver → $20 token plan; 5h quota is generous for solo use |
 | `research` | Doruk | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
-| `concierge` | Tuna | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
-| `ops` | Nilay | `MiniMax-M2.7` | `minimax` | ✅ | Light, deterministic; standard M2.7 (no highspeed tier on the $20 plan) |
-| `coder` | Naz | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable → on MiniMax (off the gray-area Codex); overflow to OpenRouter |
+| `concierge` | Tuna | `MiniMax-M3` | `minimax` | ✅ | Daily logistics |
+| `ops` | Nilay | `MiniMax-M3` | `minimax` | ✅ | Light, deterministic; standard M3 on the entry token-plan tier |
+| `coder` | Naz | `MiniMax-M3` | `minimax` | ✅ | Heaviest/most variable → on MiniMax (off the gray-area Codex); overflow to OpenRouter |
 | `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
-| `producer` | Sarp | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
+| `producer` | Sarp | `MiniMax-M3` | `minimax` | ✅ | Idea scoring (Phase B) |
 
 For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
@@ -80,15 +80,15 @@ for agent in general concierge ops coder producer; do
 done
 ```
 
-`config.yaml` — **all** MiniMax agents use standard `MiniMax-M2.7`:
+`config.yaml` — **all** MiniMax agents use standard `MiniMax-M3`:
 
 ```yaml
 model:
   provider: minimax
-  default: MiniMax-M2.7
+  default: MiniMax-M3
 ```
 
-**You're on the $20 Token Plan (Plus, standard.)** That's a flat monthly sub with a **rolling request quota** — roughly **4,500 requests per moving 5-hour window**, auto-recovering — *not* pay-per-token. So cost is fixed at $20 regardless of volume; the only ceilings are the quota and **standard speed (~50 TPS)**. **All five MiniMax agents share that one quota.** There is **no highspeed tier** at this price (highspeed plans start at $40), so nothing references `MiniMax-M2.7-highspeed` — every agent runs the standard model. For a solo user the 5-hour quota is generous; if it ever bites mid heavy-`coder` session, the OpenRouter fallback (5.7) is the overflow valve. *(Config note: the Token-Plan API key uses the same `provider: minimax` wiring — only billing differs from pay-per-token. Verify the exact model string + endpoint at platform.minimax.io at setup; token plans can use a distinct base URL.)*
+**You're on the entry $20 Token Plan, running `MiniMax-M3`** (the June 2026 flagship — 1M context, multimodal, stronger agentic/coding than M2.7). It's a **flat monthly sub with a rolling request quota** — roughly **4,500 requests per moving 5-hour window**, auto-recovering — *not* pay-per-token. Cost is fixed at $20 regardless of volume; the ceiling is the **request quota** (and the entry tier's speed), not dollars. **All five MiniMax agents share that one quota.** Higher token-plan tiers (~$50 / ~$120) buy more quota/throughput if you outgrow it. For a solo user the 5-hour quota is generous; if it bites mid heavy-`coder` session, the OpenRouter fallback (5.7) is the overflow valve. The big M3 win for this fleet: the 1M window helps `research` synthesize long sources and `coder` hold a whole project in context. *(Config note: same `provider: minimax` wiring — only billing differs from pay-per-token. Verify at platform.minimax.io that **M3 is included at your $20 tier** and the exact model string + base URL; token plans can use a distinct endpoint, and >512K-token requests carry a 2× long-context multiplier.)*
 
 **MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-profile OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
 
@@ -188,7 +188,7 @@ Two flat subscriptions plus a little pay-per-token. There is **no per-agent mete
 | Aux (all seven) + overflow/fallback | OpenRouter · Gemini Flash (pay-per-token) | **~$1–5/mo** |
 | **Total new spend** | | **~$21–25/mo** on top of the ChatGPT sub you already have |
 
-The real constraint is the **request quota + standard speed (~50 TPS)**, not dollars — so the bill won't surprise you. If the shared 5-hour quota gets tight (heavy daily `coder` use), the levers are: route `coder` to the OpenRouter fallback during big sessions (5.7), or upgrade MiniMax a tier ($40 Plus-Highspeed ≈ 2× speed + quota). Claude stays opt-in (5.4).
+The real constraint is the **request quota**, not dollars — so the bill won't surprise you. If the shared 5-hour quota gets tight (heavy daily `coder` use), the levers are: route `coder` to the OpenRouter fallback during big sessions (5.7), or step up a MiniMax token-plan tier (~$50 / ~$120 = more quota/throughput). Claude stays opt-in (5.4).
 
 ### 5.7 Fallback chains per agent
 
@@ -198,12 +198,12 @@ MiniMax-primary agents (`general`, `concierge`, `coder`, `producer`):
 ```yaml
 fallback_providers:
   - provider: openrouter
-    model: minimaxai/minimax-m2.7
+    model: minimax/minimax-m3
   - provider: openrouter
     model: google/gemini-2.5-flash
 ```
 
-`ops` (standard M2.7 — keep it light):
+`ops` (standard M3 — keep it light):
 ```yaml
 fallback_providers:
   - provider: openrouter
@@ -214,7 +214,7 @@ Codex-primary agents (`research`, `writer`) — fall back to MiniMax (needs `MIN
 ```yaml
 fallback_providers:
   - provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   - provider: openrouter
     model: openai/gpt-5
 ```
@@ -284,7 +284,7 @@ curl -s https://openrouter.ai/api/v1/models \
 curl -s https://api.minimax.io/v1/text/chatcompletion_v2 \
   -H "Authorization: Bearer $MINIMAX_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
+  -d '{"model":"MiniMax-M3","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
 # Expect JSON with "choices"
 
 # Anthropic — only if you opted into 5.4

@@ -19,7 +19,7 @@ flowchart LR
 
 This is the concrete answer to "I want to start PC and mobile game development but have no time for research, PRDs, market research." You are **exploring**, not committed to a specific game. So this workstream is built as a **discovery engine** — agents surface and score opportunities, you pick one, *then* prototype. It is not a "build-this-game" machine, because you don't yet know the game.
 
-Engine direction: **Godot now, Unity later** (16.7). Provider reality: everything here runs on the **two providers you actually have — your MiniMax token plan and OpenAI Codex** — no Anthropic key, no OpenRouter required for this workstream.
+Engine direction: **Godot now, Unity later** (16.7). Provider reality: the main models run on the **two providers you actually have — your $20 MiniMax token plan (M3) and OpenAI Codex** — plus a little **OpenRouter** for cheap aux + quota overflow (5.5). No Anthropic key needed.
 
 ### 16.0 Rollout order — research first, build later
 
@@ -78,9 +78,9 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
 | Agent | Role | Model | Provider | Rationale |
 |---|---|---|---|---|
 | `research` | opportunity scout | `gpt-5.x` (Codex) | `openai-codex` | Long-context web research, citation discipline; included in ChatGPT sub. Weekly cron = bounded volume, won't blow the daily cap. |
-| `producer` | backlog + scoring | `MiniMax-M2.7` | `minimax` | Reasoning over candidates is cheap and frequent; keeps the Codex quota free. |
+| `producer` | backlog + scoring | `MiniMax-M3` | `minimax` | Reasoning over candidates is cheap and frequent; keeps the Codex quota free. |
 | `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
-| `coder` | Godot prototyping | `MiniMax-M2.7` | `minimax` | Heaviest and most variable volume — keep it **off** the ChatGPT sub so it can't rate-limit research/writer. Pay-per-token scales with active dev. Flip to Codex if GDScript quality disappoints. |
+| `coder` | Godot prototyping | `MiniMax-M3` | `minimax` | Heaviest/most variable — keep it **off** the ChatGPT sub so it can't rate-limit research/writer. Flat $20 token plan; if heavy dev drains the shared 5h quota it overflows to OpenRouter. Flip to Codex if GDScript quality disappoints. |
 
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5). Keep aux *off* the MiniMax token-plan quota — constant small calls would drain the shared 5-hour budget; cheap pay-per-token OpenRouter protects it.
 - **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
@@ -89,7 +89,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
   ```yaml
   model:
     provider: minimax
-    default: MiniMax-M2.7
+    default: MiniMax-M3
   fallback_providers:
     - provider: openai-codex
       model: gpt-5.3
@@ -99,7 +99,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
   ```yaml
   model:
     provider: minimax
-    default: MiniMax-M2.7
+    default: MiniMax-M3
   fallback_providers:
     - provider: openai-codex
       model: gpt-5.3

@@ -63,12 +63,12 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **MiniMax primary, Codex fallback.** Same logic as `coder` — your highest-volume agent rides the flat **$20 MiniMax Token Plan** (standard M2.7) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback ([docs/04](04-models.md)).
+- **Model:** **MiniMax primary, Codex fallback.** Same logic as `coder` — your highest-volume agent rides the flat **$20 MiniMax Token Plan** (standard M3) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback ([docs/04](04-models.md)).
   ```yaml
   # ~/.hermes/general/config.yaml
   model:
     provider: minimax
-    default: MiniMax-M2.7
+    default: MiniMax-M3
   fallback_providers:
     - provider: openai-codex
       model: gpt-5.3
