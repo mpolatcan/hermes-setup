@@ -7,17 +7,16 @@
 ```mermaid
 flowchart LR
     Doruk & Ozan --> codex["Codex · gpt-5.x<br/>ChatGPT sub · accepted-risk"]
-    Derya & Naz & Tuna & Sarp --> mini["MiniMax · M2.7<br/>subscription · primary · safe"]
-    Nilay --> mhs["MiniMax · M2.7-highspeed"]
-    aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · safe"]
+    Derya & Naz & Tuna & Sarp & Nilay --> mini["MiniMax · M2.7 standard<br/>$20 token plan · ~4.5k req/5h"]
+    aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · pay-per-token · overflow valve"]
     codex -. fallback .-> mini
-    mini -. fallback .-> or
+    mini -. fallback/overflow .-> or
     classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
     classDef ext fill:#00897B,stroke:#004D40,color:#fff
     classDef neutral fill:#546E7A,stroke:#263238,color:#fff
     class Doruk,Ozan,codex codex
-    class Derya,Naz,Tuna,Sarp,mini,mhs mini
+    class Derya,Naz,Tuna,Sarp,Nilay,mini mini
     class or ext
     class aux neutral
 ```
@@ -48,17 +47,17 @@ The distinction that governs everything below: **an API key (you pay per token) 
 - **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
 - **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
 
-**The rule:** never put gray-area subscription-OAuth on an always-on agent that hammers it. Automated volume is the enforcement trigger — that's exactly what the Google ban hit. The assignment in 5.1 follows this rule: everything high-volume runs on pay-per-token MiniMax.
+**The rule:** never put gray-area subscription-OAuth on an always-on agent that hammers it. Automated volume is the enforcement trigger — that's exactly what the Google ban hit. The assignment in 5.1 follows this rule: everything high-volume runs on the **MiniMax $20 Token Plan** (a flat sub with a generous ~4,500-request / 5-hour rolling quota — see 5.2), keeping the gray-area ChatGPT/Codex sub on just two bounded agents. **OpenRouter (true pay-per-token) is the overflow valve** when a quota is hit. Note the mental-model shift: MiniMax here is *not* pay-per-token — it's a capped sub like ChatGPT, just a safe one.
 
 ### 5.1 Per-agent model assignment
 
 | Slug | Bot | Main model | Provider | Safety | Why |
 |---|---|---|---|---|---|
-| `general` | Derya | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → pay-per-token, no cap to blow |
+| `general` | Derya | `MiniMax-M2.7` | `minimax` | ✅ | Highest-volume daily driver → $20 token plan; 5h quota is generous for solo use |
 | `research` | Doruk | `gpt-5.x` | `openai-codex` | ⚠️ | Long-context web research; *bounded* weekly volume |
 | `concierge` | Tuna | `MiniMax-M2.7` | `minimax` | ✅ | Daily logistics |
-| `ops` | Nilay | `MiniMax-M2.7-highspeed` | `minimax` | ✅ | Fast, cheap, deterministic |
-| `coder` | Naz | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable volume → off the ChatGPT cap |
+| `ops` | Nilay | `MiniMax-M2.7` | `minimax` | ✅ | Light, deterministic; standard M2.7 (no highspeed tier on the $20 plan) |
+| `coder` | Naz | `MiniMax-M2.7` | `minimax` | ✅ | Heaviest/most variable → on MiniMax (off the gray-area Codex); overflow to OpenRouter |
 | `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
 | `producer` | Sarp | `MiniMax-M2.7` | `minimax` | ✅ | Idea scoring (Phase B) |
 
@@ -73,7 +72,7 @@ Get an API key at platform.minimax.io. Two regional endpoints:
 - **Global** (`minimax`, `api.minimax.io`) — use this unless you're in mainland China.
 - **China** (`minimax-cn`, `api.minimaxi.com`) — for China-region accounts.
 
-One key works across every MiniMax agent (billed per token, no per-key restriction):
+One Token-Plan key works across every MiniMax agent — all five share the plan's rolling request quota:
 
 ```bash
 for agent in general concierge ops coder producer; do
@@ -81,7 +80,7 @@ for agent in general concierge ops coder producer; do
 done
 ```
 
-`config.yaml` — most MiniMax agents use `MiniMax-M2.7`:
+`config.yaml` — **all** MiniMax agents use standard `MiniMax-M2.7`:
 
 ```yaml
 model:
@@ -89,13 +88,7 @@ model:
   default: MiniMax-M2.7
 ```
 
-`ops` (Nilay) uses the faster/cheaper variant — quick deterministic responses, not deep reasoning:
-
-```yaml
-model:
-  provider: minimax
-  default: MiniMax-M2.7-highspeed
-```
+**You're on the $20 Token Plan (Plus, standard.)** That's a flat monthly sub with a **rolling request quota** — roughly **4,500 requests per moving 5-hour window**, auto-recovering — *not* pay-per-token. So cost is fixed at $20 regardless of volume; the only ceilings are the quota and **standard speed (~50 TPS)**. **All five MiniMax agents share that one quota.** There is **no highspeed tier** at this price (highspeed plans start at $40), so nothing references `MiniMax-M2.7-highspeed` — every agent runs the standard model. For a solo user the 5-hour quota is generous; if it ever bites mid heavy-`coder` session, the OpenRouter fallback (5.7) is the overflow valve. *(Config note: the Token-Plan API key uses the same `provider: minimax` wiring — only billing differs from pay-per-token. Verify the exact model string + endpoint at platform.minimax.io at setup; token plans can use a distinct base URL.)*
 
 **MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-profile OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
 
@@ -182,25 +175,20 @@ auxiliary:
 
 Main chat stays on MiniMax/Codex; everything else routes through cheap Gemini Flash. Gemini Flash wins here on cost, sub-second latency, multimodal vision, and generous OpenRouter rate limits.
 
-**One-provider alternative:** to drop OpenRouter entirely, point aux at `provider: minimax` / `model: MiniMax-M2.7-highspeed` (same key as your MiniMax agents). Slightly pricier than Gemini Flash but consolidates to a single provider and removes even the OpenRouter dependency. Either is safe.
+**Why not put aux on MiniMax to save a provider?** Tempting, but aux fires *constantly* — every vision call, every page summary, every title. On the $20 Token Plan those tiny calls would drain the **shared 5-hour request quota** and starve your real agents, and there's no cheap highspeed tier to absorb them. Keep aux on **OpenRouter pay-per-token**: cheap, fast, and — crucially — it doesn't touch the MiniMax quota. The few dollars of OpenRouter spend buys quota protection.
 
 ### 5.6 Cost ballpark (per month, personal use)
 
-Moderate daily use of all seven. Real numbers vary; the big swing is `coder`.
+Two flat subscriptions plus a little pay-per-token. There is **no per-agent metering** — the five MiniMax agents all run inside one $20 plan, so volume doesn't move the bill.
 
-| Agent | Provider | Estimate |
+| Line | Provider | Cost |
 |---|---|---|
-| `general` (Derya) | MiniMax | $3–10 — highest volume |
-| `research` (Doruk) | Codex (ChatGPT sub) | $0 — included |
-| `concierge` (Tuna) | MiniMax | $2–8 |
-| `ops` (Nilay) | MiniMax-highspeed | $1–3 |
-| `coder` (Naz) | MiniMax | $5–25 — scales with active dev |
-| `writer` (Ozan) | Codex (ChatGPT sub) | $0 — included |
-| `producer` (Sarp) | MiniMax | $0–3 — Phase B |
-| *Aux (all seven)* | OpenRouter (Gemini Flash) | $1–5 |
-| **Total** | | **~$12–55/mo** on top of your existing MiniMax + ChatGPT subscriptions |
+| MiniMax agents (Derya, Tuna, Nilay, Naz, Sarp) | **$20 Token Plan** (Plus, standard) | **$20/mo flat** — shared 5h request quota, no per-token billing |
+| Codex agents (Doruk, Ozan) | ChatGPT sub | **$0 extra** — included in the sub you already pay |
+| Aux (all seven) + overflow/fallback | OpenRouter · Gemini Flash (pay-per-token) | **~$1–5/mo** |
+| **Total new spend** | | **~$21–25/mo** on top of the ChatGPT sub you already have |
 
-No Anthropic line by default — Claude is opt-in (5.4). If MiniMax spend climbs, the `minimax-oauth` free tier (5.2) or cheaper OpenRouter models (5.11) are the levers.
+The real constraint is the **request quota + standard speed (~50 TPS)**, not dollars — so the bill won't surprise you. If the shared 5-hour quota gets tight (heavy daily `coder` use), the levers are: route `coder` to the OpenRouter fallback during big sessions (5.7), or upgrade MiniMax a tier ($40 Plus-Highspeed ≈ 2× speed + quota). Claude stays opt-in (5.4).
 
 ### 5.7 Fallback chains per agent
 
@@ -215,7 +203,7 @@ fallback_providers:
     model: google/gemini-2.5-flash
 ```
 
-`ops` (MiniMax-highspeed — keep it light):
+`ops` (standard M2.7 — keep it light):
 ```yaml
 fallback_providers:
   - provider: openrouter
@@ -296,7 +284,7 @@ curl -s https://openrouter.ai/api/v1/models \
 curl -s https://api.minimax.io/v1/text/chatcompletion_v2 \
   -H "Authorization: Bearer $MINIMAX_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"MiniMax-M2.7-highspeed","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
+  -d '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
 # Expect JSON with "choices"
 
 # Anthropic — only if you opted into 5.4

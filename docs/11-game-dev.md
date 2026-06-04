@@ -82,7 +82,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
 | `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
 | `coder` | Godot prototyping | `MiniMax-M2.7` | `minimax` | Heaviest and most variable volume — keep it **off** the ChatGPT sub so it can't rate-limit research/writer. Pay-per-token scales with active dev. Flip to Codex if GDScript quality disappoints. |
 
-- **Auxiliary tasks** (vision, summarization, context compression) for all four → `MiniMax-M2.7-highspeed`. This removes the OpenRouter dependency from 5.5 for the game-dev agents.
+- **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5). Keep aux *off* the MiniMax token-plan quota — constant small calls would drain the shared 5-hour budget; cheap pay-per-token OpenRouter protects it.
 - **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
 
   `coder` (`~/.hermes/coder/config.yaml`):
@@ -105,7 +105,7 @@ Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscript
       model: gpt-5.3
   ```
 
-- **Wallet simplification:** because this workstream needs only MiniMax + Codex, you can drop Anthropic and OpenRouter from the *entire* plan if you want — two providers total. Trade-off: you lose Gemini-Flash-cheap aux (MiniMax-highspeed is pricier than Gemini Flash but still cheap) and the OpenRouter cross-provider fallback pool. For a personal setup, acceptable. Decide in week 2.
+- **Wallet simplification:** the main models need only **two providers** — MiniMax ($20 token plan) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route *and* the overflow valve when the shared MiniMax 5-hour quota gets tight (5.5–5.7). It's a few dollars a month and protects the token-plan quota — don't cut it.
 
 ### 16.5 `research` as opportunity scout (the cron)
 

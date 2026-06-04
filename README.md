@@ -49,7 +49,7 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 | **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
 | **Doruk** | `research` | always-on | Market analyst — research any topic + game scout | Codex |
 | **Tuna** | `concierge` | always-on | Studio manager — reminders, morning digest | MiniMax |
-| **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax-highspeed |
+| **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax (standard) |
 | **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | MiniMax |
 | **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
 | **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
