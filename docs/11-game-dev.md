@@ -73,26 +73,26 @@ No container, no port, no compose — just a profile under `~/.hermes/producer/`
 
 ### 16.4 Model assignment (MiniMax + Codex only)
 
-Balanced so the heaviest agent (`coder`) can't rate-limit your ChatGPT subscription. **Phase A uses only the `research` row** — the rest activate as their agents come online in Phase B/C.
+Balanced so the only **automated cron** (`research`'s weekly scout) stays on **MiniMax** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `research` row** — the rest activate as their agents come online in Phase B/C.
 
 | Agent | Role | Model | Provider | Rationale |
 |---|---|---|---|---|
-| `research` | opportunity scout | `gpt-5.x` (Codex) | `openai-codex` | Long-context web research, citation discipline; included in ChatGPT sub. Weekly cron = bounded volume, won't blow the daily cap. |
-| `producer` | backlog + scoring | `MiniMax-M3` | `minimax` | Reasoning over candidates is cheap and frequent; keeps the Codex quota free. |
+| `research` | opportunity scout | `MiniMax-M3` | `minimax` | M3's browsing + 1M context fit web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
+| `producer` | backlog + scoring | `MiniMax-M3` | `minimax` | Reasoning over candidates is cheap and frequent; flat $20 plan. |
 | `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
-| `coder` | Godot prototyping | `MiniMax-M3` | `minimax` | Heaviest/most variable — keep it **off** the ChatGPT sub so it can't rate-limit research/writer. Flat $20 token plan; if heavy dev drains the shared 5h quota it overflows to OpenRouter. Flip to Codex if GDScript quality disappoints. |
+| `coder` | Godot prototyping | `gpt-5.x` (Codex) | `openai-codex` | gpt-5.x for GDScript quality; interactive/human-paced (you drive it) so lower flag risk than a cron — but it's the **heaviest** agent, so watch the shared ChatGPT cap (§5.3). MiniMax-M3 fallback; A/B vs M3 (a strong coder, $0). |
 
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5). Keep aux *off* the MiniMax token-plan quota — constant small calls would drain the shared 5-hour budget; cheap pay-per-token OpenRouter protects it.
 - **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
 
-  `coder` (`~/.hermes/coder/config.yaml`):
+  `coder` (`~/.hermes/coder/config.yaml`) — **Codex-primary, MiniMax fallback**:
   ```yaml
   model:
-    provider: minimax
-    default: MiniMax-M3
+    provider: openai-codex
+    default: gpt-5.3
   fallback_providers:
-    - provider: openai-codex
-      model: gpt-5.3
+    - provider: minimax
+      model: MiniMax-M3
   ```
 
   `producer` (`~/.hermes/producer/config.yaml`):

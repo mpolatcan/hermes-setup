@@ -9,12 +9,12 @@ flowchart TB
     subgraph Mini["🖥️ Mac Mini M4 · 16 GB · native Hermes · one install"]
         subgraph always["always-on"]
             general["Derya · general<br/>creative director · MiniMax"]:::mini
-            research["Doruk · research<br/>market scout · Codex"]:::codex
+            research["Doruk · research<br/>market scout · MiniMax"]:::mini
             concierge["Tuna · concierge<br/>studio manager · MiniMax"]:::mini
             ops["Nilay · ops<br/>DevOps · MiniMax · deferred"]:::mini
         end
         subgraph demand["on-demand"]
-            coder["Naz · coder<br/>lead programmer · Godot/Metal · MiniMax"]:::mini
+            coder["Naz · coder<br/>lead programmer · Godot/Metal · Codex"]:::codex
             writer["Ozan · writer<br/>narrative designer · Codex"]:::codex
             producer["Sarp · producer<br/>product lead · MiniMax · Phase B"]:::mini
         end
@@ -63,7 +63,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **MiniMax primary, Codex fallback.** Same logic as `coder` — your highest-volume agent rides the flat **$20 MiniMax Token Plan** (standard M3) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback ([docs/04](04-models.md)).
+- **Model:** **MiniMax primary, Codex fallback.** Derya is your highest-volume conversational agent → it rides the flat **$20 MiniMax Token Plan** (standard M3) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback. (The only Codex-*primary* agents are `coder` + `writer` — the quality-critical creative pair; everything conversational/high-volume stays on MiniMax — [docs/04](04-models.md).)
   ```yaml
   # ~/.hermes/general/config.yaml
   model:

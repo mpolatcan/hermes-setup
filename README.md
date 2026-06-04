@@ -9,10 +9,10 @@ flowchart TB
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes · launchd"]
             general["Derya · director"]:::mini
-            research["Doruk · analyst"]:::codex
+            research["Doruk · analyst"]:::mini
             concierge["Tuna · manager"]:::mini
             ops["Nilay · DevOps · deferred"]:::mini
-            coder["Naz · programmer · Metal GPU"]:::mini
+            coder["Naz · programmer · Metal GPU"]:::codex
             writer["Ozan · writer"]:::codex
             producer["Sarp · producer · Phase B"]:::mini
         end
@@ -47,10 +47,10 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 | Bot | Slug | Mode | Role | Model |
 |---|---|---|---|---|
 | **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
-| **Doruk** | `research` | always-on | Market analyst — research any topic + game scout | Codex |
+| **Doruk** | `research` | always-on | Market analyst — research any topic + game scout | MiniMax |
 | **Tuna** | `concierge` | always-on | Studio manager — reminders, morning digest | MiniMax |
 | **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax (standard) |
-| **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | MiniMax |
+| **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | Codex |
 | **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
 | **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
 
