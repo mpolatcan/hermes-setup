@@ -38,12 +38,12 @@ The distinction that governs everything below: **an API key (you pay per token) 
 | Subscription | Hermes provider | Works? | Safe? |
 |---|---|---|---|
 | **MiniMax** | `minimax` (API key) / `minimax-oauth` | ✅ | ✅ **Safe** — built for programmatic use |
-| **Codex** (ChatGPT) | `openai-codex` (OAuth) | ✅ | ⚠️ **Gray** — reuses ChatGPT sub auth in a non-OpenAI agent |
+| **Codex** (ChatGPT) | `openai-codex` (OAuth) | ✅ | ⚠️ **Against consumer ToS** — sub-OAuth in a non-OpenAI app; *unenforced today*, but Anthropic + Google killed the equivalent Apr 2026 |
 | **Claude Code** | `anthropic` (OAuth, reads Claude Code's cred store) | ✅ | ⚠️ **Gray + high-stakes** — risks the sub you code with |
 | **Gemini Antigravity** | — (no API) | ❌ | 🚫 **Banned pattern** — use an AI Studio API key instead |
 
 - **MiniMax** — API key or its own browser OAuth. Designed for this. Make it your primary.
-- **Codex** — works via device-code OAuth, but it reuses your ChatGPT subscription outside OpenAI's own clients. Not officially blessed; heavy *automated* volume is what gets throttled or flagged. Keep it on **low-volume** agents only and isolate it so a flag can't take down the fleet.
+- **Codex** — works via device-code OAuth, but it reuses your ChatGPT subscription **outside OpenAI's own clients.** Be clear-eyed: this is **against OpenAI's consumer terms** — they prohibit automated/programmatic access and "using ChatGPT to power third-party services," and OpenAI has **declined to bless** sub-OAuth in third-party apps (the feature ships in official Codex tooling only). It is *not currently enforced* at personal scale — which is exactly why the OpenClaw/OpenCode community moved **to** Codex after **Anthropic and Google clamped down on theirs in April 2026.** That also makes OpenAI the **likely next** to follow. No-warning account bans of Codex+sub users are documented though rare. **So: accepted-risk, not permitted.** Run it only on the two **bounded low-volume** agents, isolate it, keep it human-paced (no 24/7 hammering), and keep the API-key escape hatch ready (5.3). The tail risk is your ChatGPT account.
 - **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
 - **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
 
@@ -94,7 +94,7 @@ model:
 
 ### 5.3 Codex OAuth setup — accepted-risk (research + writer only)
 
-> ⚠️ Gray area (5.0). Keep it to these two low-volume agents and don't let either run hot. If you'd rather avoid the risk entirely, put `research`/`writer` on MiniMax too and skip this section.
+> ⚠️ **Against OpenAI's consumer ToS, accepted at low volume (5.0).** Keep it to these two bounded agents, human-paced, and never let either run hot. Decision on record: we run it because it's unenforced today and the volume is small — *not* because it's permitted. If you'd rather carry zero ToS risk, put `research`/`writer` on an API key (escape hatch below) or MiniMax and skip the OAuth.
 
 Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes/<slug>/auth.json` per profile and survives restarts (persisted under `~/.hermes/<slug>/`). Two ways to bootstrap.
 
@@ -123,6 +123,17 @@ model:
 ```
 
 **Shared quota.** Both Codex agents draw on the same ChatGPT account cap (Plus vs Pro differ). Two *low-volume* agents won't strain it — which is the whole reason only `research` + `writer` are here. `invalid_grant` in logs = the refresh token was revoked (password change / remote signout); redo Path A or B.
+
+**Escape hatch — keep an OpenAI API key ready.** Codex-via-sub is the *last* of the big-three sub-OAuth paths still working (Anthropic + Google enforced theirs in April 2026); OpenAI is the likely next. Treat it as **temporary.** The clean swap is **one line per agent** — drop the OAuth, point at an OpenAI API key:
+
+```yaml
+# ~/.hermes/research/config.yaml — the day Codex-OAuth stops or the risk isn't worth it
+model:
+  provider: openai          # API key (platform.openai.com), NOT openai-codex OAuth
+  default: gpt-5.4
+```
+
+Add `OPENAI_API_KEY=sk-...` to that agent's `.env`. Same GPT-5.x models, pay-per-token, **zero ToS risk**. At `research` + `writer`'s bounded volume that's a few dollars/month — so keep a key on hand and a clampdown becomes a config flip, not an outage. (For an even cheaper clean swap, Gemini 3.1 Pro via API key is strong at both research and writing — see the model landscape note.)
 
 ### 5.4 Anthropic — optional, API key only (never the Claude Code sub)
 
