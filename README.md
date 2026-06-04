@@ -76,6 +76,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 10. [Operations](docs/10-operations.md) — evaluation, native upgrade, open questions
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
+13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*: keys → install → bots → Phase A/B/C, with verify-gates
 
 ## Quick start
 
@@ -101,7 +102,7 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 flowchart TB
     root["📦 hermes-setup"]:::root
     root --> readme["README.md"]:::doc
-    root --> docs["docs/ · 01-12<br/>the plan, split by concern"]:::doc
+    root --> docs["docs/ · 01-13<br/>plan by concern + runbook"]:::doc
     root --> scripts["scripts/"]:::svc
     scripts --> sb["setup-bots.sh<br/>configure 7 bots + wire .env"]:::svc
     scripts --> ex["bot-tokens.env.example"]:::svc

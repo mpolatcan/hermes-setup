@@ -91,6 +91,16 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
   No container, no port, no compose — Telegram is outbound, so Derya needs no inbound port.
 - **SOUL:** Section 6.7.
 
+### 2.2 Beyond the studio — scaling + a personal tier
+
+**How many profiles fit?** The agents are lightweight orchestrators — inference is **remote** (MiniMax/Codex/OpenRouter APIs), so an *idle* gateway holds ~0.3–0.5 GB, not a model. After macOS + Honcho + SearXNG (~4.5 GB fixed), the ~11 GB headroom holds **~15–25 idle profiles** on the 16 GB Mini. The real ceiling isn't profile *count* — it's **concurrent active turns** (each spikes 1–3 GB; you're one person → 3–5 at once) and **API spend / the MiniMax 5-hour quota**. Practical rule: add as many *narrow* profiles as you'll actually use — RAM won't be the wall first. (If you ever ran a **local** model instead of remote APIs, this collapses — a local model is GBs each.)
+
+**A personal (non-studio) tier.** Profiles aren't only the game studio — each is an independent identity (own SOUL, memory, bot, toolsets). Spare-time domains get their own profile: a finance/budget agent, fitness coach, language tutor, home-automation, journaling. Guidance:
+- **One domain per profile.** Don't cram finance + fitness onto one agent — focus is the whole point, and an idle profile costs ~nothing.
+- **Honcho spans identity.** A new agent already knows *who you are* (shared user peer); domain-specific observations stay per-agent (Section 9).
+- **Theme freely.** The Turkish-crew naming is studio flavor; personal agents can be themed differently. Slugs stay functional and ASCII.
+- **Single-tenant caveat.** All of this assumes **one human** (you). If other *people* get access (employees, family), the multi-tenant isolation we dropped ([Section 1](01-architecture.md)) comes back — that's the case for **per-person installs or machines**. Solo-you-many-hats → one install is right.
+
 ---
 
 
