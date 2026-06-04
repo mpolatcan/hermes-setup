@@ -133,7 +133,7 @@ model:
   default: gpt-5.4
 ```
 
-Add `OPENAI_API_KEY=sk-...` to that agent's `.env`. Same GPT-5.x models, pay-per-token, **zero ToS risk**. `writer` is cheap (occasional); `coder` is heavier, so an API key there costs real per-token money on active dev days — which is the trade-off vs the $0 sub. Keep a key on hand so a clampdown is a config flip, not an outage. (Cheaper clean swaps: **MiniMax-M3** for `coder` — $0 on your plan, strong coder — or **Gemini 3.1 Pro** for `writer`.)
+Add `OPENAI_API_KEY=sk-...` to that agent's `.env`. Same GPT-5.x models, pay-per-token, **zero ToS risk**. `writer` is cheap (occasional); `coder` is heavier, so an API key there costs real per-token money on active dev days — which is the trade-off vs the $0 sub. Keep a key on hand so a clampdown is a config flip, not an outage. (Clean swaps: for `coder` — **MiniMax-M3** ($0 on your plan, good coder) or **DeepSeek V4 Pro** (strongest clean coding, 5.12); for `writer` — **Gemini 3.1 Pro**.)
 
 ### 5.4 Anthropic — optional, API key only (never the Claude Code sub)
 
@@ -330,10 +330,40 @@ model:
 ```
 
 Good candidates to try as they mature:
-- **DeepSeek V4** — cheap strong reasoning; a possible MiniMax alternative for `concierge`/`producer`.
+- **DeepSeek V4** — two tiers. **V4 Flash** (cheap, ~$0.14/$0.28) is *weaker* than M3 on agentic + has no multimodal — not worth swapping a $0-on-plan M3 agent for it. **V4 Pro** is the strongest raw coder in this class (SWE-bench Verified 80.5 vs M3's 73.6) — and it's the one place DeepSeek is genuinely worth it: see **5.12**.
 - **NVIDIA Nemotron** — strong open models; worth testing on `coder` against MiniMax.
 - **Qwen / GLM / Kimi** — also first-class on OpenRouter (and Hermes has native `qwen-oauth`, `zai`, `kimi-coding` providers if you prefer direct).
 
-Workflow: try a candidate with `/model openrouter/<slug>` in a live session, judge it on your actual tasks, and only persist to `config.yaml` if it clearly beats the incumbent. **Keep MiniMax as primary until something demonstrably wins** — novelty isn't a reason to switch a working agent. All OpenRouter usage is API-key billing, so it's always on the safe side of 5.0.
+Workflow: try a candidate with `/model openrouter/<slug>` in a live session, judge it on your actual tasks, and only persist to `config.yaml` if it clearly beats the incumbent. **Keep the current default until something demonstrably wins** — novelty isn't a reason to switch a working agent. All OpenRouter usage is API-key billing, so it's always on the safe side of 5.0.
+
+### 5.12 Off by default — DeepSeek V4 Pro as the clean `coder` swap
+
+> **Not enabled now.** `coder` runs on Codex (5.1). This documents the **de-risk path** for the one agent where the Codex ToS exposure actually bites (5.0) — `coder` is your heaviest agent and it's on the gray-area sub.
+
+**DeepSeek V4 Pro** is the compelling clean alternative for `coder`:
+- **Stronger raw coding** than both M3 and arguably gpt-5.x (SWE-bench Verified 80.5; top open-weight Codeforces / LiveCodeBench).
+- **Clean API key** — MIT open weights, pay-per-token, **zero ToS risk** (unlike Codex). Your ChatGPT account is off the line.
+- Cost ~$1.74/$3.48 per M — real money on active dev days, but cheaper than Claude Opus.
+
+```yaml
+# ~/.hermes/coder/config.yaml — the clean strong-coder swap (when you want off Codex)
+model:
+  provider: openrouter
+  default: deepseek/deepseek-v4-pro      # verify exact slug at openrouter.ai/models
+fallback_providers:
+  - provider: minimax
+    model: MiniMax-M3
+```
+The OpenRouter key is already in every `.env` (5.5), so flipping it on is a config edit + restart — nothing new to provision.
+
+**The three-way for `coder`** — A/B on real GDScript, let the work decide:
+
+| Option | Coding | ToS | Cost |
+|---|---|---|---|
+| **gpt-5.x (Codex)** — *current default* | strong | ⚠️ gray-area | $0 (sub) |
+| MiniMax-M3 | good | ✅ safe | $0 (plan) |
+| **DeepSeek V4 Pro** | ★ strongest | ✅ safe | pay-per-token |
+
+**Flip it on when:** the Codex tail-risk on `coder` starts to bother you, *or* OpenAI clamps down (5.3), *or* you want stronger pure coding than gpt-5.x. Until then, leave `coder` on Codex.
 
 ---
