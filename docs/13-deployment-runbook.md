@@ -22,7 +22,7 @@ flowchart LR
 
 ## Step 0 — Accounts & keys (before anything)
 
-- [ ] **MiniMax $20 Token Plan** — platform.minimax.io. ⚠️ Confirm **M3 is included at the $20 tier**; grab the **API key + base URL** (token plans can use a distinct endpoint — [docs/04 §5.2](04-models.md)).
+- [ ] **MiniMax $20 Token Plan** — platform.minimax.io. ⚠️ Confirm **M3 is included at the $20 tier**. Endpoint/model verified in v0.16.0 source: provider `minimax` reads `MINIMAX_API_KEY`, defaults to `https://api.minimax.io/anthropic` (override `MINIMAX_BASE_URL`; China: `api.minimaxi.com/anthropic`), model id `MiniMax-M3`. A `minimax-oauth` provider (account login, no key) also exists — if the Token Plan turns out to be subscription-style, use that instead ([docs/04 §5.2](04-models.md)).
 - [ ] **OpenRouter key** — openrouter.ai, ~$5–10 credit (aux + fallback + overflow — §5.5).
 - [ ] **Codex creds** — existing `~/.codex/auth.json` (ChatGPT Desktop / Codex CLI) or be ready for device-code login (coder + writer — §5.3). ⚠️ Accepted-risk — read §5.0 first.
 - [ ] **TinyFish key** — web research ([docs/08](08-web-search.md)).
@@ -50,7 +50,7 @@ flowchart LR
 ## Step 3 — Phase A: research (Doruk) end-to-end
 
 - [x] `hermes profile create research` (done in Step 1) → next: `hermes -p research setup`.
-- [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2). ⚠️ Use the **verified** model string + base URL from Step 0.
+- [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2) — strings verified against v0.16.0 source (Step 0); default base URL is already `api.minimax.io/anthropic`, so set `MINIMAX_BASE_URL` only if your plan's endpoint differs.
 - [ ] Add OpenRouter aux (§5.5) + fallback chain (§5.7).
 - [ ] **Fallback live test** — break the MiniMax key on purpose (one bad char), message the bot, confirm the reply arrives via OpenRouter (provider visible in logs); restore the key. An untested fallback is no fallback.
 - [ ] Write **Doruk** SOUL.md ([docs/02 §6.7](02-agents.md)); prune toolsets ([docs/05 §6.6](05-deployment.md)).
