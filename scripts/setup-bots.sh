@@ -6,7 +6,7 @@
 # *after* you have the tokens.
 #
 # Usage:
-#   1. In @BotFather: /newbot  x7  (slug-based usernames: general_<you>_bot, research_<you>_bot, …)
+#   1. In @BotFather: /newbot  x7  (slug-based usernames: general_<you>_bot, researcher_<you>_bot, …)
 #      Grab each token.
 #   2. cp bot-tokens.env.example bot-tokens.env  &&  chmod 600 bot-tokens.env
 #      Fill in your numeric Telegram user ID (ALLOWED_USERS, from @userinfobot)
@@ -74,7 +74,7 @@ setup() { # slug name about description
 
 setup general   "Derya"  "Derya — studio founder & creative director. Ask anything." \
   "Founder and creative director. Your main line: open conversation, brainstorming, quick answers, hand-offs to the crew. Dry, calm, has seen every pitch."
-setup research  "Doruk" "Doruk — market analyst. Research, any topic." \
+setup researcher  "Doruk" "Doruk — market analyst. Research, any topic." \
   "The studio's market analyst and scout. Researches any domain — game markets, history, academic. Cites every source, quietly smug. Runs the weekly game scout."
 setup assistant "Tuna"  "Tuna — studio manager. Keeps your day running." \
   "Studio manager and the actual adult. Calendar, reminders, your morning digest. Warm, brief, herds the cats so things ship on time."
@@ -89,8 +89,8 @@ setup producer  "Sarp"  "Sarp — producer. Scores game ideas." \
 
 # 3) Fan out model-provider keys (docs/04 §5.8). Empty key = skip; existing
 #    values in profile .env files are preserved either way.
-ALL_SLUGS=(general research assistant ops coder writer producer)
-TINYFISH_SLUGS=(research assistant coder writer)   # docs/08
+ALL_SLUGS=(general researcher assistant ops coder writer producer)
+TINYFISH_SLUGS=(researcher assistant coder writer)   # docs/08
 
 fanout_key() { # key value slugs…
   local key="$1" val="$2"; shift 2

@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-    P1["Phase 1 · day 1<br/>native install + first profile<br/>research · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second profile<br/>prove per-profile state + launchd"]:::p2
+    P1["Phase 1 · day 1<br/>native install + first profile<br/>researcher · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second profile<br/>prove per-profile state + launchd"]:::p2
     P2 --> P3["Phase 3 · week 1+<br/>remaining profiles<br/>copy the pattern"]:::p3
     classDef p1 fill:#1E88E5,stroke:#0D47A1,color:#fff
     classDef p2 fill:#43A047,stroke:#1B5E20,color:#fff
@@ -23,7 +23,7 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
 ~/.hermes/                 ← default profile (unused by the fleet)
 ├── kanban.db              ← shared board (created only if/when kanban is enabled — Section 17)
 └── profiles/
-    ├── research/      ← Doruk
+    ├── researcher/    ← Doruk
     ├── general/       ← Derya
     ├── assistant/     ← Tuna
     ├── ops/           ← Nilay  (deferred — Section 15)
@@ -32,7 +32,7 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
     └── producer/      ← Sarp  (Phase B)
 ```
 
-*(Verified against v0.16.0: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs at `~/.hermes/profiles/<slug>/logs/gateway.log`. `profile create` also drops a wrapper at `~/.local/bin/<slug>`, so `research setup` ≡ `hermes -p research setup`.)*
+*(Verified against v0.16.0: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs at `~/.hermes/profiles/<slug>/logs/gateway.log`. `profile create` also drops a wrapper at `~/.local/bin/<slug>`, so `researcher setup` ≡ `hermes -p researcher setup`.)*
 
 Each profile directory holds the full state for that agent:
 
@@ -63,7 +63,7 @@ Do not stand up all agents at once. Build in three phases so problems get isolat
 
 ### Phase 1 — native install + first profile (day 1)
 
-Pick one agent (recommend `research` — single platform, no project mounts) and get it fully working before touching anything else.
+Pick one agent (recommend `researcher` — single platform, no project mounts) and get it fully working before touching anything else.
 
 **Step 1.1: Install Hermes natively**
 
@@ -78,17 +78,17 @@ All state will live under `~/.hermes/`.
 **Step 1.2: Create the profile and run setup**
 
 ```bash
-hermes profile create research
-hermes -p research setup        # verified v0.16.0: global -p/--profile flag, not `setup --profile`
-                                # (or use the wrapper: `research setup`)
+hermes profile create researcher
+hermes -p researcher setup        # verified v0.16.0: global -p/--profile flag, not `setup --profile`
+                                # (or use the wrapper: `researcher setup`)
 ```
 
-Configure: the model provider (`research` uses MiniMax M3 per Section 5.2), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/research/.env`.
+Configure: the model provider (`researcher` uses MiniMax M3 per Section 5.2), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/researcher/.env`.
 
 **Step 1.3: Edit the SOUL.md**
 
 ```bash
-nano ~/.hermes/profiles/research/SOUL.md
+nano ~/.hermes/profiles/researcher/SOUL.md
 ```
 
 Write the personality (the full SOUL is in Section 6.7; an example early draft):
@@ -103,19 +103,19 @@ do not flatten disagreement. Concise by default; expand only when asked.
 **Step 1.4: Run the gateway**
 
 ```bash
-hermes -p research gateway run   # foreground; verified v0.16.0
+hermes -p researcher gateway run   # foreground; verified v0.16.0
 ```
 
-Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p research gateway install` (Section 7).
+Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p researcher gateway install` (Section 7).
 
 **Step 1.5: Verify**
 
 ```bash
-hermes profile list                                    # research is present
-tail -f ~/.hermes/profiles/research/logs/gateway.log       # no errors at startup
+hermes profile list                                    # researcher is present
+tail -f ~/.hermes/profiles/researcher/logs/gateway.log       # no errors at startup
 ```
 
-Send the bot a message; confirm a new session file appears under `~/.hermes/profiles/research/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
+Send the bot a message; confirm a new session file appears under `~/.hermes/profiles/researcher/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
 
 **Acceptance criteria for Phase 1:**
 - Gateway stays up for 24+ hours (under launchd) without crashing
@@ -139,13 +139,13 @@ hermes -p general setup          # different bot token, different SOUL.md
 
 **Step 2.3: Per-profile state test** *(replaces the old container marker test)*
 
-From a chat with `research`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `research`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
+From a chat with `researcher`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `researcher`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
 > **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why only `coder` and `ops` get a shell, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
 
 **Step 2.4: Independent-lifecycle test**
 
-`launchctl kickstart -k` the `research` agent (force-restart). Confirm `general` keeps running and responding throughout. launchd supervises each profile independently — one bouncing doesn't disturb the other.
+`launchctl kickstart -k` the `researcher` agent (force-restart). Confirm `general` keeps running and responding throughout. launchd supervises each profile independently — one bouncing doesn't disturb the other.
 
 **Acceptance criteria for Phase 2:**
 - Both gateways run simultaneously under launchd without conflict
@@ -192,7 +192,7 @@ First, separate three things people conflate:
 
 **Per-agent matrix** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
 
-| Toolset | research | assistant | ops | coder | writer |
+| Toolset | researcher | assistant | ops | coder | writer |
 |---|:--:|:--:|:--:|:--:|:--:|
 | `terminal` | ✗ | ✗ | ✓ | ✓ | ✗ |
 | `code_execution` | ✗ | ✗ | ✗ | ✓ | ✗ |
@@ -208,7 +208,7 @@ First, separate three things people conflate:
 | `kanban` | opt | ✗ | ✗ | opt | opt |
 | `todo` | ✗ | ✗ | ✗ | ✓ | ✗ |
 
-The `kanban` row is **opt** on the studio pipeline (`research`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). Everything else is off where unused.
+The `kanban` row is **opt** on the studio pipeline (`researcher`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). Everything else is off where unused.
 
 **Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
 
@@ -217,7 +217,7 @@ The `kanban` row is **opt** on the studio pipeline (`research`, `writer`, plus `
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 
-# research
+# researcher
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
 
@@ -248,7 +248,7 @@ hermes -p <name> tools list   # active vs available-but-disabled
 
 **One flag worth remembering:** native, **`terminal` is the real host.** A `coder` or `ops` shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason only those two get a shell and `coder` is fenced in [Section 13](09-security.md).
 
-**Phase A relevance:** only `research` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
+**Phase A relevance:** only `researcher` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
 
 ---
 
@@ -259,18 +259,18 @@ The s6 supervision tree only exists inside the Docker image. Native, **launchd**
 **Verified against v0.16.0: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and logs at `~/.hermes/profiles/<profile>/logs/gateway.log` (+ `gateway.error.log`):
 
 ```bash
-hermes -p research gateway install    # write + bootstrap the launchd service
-hermes -p research gateway status     # service installed/running?
-hermes -p research gateway restart    # bounce one profile
+hermes -p researcher gateway install    # write + bootstrap the launchd service
+hermes -p researcher gateway status     # service installed/running?
+hermes -p researcher gateway restart    # bounce one profile
 hermes gateway list                   # whole fleet at a glance
 ```
 
 For surgical control (the watchdog, the independent-lifecycle test) the launchd label is `ai.hermes.gateway-<profile>`:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research   # force-restart one agent
-launchctl bootout   gui/$(id -u)/ai.hermes.gateway-research      # stop + disable
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway-research.plist  # re-enable
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-researcher   # force-restart one agent
+launchctl bootout   gui/$(id -u)/ai.hermes.gateway-researcher      # stop + disable
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway-researcher.plist  # re-enable
 ```
 
 **Two redundant safeguards** so the fleet survives a reboot:

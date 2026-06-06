@@ -10,7 +10,7 @@ flowchart TB
     subgraph install["native Hermes · one install · ~/.hermes"]
         direction LR
         derya["Derya · router"]:::mini
-        others["research · assistant<br/>writer · producer · coder"]:::mini
+        others["researcher · assistant<br/>writer · producer · coder"]:::mini
         honcho[("Honcho<br/>shared user model")]:::infra
         board[("kanban.db<br/>off — flip later")]:::off
     end
@@ -52,7 +52,7 @@ Honcho is *knowledge* sharing, not messaging — note Section 9's caveat that cr
 
 The single-machine move is exactly what makes `kanban` viable. Per Hermes' kanban docs it is **deliberately single-host** — a dispatcher embedded in a gateway claims tasks from a shared `~/.hermes/kanban.db` and runs the assigned profile as a **local** worker process (the exact spawn/liveness mechanics are Hermes-internal; verify against its docs before relying on them). That model only works when all participating profiles share one host and one install. The container-per-agent / two-machine draft could *never* run it across the fleet; the native single install runs it natively, no shared-volume hack (the docs warn: never point two containers at one `~/.hermes` — it corrupts state).
 
-So the full pipeline `research → producer → writer → coder` is now reachable by one board. **We still keep it off**, because availability isn't need:
+So the full pipeline `researcher → producer → writer → coder` is now reachable by one board. **We still keep it off**, because availability isn't need:
 
 - The pipeline is **solo, weekly-cadence, human-gated**. `kanban`'s value is removing a human dispatcher who is sequencing many concurrent tasks — you are not that. A board here manufactures process (cards, dispatchers, heartbeats) without removing real work.
 - `backlog.md` + chat gives ~90% of the value (durable list, audit trail via git, your curation) at ~0 infrastructure, and is easier to inspect.

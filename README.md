@@ -9,7 +9,7 @@ flowchart TB
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes · launchd"]
             general["Derya · director"]:::mini
-            research["Doruk · analyst"]:::mini
+            researcher["Doruk · analyst"]:::mini
             assistant["Tuna · manager"]:::mini
             ops["Nilay · DevOps · deferred"]:::mini
             coder["Naz · programmer · Metal GPU"]:::codex
@@ -23,7 +23,7 @@ flowchart TB
     end
     tg --> mini
     coder -. memory .-> Honcho
-    research -. memory .-> Honcho
+    researcher -. memory .-> Honcho
     ext["TinyFish · MiniMax · Codex · OpenRouter"]:::ext
     hermes --> ext
     classDef user fill:#3949AB,stroke:#1A237E,color:#fff
@@ -47,7 +47,7 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 | Bot | Slug | Mode | Role | Model |
 |---|---|---|---|---|
 | **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
-| **Doruk** | `research` | always-on | Market analyst — research any topic + game scout | MiniMax |
+| **Doruk** | `researcher` | always-on | Market analyst — research any topic + game scout | MiniMax |
 | **Tuna** | `assistant` | always-on | Studio manager — reminders, morning digest | MiniMax |
 | **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax (standard) |
 | **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | Codex |
@@ -86,13 +86,13 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
 #    fill ALLOWED_USERS (from @userinfobot) + the 7 tokens, then:
 ./scripts/setup-bots.sh        # sets bot profiles + writes ~/.hermes/profiles/<slug>/.env
-# 3. install Hermes natively + deploy research first:
-#    follow docs/05-deployment.md  (Phase 1 → Doruk/research end-to-end, under launchd)
+# 3. install Hermes natively + deploy researcher first:
+#    follow docs/05-deployment.md  (Phase 1 → Doruk/researcher end-to-end, under launchd)
 ```
 
 ## Rollout status
 
-- **Phase A (now)** — research (**Doruk**) + **Derya** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
+- **Phase A (now)** — researcher (**Doruk**) + **Derya** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
 - **Phase B** — add Tuna, Naz, Ozan + self-hosted Honcho memory. Add **Nilay** (ops) once there's a fleet to watch; add **Sarp** (producer) once the game-idea backlog outpaces hand-curation.
 - **Phase C** — game-dev: a picked idea graduates to a lean PRD (Ozan) → Godot prototype (Naz), native on the Mini's GPU.
 

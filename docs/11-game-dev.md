@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-    scout["Doruk · research<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
+    scout["Doruk · researcher<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
     backlog -->|top 3| pick{"You pick<br/>taste gate"}:::pick
     pick -->|graduate| prd["Ozan · writer<br/>lean 2-page PRD"]:::codex
     prd --> proto["Naz · coder<br/>Godot prototype"]:::mini
@@ -25,7 +25,7 @@ Engine direction: **Godot now, Unity later** (16.7). Provider reality: the main 
 
 Do not stand up the whole pipeline at once. It phases cleanly, and the early phase is nearly free.
 
-**Phase A (now) — research scout only.** Add the cron job in 16.5 to the `research` agent you are *already* deploying in the core plan. It delivers a weekly ranked opportunity digest to Telegram; you read and curate by hand. At low volume, eyeballing beats automated scoring. **No new profile, no `producer` bot, no Sarp.** This is the entire game-dev footprint until friction says otherwise.
+**Phase A (now) — research scout only.** Add the cron job in 16.5 to the `researcher` agent you are *already* deploying in the core plan. It delivers a weekly ranked opportunity digest to Telegram; you read and curate by hand. At low volume, eyeballing beats automated scoring. **No new profile, no `producer` bot, no Sarp.** This is the entire game-dev footprint until friction says otherwise.
 
 **Phase B (deferred — when the backlog earns it) — `producer`.** Stand up the `producer` profile (16.3) only once raw opportunities pile up faster than you can skim, *or* you want systematic rubric scoring and a persistent backlog. The trigger is friction, not the calendar. Everything below tagged *(Phase B)* is spec'd now so it's ready, but stays unbuilt until then.
 
@@ -45,7 +45,7 @@ The pipeline surfaces candidates → scores them → you choose → you prototyp
 
 _(Pipeline diagram at the top of this page.)_
 
-All four agents are profiles in the one native install on the Mini, so the **entire pipeline is single-host**. `research` runs its always-on scout cron and delivers to Telegram; `producer` scores when you sit down to review; `writer` and `coder` pick up graduated ideas. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four, and — because they co-locate — the pipeline is **`kanban`-ready** (16.11): a single board could auto-promote `research → producer → writer → coder` if the cadence ever justifies it. It doesn't yet; a flat `backlog.md` is the right altitude (16.6).
+All four agents are profiles in the one native install on the Mini, so the **entire pipeline is single-host**. `researcher` runs its always-on scout cron and delivers to Telegram; `producer` scores when you sit down to review; `writer` and `coder` pick up graduated ideas. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four, and — because they co-locate — the pipeline is **`kanban`-ready** (16.11): a single board could auto-promote `researcher → producer → writer → coder` if the cadence ever justifies it. It doesn't yet; a flat `backlog.md` is the right altitude (16.6).
 
 ### 16.3 The `producer` agent — Sarp *(Phase B — deferred)*
 
@@ -73,11 +73,11 @@ No container, no port, no compose — just a profile under `~/.hermes/profiles/p
 
 ### 16.4 Model assignment (MiniMax + Codex only)
 
-Balanced so the only **automated cron** (`research`'s weekly scout) stays on **MiniMax** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `research` row** — the rest activate as their agents come online in Phase B/C.
+Balanced so the only **automated cron** (`researcher`'s weekly scout) stays on **MiniMax** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `researcher` row** — the rest activate as their agents come online in Phase B/C.
 
 | Agent | Role | Model | Provider | Rationale |
 |---|---|---|---|---|
-| `research` | opportunity scout | `MiniMax-M3` | `minimax` | M3's browsing + 1M context fit web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
+| `researcher` | opportunity scout | `MiniMax-M3` | `minimax` | M3's browsing + 1M context fit web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
 | `producer` | backlog + scoring | `MiniMax-M3` | `minimax` | Reasoning over candidates is cheap and frequent; flat $20 plan. |
 | `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
 | `coder` | Godot prototyping | `gpt-5.x` (Codex) | `openai-codex` | gpt-5.x for GDScript quality; interactive/human-paced (you drive it) so lower flag risk than a cron — but it's the **heaviest** agent, so watch the shared ChatGPT cap (§5.3). MiniMax-M3 fallback; A/B vs M3 (a strong coder, $0). |
@@ -107,12 +107,12 @@ Balanced so the only **automated cron** (`research`'s weekly scout) stays on **M
 
 - **Wallet simplification:** the main models need only **two providers** — MiniMax ($20 token plan) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route *and* the overflow valve when the shared MiniMax 5-hour quota gets tight (5.5–5.7). It's a few dollars a month and protects the token-plan quota — don't cut it.
 
-### 16.5 `research` as opportunity scout (the cron)
+### 16.5 `researcher` as opportunity scout (the cron)
 
-Add a scheduled job to the existing `research` agent. It runs Monday mornings, scans, and delivers a ranked raw-opportunity list to the Telegram home channel (`/sethome` in the research bot first, Section 4.9).
+Add a scheduled job to the existing `researcher` agent. It runs Monday mornings, scans, and delivers a ranked raw-opportunity list to the Telegram home channel (`/sethome` in the researcher bot first, Section 4.9).
 
 ```yaml
-# ~/.hermes/profiles/research/cron/game-scout.yaml
+# ~/.hermes/profiles/researcher/cron/game-scout.yaml
 schedule: "0 8 * * 1"        # Mondays 08:00 local
 deliver_to: telegram_home
 prompt: |
@@ -202,7 +202,7 @@ solo-buildable scope. When you flag a top candidate, give a one-sentence pitch
 and the single biggest risk. Brevity over enthusiasm.
 ```
 
-**`research` SOUL.md addendum** (append to the existing research personality):
+**`researcher` SOUL.md addendum** (append to the existing research personality):
 
 ```
 For the weekly game-opportunity scout, weight concrete unmet player desire
@@ -237,7 +237,7 @@ The discovery phase ends on a date, not on a feeling.
 
 ### 16.11 `kanban` for the pipeline — available, off, flip-when-earned
 
-All four pipeline agents are profiles in one native install on the Mini, so Hermes' single-host `kanban` board *could* orchestrate the whole chain — `research → producer → writer → coder`, auto-promoting each card as the prior stage completes. The single-machine move (Section 1) is what unlocked this: the board's dispatcher spawns sibling profiles as local processes, which only works when they share a host and install.
+All four pipeline agents are profiles in one native install on the Mini, so Hermes' single-host `kanban` board *could* orchestrate the whole chain — `researcher → producer → writer → coder`, auto-promoting each card as the prior stage completes. The single-machine move (Section 1) is what unlocked this: the board's dispatcher spawns sibling profiles as local processes, which only works when they share a host and install.
 
 **Keep it off.** This pipeline is solo, weekly-cadence, and human-gated at the taste gate (16.9) — `backlog.md` + your curation is the right altitude, and a board here would manufacture process without removing real work. The value of co-location is that turning kanban on later is a **config flip, not a migration** (toolset `kanban` is already listed *opt* for these agents in Section 6.6). The trigger to flip it: you can name specific recurring handoffs you want claimed automatically without you sequencing them — not before. Full reasoning in [Section 17](12-agent-comms.md).
 

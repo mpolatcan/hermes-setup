@@ -23,7 +23,7 @@ On the Mini, weekly check:
 
 Build a 15–30 task personal eval suite. For each agent, define 3–5 representative tasks with known-good outcomes. Examples:
 
-- **research:** "Find three recent peer-reviewed papers on X, summarize each in 2 sentences, link each." Score on source quality, summary accuracy, citation correctness.
+- **researcher:** "Find three recent peer-reviewed papers on X, summarize each in 2 sentences, link each." Score on source quality, summary accuracy, citation correctness.
 - **assistant:** "What's on my calendar tomorrow morning? Set a reminder for the 9am call." Score on tool selection (calendar vs. web search), action completion.
 - **ops:** "Check disk usage on this host. Alert me if any volume is over 80%." Score on correct command, correct interpretation.
 - **coder:** "Find the bug in this function and propose a fix." Score on diagnosis accuracy, fix correctness.
@@ -66,12 +66,12 @@ brew upgrade hermes-agent          # or rerun the official installer
 $(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot
 
 # 3. restart every gateway so they pick up the new binary
-launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-researcher
 launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-general
 # ...repeat per loaded profile (or `launchctl list | grep ai.hermes` to enumerate)
 
 # 4. smoke-test: message 2–3 agents, tail their logs
-tail -n 50 ~/.hermes/profiles/research/logs/gateway.log
+tail -n 50 ~/.hermes/profiles/researcher/logs/gateway.log
 ```
 
 The state under `~/.hermes/profiles/<profile>/` is untouched — skills, memories, sessions, config all survive; only the binary changes. **Honcho + SearXNG** upgrade separately, via Docker (`docker compose pull && docker compose up -d` — Section 7); keep their image tags pinned, not floating on `latest`.
@@ -109,7 +109,7 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 # watchdog.sh — gateway health → Telegram, bypassing the agents.
 # Reuses the general bot's token; talks straight to api.telegram.org.
 set -u
-EXPECTED=(research)                      # extend as profiles go live
+EXPECTED=(researcher)                      # extend as profiles go live
 ENV="$HOME/.hermes/profiles/general/.env"
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
 CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
@@ -152,7 +152,7 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 </plist>
 ```
 
-**Test it once** (the runbook has this as a gate): `launchctl bootout` the research gateway, wait ≤15 min for the Telegram alert, `bootstrap` it back.
+**Test it once** (the runbook has this as a gate): `launchctl bootout` the researcher gateway, wait ≤15 min for the Telegram alert, `bootstrap` it back.
 
 **Known limit:** a same-machine watchdog can't report the machine dying (power, kernel panic, no network). If you want that too, add one line at the end of a *successful* run — `curl -fsS https://hc-ping.com/<uuid>` against a free dead-man service (e.g. healthchecks.io), which emails you when the pings stop. Optional; the Telegram path already covers the common failures (gateway crash-loop, broken config after an upgrade).
 
@@ -168,6 +168,6 @@ These are decisions worth deferring until you have real usage data:
 - **Does `coder` need its own machine after all?** It runs native on the Mini for the Metal GPU. If Godot builds start starving the always-on agents (no per-profile RAM cap exists natively — Section 1.1), the clean escalation is to bring the shelved MacBook Pro back online as a dedicated `coder` host — which also restores `coder`'s credential isolation from the fleet ([Section 13](09-security.md)). Revisit only if you feel the resource or blast-radius pressure.
 - **Should `ops` get Honcho after all?** Section 9 keeps it off because determinism is the goal. After a month, if `ops` feels too generic or repeats explanations you've given before, flip it on with `aiPeer: "ops"`.
 - **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (ops, assistant title generation) makes sense. Revisit once you have a month of usage data.
-- **When to build `producer`?** Sarp, the game-development scoring agent (Section 16), is spec'd but **deferred**. Phase A is research-only (a single cron on the `research` agent). Stand up the `producer` profile only when the opportunity backlog outpaces hand-curation. Until then it stays unbuilt.
+- **When to build `producer`?** Sarp, the game-development scoring agent (Section 16), is spec'd but **deferred**. Phase A is research-only (a single cron on the `researcher` agent). Stand up the `producer` profile only when the opportunity backlog outpaces hand-curation. Until then it stays unbuilt.
 
 ---

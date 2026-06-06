@@ -12,7 +12,7 @@ flowchart TB
     end
     subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
         user["user peer = YOU<br/>shared across all agents"]:::user
-        peers["ai peers (= slugs): general, research,<br/>assistant, coder, writer, producer — one per agent"]:::infra
+        peers["ai peers (= slugs): general, researcher,<br/>assistant, coder, writer, producer — one per agent"]:::infra
     end
     per --> hon
     classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
@@ -80,7 +80,7 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 ```mermaid
 flowchart TB
     subgraph mini["🖥️ M4 Mini · single host"]
-        ag["Native agents (launchd)<br/>general (Derya) · research (Doruk) · assistant (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
+        ag["Native agents (launchd)<br/>general (Derya) · researcher (Doruk) · assistant (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
         subgraph orb["OrbStack (Docker)"]
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
@@ -163,7 +163,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | Agent | Built-in memory | Session search | Honcho | Notes |
 |---|---|---|---|---|
 | `general` (Derya) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
-| `research` | Yes | Yes | Yes (peer: `research`) | Tracks topic interests, source preferences, depth |
+| `researcher` | Yes | Yes | Yes (peer: `researcher`) | Tracks topic interests, source preferences, depth |
 | `assistant` | Yes | Yes | Yes (peer: `assistant`) | Models daily rhythms, what reminders land |
 | `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization (deferred) |
 | `coder` | Yes | Yes | Yes (peer: `coder`) | Language preferences, project conventions |
@@ -204,7 +204,7 @@ Create one per agent. Example for `coder`:
 Key fields:
 
 - `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
-- `aiPeer` — **unique per agent** (`coder`, `writer`, `research`, `assistant`). This is the identity Honcho uses to build per-agent observations.
+- `aiPeer` — **unique per agent** (`coder`, `writer`, `researcher`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
 - `workspace` — keep as `hermes` for all seven. The workspace is what binds them into one shared environment.
 - `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only).
@@ -242,11 +242,11 @@ Per-agent additions:
 
 - **`coder` USER.md:** preferred languages, code style preferences, projects you work on most, "always show diffs", build tools you use, what error patterns you've seen before.
 - **`writer` USER.md:** voice references, audience defaults, kinds of pieces you write, what edits you typically accept vs. reject, your preferred draft → revise rhythm.
-- **`research` USER.md:** topics of standing interest, source-quality preferences, depth defaults, citation style.
+- **`researcher` USER.md:** topics of standing interest, source-quality preferences, depth defaults, citation style.
 - **`assistant` USER.md:** schedule patterns, reminder preferences, what's worth pinging you about vs. queuing for digest.
 - **`ops` USER.md:** *(leave minimal — `ops` shouldn't develop a user model)*.
 
-**MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `research` agent's might note "default web search backend is Firecrawl, prefer primary sources over aggregators."
+**MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `researcher` agent's might note "default web search backend is Firecrawl, prefer primary sources over aggregators."
 
 Write these by hand once. The agent will refine and consolidate them over time, and you should review them periodically (see hygiene below).
 

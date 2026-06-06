@@ -23,12 +23,12 @@ Why this matters for us specifically:
 
 - **Cleaner context, fewer tokens.** TinyFish Fetch strips boilerplate before returning content. With seven agents talking to an LLM provider, every kilobyte of cookie-banner HTML stripped is real money saved on context tokens.
 - **Built for agent patterns, not human eyes.** Search results are structured JSON — title, URL, snippet, position. No HTML parsing required. Rank-stable means repeated calls return the same results in the same order, which makes session reproducibility and `session_search` indexing behave predictably.
-- **Live pages, not cached.** Several search backends return stale results. For `research` agent's job in particular, this is a meaningful quality difference.
+- **Live pages, not cached.** Several search backends return stale results. For `researcher` agent's job in particular, this is a meaningful quality difference.
 - **One key handles all seven agents.** Sign up once at agent.tinyfish.ai, distribute the key to whichever agents need search. No per-agent provider setup.
 
 Trade-offs to know:
 
-- **Free tier is rate-limited.** 5 searches/minute across one API key. If `research` and `coder` both decide to do a deep dive simultaneously, they'll hit the cap. We mitigate by either using separate keys for high-traffic agents or queuing through one shared key.
+- **Free tier is rate-limited.** 5 searches/minute across one API key. If `researcher` and `coder` both decide to do a deep dive simultaneously, they'll hit the cap. We mitigate by either using separate keys for high-traffic agents or queuing through one shared key.
 - **Not built-in to Hermes.** We wire it in via MCP (recommended) or via the OpenAI-compatible custom-backend pattern. Both work; MCP is cleaner.
 - **External dependency.** If TinyFish goes down or your account is rate-limited, agents lose web access. We configure a fallback to a built-in Hermes backend (SearXNG self-hosted or Tavily as a paid alternative) so the agents degrade gracefully.
 
@@ -55,7 +55,7 @@ Start with single shared key. Upgrade only if you observe rate-limit errors in a
 Edit each agent's env file. On the Mini:
 
 ```bash
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/research/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/researcher/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/assistant/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/coder/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/writer/.env
@@ -81,8 +81,8 @@ Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the 
 #### Step 5: Restart the agent and verify
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research
-tail -n 50 ~/.hermes/profiles/research/logs/gateway.log | grep -i "mcp\|tinyfish"
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-researcher
+tail -n 50 ~/.hermes/profiles/researcher/logs/gateway.log | grep -i "mcp\|tinyfish"
 ```
 
 You should see TinyFish MCP server registered and the agent picking up `tinyfish_search` and `tinyfish_fetch` tools. From a chat with the agent, ask "what tools do you have for web search?" — `tinyfish_search` and `tinyfish_fetch` should appear in the list.
@@ -116,7 +116,7 @@ The agent will reach for TinyFish first and fall back to built-in tools if neede
 
 **Recommendation for our setup:**
 
-- `research`, `assistant`: **Layer 2** (prefer TinyFish, fall back gracefully). These agents need web access to function; outages should degrade, not break.
+- `researcher`, `assistant`: **Layer 2** (prefer TinyFish, fall back gracefully). These agents need web access to function; outages should degrade, not break.
 - `coder`, `writer`: **Layer 1** (TinyFish only). Their web use is opportunistic; if TinyFish is down, asking the user to try again is fine.
 - `ops`: web disabled entirely (already in Section 6). Doesn't need search.
 
@@ -169,7 +169,7 @@ web:
 And the env var:
 
 ```bash
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/research/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/researcher/.env
 echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/assistant/.env
 ```
 
@@ -184,7 +184,7 @@ Two checks to run after first setup, and periodically afterward.
 **Check 1: Tool usage in agent logs.**
 
 ```bash
-tail -n 200 ~/.hermes/profiles/research/logs/gateway.log | grep -i "tool_use\|tinyfish_search\|web_search"
+tail -n 200 ~/.hermes/profiles/researcher/logs/gateway.log | grep -i "tool_use\|tinyfish_search\|web_search"
 ```
 
 You want to see `tinyfish_search` and `tinyfish_fetch` calls dominating, with `web_search` (the built-in fallback) only firing rarely or never.
@@ -197,7 +197,7 @@ Log into `agent.tinyfish.ai`. The dashboard shows queries per day and which key 
 
 If you see `429` errors from TinyFish in logs, the free tier's 5/min cap is being hit. Options:
 
-1. Add a second TinyFish key for high-traffic agents (typically `research`).
+1. Add a second TinyFish key for high-traffic agents (typically `researcher`).
 2. Upgrade to a paid tier ($13/month for 1,650 credits if you also need the metered Agent/Browser endpoints; the free Search/Fetch limits also increase).
 3. Stagger heavy work via cron (probably not worth it for hobby use).
 
@@ -208,7 +208,7 @@ For reference when wiring up each agent:
 | Agent | TinyFish MCP | Built-in `web` toolset | Fallback | Notes |
 |---|---|---|---|---|
 | `general` (Derya) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
-| `research` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
+| `researcher` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
 | `assistant` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
 | `ops` (Nilay) | No | Disabled entirely | None | Doesn't need web |
 | `coder` (Naz) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
@@ -222,13 +222,13 @@ TinyFish ships an "Agent Skill" — a `SKILL.md` file that teaches the agent whe
 ```bash
 # In each agent that uses TinyFish, install the skill
 # (Run from inside the agent's CLI or via skill_manage)
-hermes -p research skills install use-tinyfish
+hermes -p researcher skills install use-tinyfish
 ```
 
 If you'd rather install it manually, the equivalent is to drop the skill into the profile's skills directory:
 
 ```bash
-mkdir -p ~/.hermes/profiles/research/skills/use-tinyfish
+mkdir -p ~/.hermes/profiles/researcher/skills/use-tinyfish
 # Get the SKILL.md from https://github.com/tinyfish-io/tinyfish-cookbook
 # Copy it into the skill directory
 ```
@@ -238,7 +238,7 @@ The skill teaches the agent the escalation ladder: search for finding URLs → f
 ### 10.8 What to revisit later
 
 - **Paid tier?** Free is enough for personal multi-agent use. Revisit only if rate limits become a recurring friction.
-- **TinyFish Agent and Browser endpoints?** Metered, so they cost credits per call. Worth experimenting with for `research` if a workflow needs login-walled pages or multi-step browsing. Start with the free Search + Fetch.
+- **TinyFish Agent and Browser endpoints?** Metered, so they cost credits per call. Worth experimenting with for `researcher` if a workflow needs login-walled pages or multi-step browsing. Start with the free Search + Fetch.
 - **Replacing built-in fallback entirely?** Once you've run TinyFish-primary for a month and confirmed reliability, you can drop SearXNG to save the 500 MB. Defensive setup first, optimization later.
 
 ---

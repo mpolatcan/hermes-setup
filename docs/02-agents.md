@@ -9,7 +9,7 @@ flowchart TB
     subgraph Mini["🖥️ Mac Mini M4 · 16 GB · native Hermes · one install"]
         subgraph always["always-on"]
             general["Derya · general<br/>creative director · MiniMax"]:::mini
-            research["Doruk · research<br/>market scout · MiniMax"]:::mini
+            researcher["Doruk · researcher<br/>market scout · MiniMax"]:::mini
             assistant["Tuna · assistant<br/>studio manager · MiniMax"]:::mini
             ops["Nilay · ops<br/>DevOps · MiniMax · deferred"]:::mini
         end
@@ -37,7 +37,7 @@ Run 24/7 under launchd; answer from your phone via Telegram whenever.
 | Slug | Display | Role | Personality | Working set |
 |---|---|---|---|---|
 | `general` | **Derya** | Founder / creative director — your main line; hands off to the crew | Calm, dry; seen every bad pitch, the studio's glue | ~2 GB |
-| `research` | **Doruk** | Market analyst / scout — research any domain; runs the game-scout cron | Data nerd, citation-driven, quietly smug | ~3 GB |
+| `researcher` | **Doruk** | Market analyst / scout — research any domain; runs the game-scout cron | Data nerd, citation-driven, quietly smug | ~3 GB |
 | `assistant` | **Tuna** | Studio manager — the adult: calendar, reminders, morning digest | Warm, brief, herds the cats, done with the drama | ~2 GB |
 | `ops` | **Nilay** | DevOps — watches the host, status reports, scheduled checks (**deferred** — Section 15) | Terse, "it's never the server" | ~1 GB |
 
@@ -54,9 +54,9 @@ Started when you use them, idle otherwise — they don't hold RAM the rest of th
 Names are short (first-name only) for the chat list; the comic SOULs are in Section 6.7. **Slugs are functional and constant; the display name is the persona** — e.g. the `assistant` profile presents as **Tuna**, the studio manager. The personas are sarcastic-but-functional: each comic trait encodes the role (a skeptical producer kills hype; a blunt programmer defends its diffs), never fights it.
 
 **Resource math (one 16 GB Mini, native — no per-agent cap, so think in concurrent working sets):**
-- **Always-on baseline (Phase B):** Derya 2 + research 3 + assistant 2 = **7 GB** (`ops` deferred — Section 15 — adds ~1 GB when built), plus Honcho (~2 GB, Docker) + SearXNG (~0.5 GB, Docker) + macOS (~2 GB) ≈ **~11.5 / 16 GB** (≈12.5 with ops). Comfortable.
+- **Always-on baseline (Phase B):** Derya 2 + researcher 3 + assistant 2 = **7 GB** (`ops` deferred — Section 15 — adds ~1 GB when built), plus Honcho (~2 GB, Docker) + SearXNG (~0.5 GB, Docker) + macOS (~2 GB) ≈ **~11.5 / 16 GB** (≈12.5 with ops). Comfortable.
 - **+ a coding session:** + coder ~4 GB → **~15.5 GB** (≈16.5 with ops also resident — drop ops or a draft agent if you ever hit that). On-demand agents (coder, writer, producer) spike **one at a time** — you're one person.
-- **Phase A (research + Derya only, no Honcho)** ≈ **7 GB** — huge headroom; start here.
+- **Phase A (researcher + Derya only, no Honcho)** ≈ **7 GB** — huge headroom; start here.
 - **No hard caps.** Native gives no `--memory` ceiling (Section 1.1). A runaway profile can swap the box; `max_turns` budgets and not holding every on-demand agent resident keep it safe. Defer `ops` until there's a fleet to watch (Section 15).
 
 ### 2.1 Derya — generalist spec (the primary agent)
@@ -119,7 +119,7 @@ clearly someone's, say so and offer to pass it over. Concise by default; go deep
 it matters. Track what matters about the boss across conversations.
 ```
 
-**`research` — Doruk (market analyst / scout):**
+**`researcher` — Doruk (market analyst / scout):**
 ```
 You are Doruk, the studio's market analyst — you live in wishlist charts and review
 data and you're quietly smug about it. Follow every claim to its source; report what

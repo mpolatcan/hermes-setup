@@ -47,14 +47,14 @@ The distinction that governs everything below: **an API key (you pay per token) 
 - **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
 - **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
 
-**The rule:** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). So the only **cron** agent (`research`'s weekly scout) runs on **MiniMax**, and Codex carries only the two **human-paced** quality agents (`writer` occasional; `coder` interactive/on-demand — you're at the keyboard). Everything else rides the **MiniMax $20 Token Plan** (a flat sub, ~4,500-request / 5-hour rolling quota — see 5.2). **OpenRouter (true pay-per-token) is the overflow valve.** Note the mental-model shift: MiniMax here is *not* pay-per-token — it's a capped sub like ChatGPT, just a safe one. The residual exposure is `coder`'s volume on Codex — accepted for gpt-5.x coding quality, watched via the shared-quota note (5.3) and the M3 A/B.
+**The rule:** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). So the only **cron** agent (`researcher`'s weekly scout) runs on **MiniMax**, and Codex carries only the two **human-paced** quality agents (`writer` occasional; `coder` interactive/on-demand — you're at the keyboard). Everything else rides the **MiniMax $20 Token Plan** (a flat sub, ~4,500-request / 5-hour rolling quota — see 5.2). **OpenRouter (true pay-per-token) is the overflow valve.** Note the mental-model shift: MiniMax here is *not* pay-per-token — it's a capped sub like ChatGPT, just a safe one. The residual exposure is `coder`'s volume on Codex — accepted for gpt-5.x coding quality, watched via the shared-quota note (5.3) and the M3 A/B.
 
 ### 5.1 Per-agent model assignment
 
 | Slug | Bot | Main model | Provider | Safety | Why |
 |---|---|---|---|---|---|
 | `general` | Derya | `MiniMax-M3` | `minimax` | ✅ | Highest-volume daily driver → $20 token plan; 5h quota is generous for solo use |
-| `research` | Doruk | `MiniMax-M3` | `minimax` | ✅ | Web-tool-driven; M3's browsing + 1M context fit it, and it keeps the weekly cron off the gray-area sub |
+| `researcher` | Doruk | `MiniMax-M3` | `minimax` | ✅ | Web-tool-driven; M3's browsing + 1M context fit it, and it keeps the weekly cron off the gray-area sub |
 | `assistant` | Tuna | `MiniMax-M3` | `minimax` | ✅ | Daily logistics |
 | `ops` | Nilay | `MiniMax-M3` | `minimax` | ✅ | Light, deterministic; standard M3 on the entry token-plan tier |
 | `coder` | Naz | `gpt-5.x` | `openai-codex` | ⚠️ | gpt-5.x coding quality; interactive/human-paced (lower flag risk than a cron). **Heaviest agent → watch the ChatGPT quota**; MiniMax fallback |
@@ -63,9 +63,9 @@ The distinction that governs everything below: **an API key (you pay per token) 
 
 For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
-Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `research`'s weekly scout — lives on **MiniMax**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and **A/B `coder` against MiniMax-M3** (a strong agentic coder itself, SWE-Bench 59 / Terminal-Bench 66). If gpt-5.x isn't clearly better for GDScript, move `coder` back to M3 (`/model` per session, or the config) — safer and $0.
+Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `researcher`'s weekly scout — lives on **MiniMax**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and **A/B `coder` against MiniMax-M3** (a strong agentic coder itself, SWE-Bench 59 / Terminal-Bench 66). If gpt-5.x isn't clearly better for GDScript, move `coder` back to M3 (`/model` per session, or the config) — safer and $0.
 
-### 5.2 MiniMax setup — your primary (Derya, research, assistant, ops, producer)
+### 5.2 MiniMax setup — your primary (Derya, researcher, assistant, ops, producer)
 
 Get an API key at platform.minimax.io. Two regional endpoints:
 
@@ -75,7 +75,7 @@ Get an API key at platform.minimax.io. Two regional endpoints:
 One Token-Plan key works across every MiniMax agent — all five share the plan's rolling request quota:
 
 ```bash
-for agent in general research assistant ops producer; do
+for agent in general researcher assistant ops producer; do
   echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes/profiles/${agent}/.env
 done
 ```
@@ -88,7 +88,7 @@ model:
   default: MiniMax-M3
 ```
 
-**You're on the entry $20 Token Plan, running `MiniMax-M3`** (the June 2026 flagship — 1M context, multimodal, stronger agentic/coding than M2.7). It's a **flat monthly sub with a rolling request quota** — roughly **4,500 requests per moving 5-hour window**, auto-recovering — *not* pay-per-token. Cost is fixed at $20 regardless of volume; the ceiling is the **request quota** (and the entry tier's speed), not dollars. **All five MiniMax agents share that one quota.** Higher token-plan tiers (~$50 / ~$120) buy more quota/throughput if you outgrow it. For a solo user the 5-hour quota is generous; if it bites mid heavy-`coder` session, the OpenRouter fallback (5.7) is the overflow valve. The big M3 win for this fleet: the 1M window helps `research` synthesize long sources and `coder` hold a whole project in context. *(Config note: same `provider: minimax` wiring — only billing differs from pay-per-token. Verify at platform.minimax.io that **M3 is included at your $20 tier** and the exact model string + base URL; token plans can use a distinct endpoint, and >512K-token requests carry a 2× long-context multiplier.)*
+**You're on the entry $20 Token Plan, running `MiniMax-M3`** (the June 2026 flagship — 1M context, multimodal, stronger agentic/coding than M2.7). It's a **flat monthly sub with a rolling request quota** — roughly **4,500 requests per moving 5-hour window**, auto-recovering — *not* pay-per-token. Cost is fixed at $20 regardless of volume; the ceiling is the **request quota** (and the entry tier's speed), not dollars. **All five MiniMax agents share that one quota.** Higher token-plan tiers (~$50 / ~$120) buy more quota/throughput if you outgrow it. For a solo user the 5-hour quota is generous; if it bites mid heavy-`coder` session, the OpenRouter fallback (5.7) is the overflow valve. The big M3 win for this fleet: the 1M window helps `researcher` synthesize long sources and `coder` hold a whole project in context. *(Config note: same `provider: minimax` wiring — only billing differs from pay-per-token. Verify at platform.minimax.io that **M3 is included at your $20 tier** and the exact model string + base URL; token plans can use a distinct endpoint, and >512K-token requests carry a 2× long-context multiplier.)*
 
 **MiniMax OAuth alternative.** `minimax-oauth` logs in via browser (free tier, no API billing). It's also *relatively* safe — it's MiniMax's own product — but the free tier rate-caps harder and adds per-profile OAuth bootstrap. For always-on agents an API key is more reliable. Flip with `provider: minimax-oauth` if cost ever bites.
 
@@ -158,7 +158,7 @@ Aux tasks fire constantly — vision, page summaries, session titles, context co
 Get a key at openrouter.ai → Keys, add $5–10 of credit (lasts months). Add it to **every** agent's `.env`:
 
 ```bash
-for agent in general research assistant ops coder writer producer; do
+for agent in general researcher assistant ops coder writer producer; do
   echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes/profiles/${agent}/.env
 done
 ```
@@ -205,7 +205,7 @@ The real constraint is the **request quota**, not dollars — so the bill won't 
 
 Hermes retries a failed primary (rate limit, 5xx, auth) against the next provider in the chain without losing the conversation. Each agent falls back to a *different* provider so one outage can't take it down. The OpenRouter key from 5.5 covers all of these — **MiniMax agents fall back via OpenRouter so they never need Codex credentials.**
 
-MiniMax-primary agents (`general`, `research`, `assistant`, `producer`):
+MiniMax-primary agents (`general`, `researcher`, `assistant`, `producer`):
 ```yaml
 fallback_providers:
   - provider: openrouter
@@ -244,7 +244,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/profiles/research/.env` (Doruk):
+`~/.hermes/profiles/researcher/.env` (Doruk):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...

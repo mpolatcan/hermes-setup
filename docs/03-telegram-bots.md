@@ -49,7 +49,7 @@ Open Telegram, search for `@BotFather`, start a conversation. Then for each of y
 ```
 /newbot
 → Bot's display name: Research Assistant (or whatever you want users to see)
-→ Bot's username: research_<yourname>_bot   (must end in "bot" and be unique on Telegram)
+→ Bot's username: researcher_<yourname>_bot   (must end in "bot" and be unique on Telegram)
 
 BotFather replies with the token. Copy it immediately into a notes app — you'll
 need it in step 4.4. Then for the same bot, run these to harden settings:
@@ -61,7 +61,7 @@ need it in step 4.4. Then for the same bot, run these to harden settings:
 → /setabouttext → "Hermes Agent — research personality" (shows in bot info)
 ```
 
-Suggested username pattern: `<role>_<yourname>_bot`. So `research_alice_bot`, `assistant_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
+Suggested username pattern: `<role>_<yourname>_bot`. So `researcher_alice_bot`, `assistant_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
 
 By the end, you have seven tokens (six if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
 
@@ -70,8 +70,8 @@ By the end, you have seven tokens (six if you skip the deferred `producer`/Sarp 
 This is the bridge between Telegram's side and Hermes's side. Each agent needs two env vars in its host-side `.env` file:
 
 ```bash
-# On the Mini, for the research agent:
-cat >> ~/.hermes/profiles/research/.env <<EOF
+# On the Mini, for the researcher agent:
+cat >> ~/.hermes/profiles/researcher/.env <<EOF
 TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
 TELEGRAM_ALLOWED_USERS=123456789
 EOF
@@ -122,12 +122,12 @@ Do this for each token. Takes 30 seconds total and catches typos before they cau
 
 ### 4.8 First contact after bringing the agent up
 
-After starting the research gateway (`launchctl load ~/Library/LaunchAgents/ai.hermes.gateway-research.plist`), open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
+After starting the researcher gateway (`launchctl load ~/Library/LaunchAgents/ai.hermes.gateway-researcher.plist`), open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
 
 If it doesn't reply:
 
 ```bash
-tail -n 100 ~/.hermes/profiles/research/logs/gateway.log | grep -i telegram
+tail -n 100 ~/.hermes/profiles/researcher/logs/gateway.log | grep -i telegram
 ```
 
 Common issues and fixes:
@@ -160,7 +160,7 @@ help - Show available commands
 /sethome
 ```
 
-That marks the current chat as where the agent should send scheduled outputs. Useful for `assistant` (morning digest), `ops` (status reports), and `research` (cron'd briefings).
+That marks the current chat as where the agent should send scheduled outputs. Useful for `assistant` (morning digest), `ops` (status reports), and `researcher` (cron'd briefings).
 
 ### 4.10 Bot-to-agent mapping reference
 
@@ -169,7 +169,7 @@ Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rena
 | Slug | Display (chat) | Username | Token (first 10) | Role at a glance |
 |---|---|---|---|---|
 | `general` | Derya | `general_<you>_bot` | `…` | Founder / creative director — your main line |
-| `research` | Doruk | `research_<you>_bot` | `…` | Market analyst — research + game scout |
+| `researcher` | Doruk | `researcher_<you>_bot` | `…` | Market analyst — research + game scout |
 | `assistant` | Tuna | `assistant_<you>_bot` | `…` | Studio manager — reminders, digest |
 | `ops` | Nilay | `ops_<you>_bot` | `…` | DevOps — watches the host |
 | `coder` | Naz | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
@@ -186,7 +186,7 @@ Derya     (general)
   description: Founder and creative director. Your main line: open conversation,
                brainstorming, quick answers, hand-offs to the crew. Dry, has seen every pitch.
 
-Doruk    (research)
+Doruk    (researcher)
   about:       Doruk — market analyst. Research, any topic.
   description: The studio's market analyst and scout. Researches any domain — game
                markets, history, academic. Cites every source, quietly smug. Runs the weekly scout.
@@ -245,7 +245,7 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 ./scripts/setup-bots.sh
 ```
 
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all seven profiles; `TINYFISH_API_KEY` → research, assistant, coder, writer), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
+For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all seven profiles; `TINYFISH_API_KEY` → researcher, assistant, coder, writer), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
 
 Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
 

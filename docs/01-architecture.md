@@ -9,7 +9,7 @@ flowchart TB
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes"]
             k["Derya · general"]:::mini
-            m["Doruk · research"]:::mini
+            m["Doruk · researcher"]:::mini
             u["Tuna · assistant"]:::mini
             w["Ozan · writer"]:::codex
             c["Naz · coder<br/>Metal GPU · Godot GUI"]:::codex
@@ -45,7 +45,7 @@ What dropping containers buys us:
 
 - **`coder` gets a real game engine.** Containers on macOS get **no GPU** — Hypervisor.framework exposes no virtual GPU, and there is no Metal passthrough. So a containerized Godot has no GPU-accelerated editor or rendered play-test; you're limited to headless use. Native, `coder` runs on the Mini's Metal GPU with the full Godot GUI. This alone settles the container question for a game-dev fleet.
 - **One machine, no cross-host plumbing.** The MacBook Pro M2 is shelved for now. All agents share one host, so agent-to-agent work is **local** — no HTTP-over-Tailscale, no per-gateway API keys, no "the laptop is asleep" dead ends (see [Section 17](12-agent-comms.md)).
-- **Native `kanban`.** Hermes' multi-agent board is deliberately single-host: a dispatcher claims tasks from `~/.hermes/kanban.db` and spawns the assigned profile as a **local child process**. A native single install is exactly that environment — the whole pipeline (`research → producer → writer → coder`) is now reachable by one board. We keep it **off** at first (a flat `backlog.md` is the right altitude for a solo, weekly-cadence pipeline), but the option is free and clean. See [Section 16](11-game-dev.md) and [Section 17](12-agent-comms.md).
+- **Native `kanban`.** Hermes' multi-agent board is deliberately single-host: a dispatcher claims tasks from `~/.hermes/kanban.db` and spawns the assigned profile as a **local child process**. A native single install is exactly that environment — the whole pipeline (`researcher → producer → writer → coder`) is now reachable by one board. We keep it **off** at first (a flat `backlog.md` is the right altitude for a solo, weekly-cadence pipeline), but the option is free and clean. See [Section 16](11-game-dev.md) and [Section 17](12-agent-comms.md).
 - **Less overhead.** No OrbStack VM (~1.5 GB reclaimed), no image pull/upgrade machinery, no bind-mount and port-binding juggling.
 
 ## 1.1 What isolation we keep, and what we give up
