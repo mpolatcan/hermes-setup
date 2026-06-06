@@ -40,29 +40,29 @@ flowchart LR
 - [x] All 7 profiles created (`general researcher assistant ops coder writer producer`) — idle until each gets keys + gateway install in its phase.
 - [x] **Telegram extra installed** — `python-telegram-bot` is not bundled by the Homebrew formula; installed into its venv (`$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot`). ⚠️ Re-run after every `brew upgrade hermes-agent` ([docs/10 §14](10-operations.md)).
 
-## Step 2 — Telegram bots ×7
+## Step 2 — Telegram bots ×7 — ⏳ 5/7 DONE (2026-06-07)
 
-- [ ] @BotFather → `/newbot` ×7. Slug-based usernames `general_<you>_bot … producer_<you>_bot` ([docs/03](03-telegram-bots.md)). Save tokens.
-- [ ] `cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env` → fill `ALLOWED_USERS` (@userinfobot) + the 7 tokens **+ `MINIMAX_API_KEY` / `OPENROUTER_API_KEY`** (single entry point for all fleet secrets; `TINYFISH_API_KEY` can wait for Phase B).
-- [ ] `./scripts/setup-bots.sh` → sets bot profiles + fans tokens **and** provider keys out into `~/.hermes/profiles/<slug>/.env`. Watch for `getMe` **WARNING** lines (bad/revoked tokens). Idempotent — rerun after editing bot-tokens.env.
-- [ ] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable.
+- [~] @BotFather → `/newbot`: **5 of 7 created** (general, researcher, assistant, ops, writer). `coder` + `producer` blocked by BotFather's ~24h rate limit — both are Phase B+ anyway. Create after cooldown, paste tokens, rerun the script.
+- [x] bot-tokens.env filled: `ALLOWED_USERS` + 5 tokens + `MINIMAX_API_KEY` + `TINYFISH_API_KEY` (OpenRouter deferred — Step 0).
+- [x] `./scripts/setup-bots.sh` ran clean — all 5 tokens passed `getMe`; keys fanned out to profile `.env`s.
+- [ ] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable (do anytime).
 
-## Step 3 — Phase A: researcher (Doruk) end-to-end
+## Step 3 — Phase A: researcher (Doruk) end-to-end ✅ DONE except soak (2026-06-07)
 
-- [x] `hermes profile create researcher` (done in Step 1) → next: `hermes -p researcher setup`.
-- [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2) — strings verified against v0.16.0 source (Step 0); default base URL is already `api.minimax.io/anthropic`, so set `MINIMAX_BASE_URL` only if your plan's endpoint differs.
-- [~] ~~Add OpenRouter aux (§5.5) + fallback chain (§5.7) + fallback live test~~ — **deferred with the OpenRouter key (Step 0)**. When the key lands, do all three together; an untested fallback is no fallback.
-- [ ] Write **Doruk** SOUL.md ([docs/02 §6.7](02-agents.md)); prune toolsets ([docs/05 §6.6](05-deployment.md)).
-- [ ] `hermes -p researcher gateway install` (built-in launchd service). Message the bot → it answers; a session file appears under `~/.hermes/profiles/researcher/sessions/`.
-- [ ] **Watchdog** ([docs/10 §14.5](10-operations.md)) — install `watchdog.sh` + its launchd plist. Test: `bootout` the researcher gateway → Telegram alert within 15 min → `bootstrap` it back. It then watches the soak below.
-- [ ] **24 h soak** — healthy next morning, RAM in budget (Activity Monitor). Acceptance = docs/05 Phase 1.
+- [x] Profile created (Step 1); slug renamed `research` → `researcher`.
+- [x] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` — **MiniMax key live-tested against both endpoints** (`/v1/text/chatcompletion_v2` and the Anthropic-compatible `/anthropic/v1/messages` Hermes uses); M3 confirmed on the $20 plan (Step 0 gate resolved). Default base URL correct, no `MINIMAX_BASE_URL` needed. Note: `config set` writes YAML lists as strings — write `disabled_toolsets` into config.yaml by hand.
+- [~] ~~OpenRouter aux + fallback chain + fallback live test~~ — **deferred with the OpenRouter key (Step 0)**. When the key lands, do all three together; an untested fallback is no fallback.
+- [x] Doruk SOUL.md written; toolsets pruned per docs/05 §6.6 matrix.
+- [x] Foreground `gateway run` test: inbound Telegram message → M3 reply in 16.8s; session file created. Then `hermes -p researcher gateway install` → launchd service `ai.hermes.gateway-researcher` running.
+- [x] **Watchdog installed + live-tested**: `bootout` researcher → DOWN alert arrived in Telegram (via the general bot) → `bootstrap` back → restart-detection alert → healthy run silent. Gotcha confirmed: you must have messaged the **general** bot once or sendMessage 400s (bots can't initiate chats).
+- [ ] **24 h soak** — started 2026-06-07 ~01:30. Check next morning: both gateways healthy, RAM in budget (Activity Monitor). Acceptance = docs/05 Phase 1.
 
-## Step 4 — Phase A: general (Derya) + isolation tests
+## Step 4 — Phase A: general (Derya) + isolation tests — ✅ mostly DONE (2026-06-07)
 
-- [ ] Same pattern, profile `general` — Derya SOUL, MiniMax M3, Codex fallback.
-- [ ] Add `general` to the watchdog's `EXPECTED` list (docs/10 §14.5).
-- [ ] **Per-profile state test** (docs/05 Phase 2): a memory note in Doruk is **not** visible to Derya.
-- [ ] **Independent-lifecycle test**: `launchctl kickstart -k` researcher → Derya keeps running.
+- [x] Same pattern, profile `general` — Derya SOUL, MiniMax M3 (Codex fallback deferred to Phase B with Codex creds). Gateway under launchd, answered in 10.5s.
+- [x] `general` in the watchdog's `EXPECTED` list from day one.
+- [ ] **Per-profile state test** (docs/05 Phase 2): tell Doruk a memory note; ask Derya — she must **not** know it.
+- [x] **Independent-lifecycle test**: passed implicitly during the watchdog test — Derya answered while researcher was booted out.
 
 ## Step 5 — Game-scout cron
 
