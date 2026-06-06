@@ -93,6 +93,69 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 ---
 
 
+## 14.5 Phase-A health alerting — a watchdog before Nilay exists
+
+`ops` (Nilay) is deferred to Phase B, so in Phase A **nothing tells you a gateway is down**. `KeepAlive` restarts a crashed process but *masks crash-loops*, and the Layer-1 checks (Section 12) are weekly-manual — up to a week blind. Close the gap with a dumb watchdog that bypasses the agents entirely: a launchd job that checks the fleet every 15 minutes and, on failure, messages you through the **raw Telegram Bot API**. It must not depend on any agent — it has to work precisely when they don't.
+
+`~/.hermes/scripts/watchdog.sh`:
+
+```bash
+#!/bin/bash
+# watchdog.sh — gateway health → Telegram, bypassing the agents.
+# Reuses the general bot's token; talks straight to api.telegram.org.
+set -u
+EXPECTED=(research)                      # extend as profiles go live
+ENV="$HOME/.hermes/general/.env"
+TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
+CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
+STATE=/tmp/hermes-watchdog; mkdir -p "$STATE"
+
+alerts=()
+for p in "${EXPECTED[@]}"; do
+  pid=$(launchctl list | awk -v l="com.hermes.$p" '$3==l {print $1}')
+  if [ -z "$pid" ] || [ "$pid" = "-" ]; then
+    alerts+=("$p: DOWN")
+  elif [ -f "$STATE/$p" ] && [ "$pid" != "$(cat "$STATE/$p")" ]; then
+    alerts+=("$p: restarted since last check (crash-loop?)")
+  fi
+  echo "${pid:-none}" > "$STATE/$p"
+done
+
+if [ ${#alerts[@]} -gt 0 ]; then
+  curl -fsS "https://api.telegram.org/bot$TOKEN/sendMessage" \
+    --data-urlencode chat_id="$CHAT" \
+    --data-urlencode text="⚠️ hermes watchdog: ${alerts[*]}" >/dev/null
+fi
+```
+
+Two checks per profile: the launchd job has a live PID, and the PID hasn't changed since the last run — a changed PID means launchd restarted the gateway, which is exactly the event `KeepAlive` would otherwise hide. While something is down it re-alerts every 15 minutes; that nagging is a feature, not a bug. (The `sendMessage` works because you've already messaged the bot — Telegram bots can't initiate chats otherwise.)
+
+Schedule it at `~/Library/LaunchAgents/com.hermes.watchdog.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.hermes.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOU/.hermes/scripts/watchdog.sh</string>
+    </array>
+    <key>StartInterval</key>    <integer>900</integer>
+</dict>
+</plist>
+```
+
+**Test it once** (the runbook has this as a gate): `launchctl bootout` the research gateway, wait ≤15 min for the Telegram alert, `bootstrap` it back.
+
+**Known limit:** a same-machine watchdog can't report the machine dying (power, kernel panic, no network). If you want that too, add one line at the end of a *successful* run — `curl -fsS https://hc-ping.com/<uuid>` against a free dead-man service (e.g. healthchecks.io), which emails you when the pings stop. Optional; the Telegram path already covers the common failures (gateway crash-loop, broken config after an upgrade).
+
+**Phase B:** extend `EXPECTED`, and add a `docker compose ps` check so Honcho + SearXNG count as fleet members.
+
+---
+
+
 ## 15. Open questions to revisit in week 2
 
 These are decisions worth deferring until you have real usage data:

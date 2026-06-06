@@ -79,4 +79,38 @@ The fence around `coder` (and, when built, `ops`):
 - **Be honest about what these are: risk reducers, not a sandbox.** In the container draft a kernel boundary contained `coder`; native, nothing does. Approvals, redaction, and the blocklist *lower* the odds and cost of a bad action — they don't make one impossible. Specifically, **the website blocklist does not stop a shell.** It gates browser-style fetches, but `coder` also has `terminal` + `code_execution`, so `curl`, a Python socket, or any shell command **bypasses the blocklist entirely.** The blocklist helps against the `web`/`browser` path, not the shell path.
 - **For untrusted or third-party code, the `docker` code-exec backend (or a separate machine) is the recommended default, not an option.** If `coder` will run code it didn't write — installing packages, executing a cloned repo — route `code_execution` through the `docker` backend so that code can't read your `.env` files on disk or `curl` your keys out. Treat `local`-backend code-exec as acceptable only for code `coder` itself authored under your eye. And `approvals: off` on `coder` is equivalent to handing an LLM your shell — never do it.
 
+### 13.8 Incident response — stop, contain, rotate
+
+Pieces of this live scattered across the plan (token re-issue in [docs/03](03-telegram-bots.md), `invalid_grant` in [docs/04 §5.3](04-models.md)); this is the consolidated drill, written down *before* it's needed so you're not composing `launchctl` invocations while an agent misbehaves.
+
+**Stop the whole fleet now:**
+
+```bash
+for p in ~/Library/LaunchAgents/com.hermes.*.plist; do
+  launchctl bootout gui/$(id -u) "$p"
+done
+```
+
+Stops and disables every gateway (including the watchdog — fine, you're at the keyboard). Resume per profile with `launchctl bootstrap gui/$(id -u) <plist>`.
+
+**One agent misbehaving (in practice: `coder`):**
+
+1. `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hermes.coder.plist` — stop just that profile.
+2. Read what it did: the session transcript under `~/.hermes/coder/sessions/` — what ran, and what prompted it.
+3. Check what actually executed: recent file changes (`find ~ -newer /tmp/marker`), shell history, and — if it's still live — open connections (`lsof -i`).
+4. Tighten before restart: `approvals: manual`, prune toolsets further, extend the blocklist (Section 13).
+5. Restart only once you understand the trigger. A restart without a diagnosis re-runs the experiment.
+
+**Credential compromise (or reasonable suspicion):** rotate in blast-radius order. And remember 13.7 — every shell-capable agent can read every profile's `.env`, so **if `coder` was compromised, assume *all* keys leaked and rotate all of them**, not just its own.
+
+| Credential | Rotate where | Then |
+|---|---|---|
+| Telegram bot tokens (×7) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/<slug>/.env`), restart gateways |
+| MiniMax API key | platform.minimax.io | update the five MiniMax profiles' config/`.env` |
+| OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
+| Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |
+| TinyFish key | TinyFish dashboard | update the MCP config ([docs/08](08-web-search.md)) |
+
+**Why Telegram tokens first:** the bot token *is* the front door — whoever holds it receives your messages and can impersonate the bot to you. `TELEGRAM_ALLOWED_USERS` stops others from commanding your agents, but not from reading what you send. Revoke kills the old token instantly.
+
 ---

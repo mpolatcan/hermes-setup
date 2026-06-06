@@ -46,13 +46,16 @@ flowchart LR
 - [ ] `hermes profile create research` → `hermes setup --profile research`.
 - [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2). ⚠️ Use the **verified** model string + base URL from Step 0.
 - [ ] Add OpenRouter aux (§5.5) + fallback chain (§5.7).
+- [ ] **Fallback live test** — break the MiniMax key on purpose (one bad char), message the bot, confirm the reply arrives via OpenRouter (provider visible in logs); restore the key. An untested fallback is no fallback.
 - [ ] Write **Doruk** SOUL.md ([docs/02 §6.7](02-agents.md)); prune toolsets ([docs/05 §6.6](05-deployment.md)).
 - [ ] launchd LaunchAgent + load. Message the bot → it answers; a session file appears under `~/.hermes/research/sessions/`.
+- [ ] **Watchdog** ([docs/10 §14.5](10-operations.md)) — install `watchdog.sh` + its launchd plist. Test: `bootout` the research gateway → Telegram alert within 15 min → `bootstrap` it back. It then watches the soak below.
 - [ ] **24 h soak** — healthy next morning, RAM in budget (Activity Monitor). Acceptance = docs/05 Phase 1.
 
 ## Step 4 — Phase A: general (Derya) + isolation tests
 
 - [ ] Same pattern, profile `general` — Derya SOUL, MiniMax M3, Codex fallback.
+- [ ] Add `general` to the watchdog's `EXPECTED` list (docs/10 §14.5).
 - [ ] **Per-profile state test** (docs/05 Phase 2): a memory note in Doruk is **not** visible to Derya.
 - [ ] **Independent-lifecycle test**: `launchctl kickstart -k` research → Derya keeps running.
 

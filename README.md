@@ -116,3 +116,4 @@ flowchart TB
 - **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/<slug>/.env` stay local.
 - **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. Only `coder` and `ops` get a shell; `coder` (the one arbitrary-code agent) is fenced with `approvals: smart`, credential redaction, and a website blocklist ([details](docs/09-security.md)).
 - **Telegram is the front door** and needs no open ports (gateways connect outbound). Don't expose the optional HTTP API / dashboard publicly — put it behind Tailscale ([details](docs/06-networking.md)).
+- **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).
