@@ -13,7 +13,7 @@
 #      and the seven tokens (slug=token per line).
 #   3. ./setup-bots.sh
 #      → sets each bot's profile (name/about/description/commands) AND writes
-#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS into ~/.hermes/<slug>/.env
+#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS into ~/.hermes/profiles/<slug>/.env
 #        (chmod 600, non-destructive — other keys in the file are preserved).
 #
 # Still manual afterward (BotFather-only, ~10s each):
@@ -62,7 +62,7 @@ setup() { # slug name about description
   call "$token" setMyDescription      "{\"description\":\"$desc\"}"     || true
   call "$token" setMyCommands         "$commands"                       || true
   # 2) Wire token + allowed-user into the agent's data-dir .env (non-destructive)
-  local env="$HOME/.hermes/$slug/.env"
+  local env="$HOME/.hermes/profiles/$slug/.env"
   upsert_env "$env" TELEGRAM_BOT_TOKEN     "$token"
   upsert_env "$env" TELEGRAM_ALLOWED_USERS "$ALLOWED_USERS"
   echo "  wired $env"
@@ -85,5 +85,5 @@ setup producer  "Sarp"  "Sarp — producer. Scores game ideas." \
   "Producer and product lead. Holds the budget; scores ideas against the rubric and kills the hype. Skeptical, anti-inflation. Activates in Phase B."
 
 echo
-echo "Done. Profiles set + tokens wired into ~/.hermes/<slug>/.env."
+echo "Done. Profiles set + tokens wired into ~/.hermes/profiles/<slug>/.env."
 echo "Two settings still need BotFather (per bot): /setprivacy Disable, /setjoingroups Disable."

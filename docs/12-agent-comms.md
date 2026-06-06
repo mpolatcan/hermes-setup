@@ -43,7 +43,7 @@ When agents genuinely need to share state or work — beyond you relaying — th
 | Layer | Mechanism | Use it for | Status |
 |---|---|---|---|
 | **Shared knowledge** | **Honcho** ([Section 9](07-memory.md)) — shared user peer | A durable model of *you* that every agent reasons over. Cross-agent *continuity*, async. | **on** (Phase B) |
-| **Shared artifact** | **`backlog.md`** + Honcho workspace | The game-dev pipeline's durable state — candidates, scores, decisions. `producer` owns the file (`~/.hermes/producer/backlog.md`); the candidate list is shared to the other agents through the **Honcho workspace**, not by reaching into a sibling's directory. | **on** when `producer` lands ([Section 16](11-game-dev.md)) |
+| **Shared artifact** | **`backlog.md`** + Honcho workspace | The game-dev pipeline's durable state — candidates, scores, decisions. `producer` owns the file (`~/.hermes/profiles/producer/backlog.md`); the candidate list is shared to the other agents through the **Honcho workspace**, not by reaching into a sibling's directory. | **on** when `producer` lands ([Section 16](11-game-dev.md)) |
 | **Task orchestration** | **`kanban`** — single-host board, dispatcher spawns sibling profiles | Auto-promoting multi-stage pipelines with dependency chains, claims, crash recovery. | **off** — native-ready, flip when earned (17.3) |
 
 Honcho is *knowledge* sharing, not messaging — note Section 9's caveat that cross-agent reasoning isn't automatic: if `coder` learned something `assistant` should know, you may still need to say it once. `backlog.md` is the right *artifact* layer for a weekly pipeline. `kanban` is the heavy *orchestration* layer, held in reserve.

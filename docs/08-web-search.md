@@ -55,16 +55,16 @@ Start with single shared key. Upgrade only if you observe rate-limit errors in a
 Edit each agent's env file. On the Mini:
 
 ```bash
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/research/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/assistant/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/coder/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/writer/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/research/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/assistant/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/coder/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/writer/.env
 # ops can skip — it doesn't need web search
 ```
 
 #### Step 4: Configure the MCP server in each agent's `config.yaml`
 
-The agent reads its config from `~/.hermes/<name>/config.yaml`. Add:
+The agent reads its config from `~/.hermes/profiles/<name>/config.yaml`. Add:
 
 ```yaml
 mcp:
@@ -76,13 +76,13 @@ mcp:
       enabled: true
 ```
 
-Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the `.env` file in the profile's data dir (`~/.hermes/<name>/.env`), which is the file we wrote in Step 3.
+Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the `.env` file in the profile's data dir (`~/.hermes/profiles/<name>/.env`), which is the file we wrote in Step 3.
 
 #### Step 5: Restart the agent and verify
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.hermes.research
-tail -n 50 ~/.hermes/logs/gateways/research/current | grep -i "mcp\|tinyfish"
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research
+tail -n 50 ~/.hermes/profiles/research/logs/gateway.log | grep -i "mcp\|tinyfish"
 ```
 
 You should see TinyFish MCP server registered and the agent picking up `tinyfish_search` and `tinyfish_fetch` tools. From a chat with the agent, ask "what tools do you have for web search?" — `tinyfish_search` and `tinyfish_fetch` should appear in the list.
@@ -169,8 +169,8 @@ web:
 And the env var:
 
 ```bash
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/research/.env
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/assistant/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/research/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/assistant/.env
 ```
 
 Now the agent has TinyFish as primary (via MCP), SearXNG as fallback (via built-in `web_search`). If TinyFish rate-limits or goes down, the agent still has working search.
@@ -184,7 +184,7 @@ Two checks to run after first setup, and periodically afterward.
 **Check 1: Tool usage in agent logs.**
 
 ```bash
-tail -n 200 ~/.hermes/logs/gateways/research/current | grep -i "tool_use\|tinyfish_search\|web_search"
+tail -n 200 ~/.hermes/profiles/research/logs/gateway.log | grep -i "tool_use\|tinyfish_search\|web_search"
 ```
 
 You want to see `tinyfish_search` and `tinyfish_fetch` calls dominating, with `web_search` (the built-in fallback) only firing rarely or never.
@@ -228,7 +228,7 @@ hermes -p research skills install use-tinyfish
 If you'd rather install it manually, the equivalent is to drop the skill into the profile's skills directory:
 
 ```bash
-mkdir -p ~/.hermes/research/skills/use-tinyfish
+mkdir -p ~/.hermes/profiles/research/skills/use-tinyfish
 # Get the SKILL.md from https://github.com/tinyfish-io/tinyfish-cookbook
 # Copy it into the skill directory
 ```

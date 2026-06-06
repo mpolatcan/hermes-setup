@@ -20,17 +20,19 @@ Everything runs **native** on one Mac Mini M4 — one Hermes install, one profil
 A single install keeps all profiles under `~/.hermes/`. Each agent is a profile; its slug is the profile name.
 
 ```
-~/.hermes/
-├── research/      ← Doruk
-├── general/       ← Derya
-├── assistant/     ← Tuna
-├── ops/           ← Nilay  (deferred — Section 15)
-├── coder/         ← Naz
-├── writer/        ← Ozan
-├── producer/      ← Sarp  (Phase B)
-├── kanban.db      ← shared board (created only if/when kanban is enabled — Section 17)
-└── logs/gateways/<profile>/current   ← per-profile rotated logs
+~/.hermes/                 ← default profile (unused by the fleet)
+├── kanban.db              ← shared board (created only if/when kanban is enabled — Section 17)
+└── profiles/
+    ├── research/      ← Doruk
+    ├── general/       ← Derya
+    ├── assistant/     ← Tuna
+    ├── ops/           ← Nilay  (deferred — Section 15)
+    ├── coder/         ← Naz
+    ├── writer/        ← Ozan
+    └── producer/      ← Sarp  (Phase B)
 ```
+
+*(Verified against v0.16.0: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs at `~/.hermes/profiles/<slug>/logs/gateway.log`. `profile create` also drops a wrapper at `~/.local/bin/<slug>`, so `research setup` ≡ `hermes -p research setup`.)*
 
 Each profile directory holds the full state for that agent:
 
@@ -77,15 +79,16 @@ All state will live under `~/.hermes/`.
 
 ```bash
 hermes profile create research
-hermes setup --profile research        # verify the exact flag with `hermes setup --help`
+hermes -p research setup        # verified v0.16.0: global -p/--profile flag, not `setup --profile`
+                                # (or use the wrapper: `research setup`)
 ```
 
-Configure: the model provider (`research` uses Codex OAuth per Section 5.1), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/research/.env`.
+Configure: the model provider (`research` uses MiniMax M3 per Section 5.2), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/research/.env`.
 
 **Step 1.3: Edit the SOUL.md**
 
 ```bash
-nano ~/.hermes/research/SOUL.md
+nano ~/.hermes/profiles/research/SOUL.md
 ```
 
 Write the personality (the full SOUL is in Section 6.7; an example early draft):
@@ -100,19 +103,19 @@ do not flatten disagreement. Concise by default; expand only when asked.
 **Step 1.4: Run the gateway**
 
 ```bash
-hermes gateway run --profile research   # verify flag with `hermes gateway --help`
+hermes -p research gateway run   # foreground; verified v0.16.0
 ```
 
-Confirm it connects and responds to a Telegram message. Once it works in the foreground, supervise it with launchd so it survives logout/reboot (Section 7).
+Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p research gateway install` (Section 7).
 
 **Step 1.5: Verify**
 
 ```bash
 hermes profile list                                    # research is present
-tail -f ~/.hermes/logs/gateways/research/current       # no errors at startup
+tail -f ~/.hermes/profiles/research/logs/gateway.log       # no errors at startup
 ```
 
-Send the bot a message; confirm a new session file appears under `~/.hermes/research/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
+Send the bot a message; confirm a new session file appears under `~/.hermes/profiles/research/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
 
 **Acceptance criteria for Phase 1:**
 - Gateway stays up for 24+ hours (under launchd) without crashing
@@ -127,16 +130,16 @@ Stand up `general` (Derya). The point of this phase is to prove **two profiles r
 
 ```bash
 hermes profile create general
-hermes setup --profile general          # different bot token, different SOUL.md
+hermes -p general setup          # different bot token, different SOUL.md
 ```
 
 **Step 2.2: Supervise it too**
 
-Add a launchd LaunchAgent for `general` (Section 7) and load it. Both gateways now run.
+`hermes -p general gateway install` (Section 7). Both gateways now run.
 
 **Step 2.3: Per-profile state test** *(replaces the old container marker test)*
 
-From a chat with `research`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `research`'s sessions). Confirm each profile has its own `~/.hermes/<profile>/sessions/` and `memories/`.
+From a chat with `research`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `research`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
 > **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why only `coder` and `ops` get a shell, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
 
@@ -156,10 +159,10 @@ Once Phase 2 passes, the rest are mechanical. Copy the pattern, change names, SO
 
 For each new agent:
 1. `hermes profile create <name>`
-2. `hermes setup --profile <name>` (unique bot token, model, keys)
+2. `hermes -p <name> setup` (unique bot token, model, keys)
 3. Write the SOUL.md
 4. Prune toolsets in `config.yaml` (Section 6.6)
-5. Add a launchd LaunchAgent and load it
+5. `hermes -p <name> gateway install`
 
 **Special considerations per agent:**
 
@@ -238,7 +241,7 @@ agent:
 Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off** — do not list them. Verify the live result per agent:
 
 ```bash
-hermes tools --list --profile <name>   # active vs available-but-disabled
+hermes -p <name> tools list   # active vs available-but-disabled
 ```
 
 **`producer` (Phase B):** disable `[terminal, code_execution, browser, web, image_gen, vision, tts, delegation, messaging]`. Keeps `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
@@ -249,42 +252,25 @@ hermes tools --list --profile <name>   # active vs available-but-disabled
 
 ---
 
-## 7. Supervision — launchd LaunchAgents (one per profile)
+## 7. Supervision — launchd, via the built-in installer (one service per profile)
 
 The s6 supervision tree only exists inside the Docker image. Native, **launchd** is the supervisor: it starts each gateway at login and restarts it on crash — the native equivalent of `--restart unless-stopped`.
 
-Create one LaunchAgent per profile at `~/Library/LaunchAgents/com.hermes.<profile>.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-    <key>Label</key>            <string>com.hermes.research</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/opt/homebrew/bin/hermes</string>
-        <string>gateway</string>
-        <string>run</string>
-        <string>--profile</string>
-        <string>research</string>
-    </array>
-    <key>RunAtLoad</key>        <true/>
-    <key>KeepAlive</key>        <true/>   <!-- restart on crash -->
-    <key>StandardErrorPath</key> <string>/Users/YOU/.hermes/logs/launchd/research.err</string>
-    <key>StandardOutPath</key>   <string>/Users/YOU/.hermes/logs/launchd/research.out</string>
-</dict>
-</plist>
-```
-
-Create the log directory first (launchd fails silently if the parent is missing), then load / manage. On modern macOS prefer `bootstrap`/`bootout` over the legacy `load`/`unload` (both still work):
+**Verified against v0.16.0: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and logs at `~/.hermes/profiles/<profile>/logs/gateway.log` (+ `gateway.error.log`):
 
 ```bash
-mkdir -p ~/.hermes/logs/launchd
+hermes -p research gateway install    # write + bootstrap the launchd service
+hermes -p research gateway status     # service installed/running?
+hermes -p research gateway restart    # bounce one profile
+hermes gateway list                   # whole fleet at a glance
+```
 
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hermes.research.plist   # start + enable
-launchctl kickstart -k gui/$(id -u)/com.hermes.research                              # force-restart one agent
-launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.hermes.research.plist   # stop + disable
-# legacy equivalents: launchctl load / unload <plist>
+For surgical control (the watchdog, the independent-lifecycle test) the launchd label is `ai.hermes.gateway-<profile>`:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research   # force-restart one agent
+launchctl bootout   gui/$(id -u)/ai.hermes.gateway-research      # stop + disable
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway-research.plist  # re-enable
 ```
 
 **Two redundant safeguards** so the fleet survives a reboot:

@@ -63,7 +63,7 @@ security:
 
 **This is the security cost of the native, single-install decision (Section 1) — pay attention to it.** Hermes offers four command-execution backends — `local` (no isolation, runs on the host), `docker`, `modal`, and `daytona` (sandboxes). Native on the `local` backend, the docs' warning applies in full: *"for gateway sessions on the local backend, neither the approval system nor container isolation protects the host."* There is no container wrapping the agent — a `terminal` or `code_execution` command runs **directly on your Mac, as your user.**
 
-And because all profiles share one install, a shell-capable agent can read **any sibling profile's `~/.hermes/<profile>/.env`** — every bot token and API key in the fleet. The old container-per-agent draft closed that gap with a kernel boundary; native, the gap is open. We accept it deliberately, for one reason it was worth it (Section 1): `coder` needs the Metal GPU and the Godot GUI, which a macOS container cannot provide. So the residual risk concentrates on **one agent, `coder`** — the only one that runs arbitrary code — and we fence that agent instead of the whole fleet.
+And because all profiles share one install, a shell-capable agent can read **any sibling profile's `~/.hermes/profiles/<profile>/.env`** — every bot token and API key in the fleet. The old container-per-agent draft closed that gap with a kernel boundary; native, the gap is open. We accept it deliberately, for one reason it was worth it (Section 1): `coder` needs the Metal GPU and the Godot GUI, which a macOS container cannot provide. So the residual risk concentrates on **one agent, `coder`** — the only one that runs arbitrary code — and we fence that agent instead of the whole fleet.
 
 **Threat model — be precise about what you're defending against.** This is single-tenant: every token `coder` could read is *yours*. One profile reading another's `.env` is you reading your own data, not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration** — a poisoned web page or repository tricking `coder` into sending your keys somewhere, or running a destructive command. The guardrails below target that.
 
@@ -86,7 +86,7 @@ Pieces of this live scattered across the plan (token re-issue in [docs/03](03-te
 **Stop the whole fleet now:**
 
 ```bash
-for p in ~/Library/LaunchAgents/com.hermes.*.plist; do
+for p in ~/Library/LaunchAgents/ai.hermes.gateway-*.plist; do
   launchctl bootout gui/$(id -u) "$p"
 done
 ```
@@ -95,8 +95,8 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 
 **One agent misbehaving (in practice: `coder`):**
 
-1. `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hermes.coder.plist` — stop just that profile.
-2. Read what it did: the session transcript under `~/.hermes/coder/sessions/` — what ran, and what prompted it.
+1. `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway-coder.plist` — stop just that profile.
+2. Read what it did: the session transcript under `~/.hermes/profiles/coder/sessions/` — what ran, and what prompted it.
 3. Check what actually executed: recent file changes (`find ~ -newer /tmp/marker`), shell history, and — if it's still live — open connections (`lsof -i`).
 4. Tighten before restart: `approvals: manual`, prune toolsets further, extend the blocklist (Section 13).
 5. Restart only once you understand the trigger. A restart without a diagnosis re-runs the experiment.
@@ -105,7 +105,7 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 
 | Credential | Rotate where | Then |
 |---|---|---|
-| Telegram bot tokens (×7) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/<slug>/.env`), restart gateways |
+| Telegram bot tokens (×7) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
 | MiniMax API key | platform.minimax.io | update the five MiniMax profiles' config/`.env` |
 | OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
 | Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |

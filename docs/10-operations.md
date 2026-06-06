@@ -12,9 +12,9 @@ Evaluate the system on three independent axes. Build a small personal eval suite
 
 On the Mini, weekly check:
 
-- All expected gateways running: `hermes profile list` + `launchctl list | grep com.hermes` show the right count
+- All expected gateways running: `hermes profile list` + `launchctl list | grep ai.hermes` show the right count
 - No memory pressure: `vmm_stat` / Activity Monitor shows the Mini well under 16 GB; no runaway profile (native has no per-agent cap — Section 1.1)
-- No crash loops: `launchctl print gui/$(id -u)/com.hermes.<profile>` shows a stable PID and no climbing failure count (`launchctl list` shows the current PID/exit code, not a restart history)
+- No crash loops: `launchctl print gui/$(id -u)/ai.hermes.gateway-<profile>` shows a stable PID and no climbing failure count (`launchctl list` shows the current PID/exit code, not a restart history)
 - Logs clean: `tail -n 200 ~/.hermes/logs/gateways/<name>/current` shows no repeated errors
 - Services up: `docker compose ps` shows Honcho + SearXNG running
 - Gateway reconnection working: kill Wi-Fi briefly, confirm gateways reconnect
@@ -35,9 +35,9 @@ Run the suite, log results, repeat weekly. Patterns will emerge — which agents
 
 This is what differentiates Hermes from other agent frameworks. Track over a month:
 
-- **Skill creation.** How many skills did each agent autonomously create? Inspect `~/.hermes/<name>/skills/` weekly. Are they useful or noise?
+- **Skill creation.** How many skills did each agent autonomously create? Inspect `~/.hermes/profiles/<name>/skills/` weekly. Are they useful or noise?
 - **Skill reuse.** When the same kind of task recurs, does the agent reuse a skill it created earlier, or recreate it from scratch?
-- **Memory accumulation.** Check `~/.hermes/<name>/memories/USER.md` and `MEMORY.md` over time. Is the agent building an accurate model of you and the work, or accumulating noise?
+- **Memory accumulation.** Check `~/.hermes/profiles/<name>/memories/USER.md` and `MEMORY.md` over time. Is the agent building an accurate model of you and the work, or accumulating noise?
 - **Cross-session continuity.** Reference something from a prior conversation without re-explaining it. Does the agent pick it up?
 
 The learning loop is the long-tail value. A one-shot benchmark misses the entire point. Plan to evaluate this over weeks, not minutes.
@@ -61,15 +61,15 @@ hermes --version
 brew upgrade hermes-agent          # or rerun the official installer
 
 # 3. restart every gateway so they pick up the new binary
-launchctl kickstart -k gui/$(id -u)/com.hermes.research
-launchctl kickstart -k gui/$(id -u)/com.hermes.general
-# ...repeat per loaded profile (or `launchctl list | grep com.hermes` to enumerate)
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-research
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-general
+# ...repeat per loaded profile (or `launchctl list | grep ai.hermes` to enumerate)
 
 # 4. smoke-test: message 2–3 agents, tail their logs
-tail -n 50 ~/.hermes/logs/gateways/research/current
+tail -n 50 ~/.hermes/profiles/research/logs/gateway.log
 ```
 
-The state under `~/.hermes/<profile>/` is untouched — skills, memories, sessions, config all survive; only the binary changes. **Honcho + SearXNG** upgrade separately, via Docker (`docker compose pull && docker compose up -d` — Section 7); keep their image tags pinned, not floating on `latest`.
+The state under `~/.hermes/profiles/<profile>/` is untouched — skills, memories, sessions, config all survive; only the binary changes. **Honcho + SearXNG** upgrade separately, via Docker (`docker compose pull && docker compose up -d` — Section 7); keep their image tags pinned, not floating on `latest`.
 
 **Rollback:**
 
@@ -84,7 +84,7 @@ Because it's one binary, rollback is **all-or-nothing** — there is no per-agen
 
 **Backup strategy:**
 
-See Section 9.7 for the full memory backup plan. In summary: `~/.hermes/*/memories/`, `~/.hermes/*/sessions/`, and `~/.hermes/*/skills/` go into whatever you already back up (Time Machine, Restic, rsync) — Time Machine on the Mini already covers `~/.hermes/` if enabled. The Honcho Postgres needs a weekly `pg_dump`. Verify at least one restore works before relying on it.
+See Section 9.7 for the full memory backup plan. In summary: `~/.hermes/profiles/*/memories/`, `~/.hermes/profiles/*/sessions/`, and `~/.hermes/profiles/*/skills/` go into whatever you already back up (Time Machine, Restic, rsync) — Time Machine on the Mini already covers `~/.hermes/` if enabled. The Honcho Postgres needs a weekly `pg_dump`. Verify at least one restore works before relying on it.
 
 **Log management:**
 
@@ -105,14 +105,14 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 # Reuses the general bot's token; talks straight to api.telegram.org.
 set -u
 EXPECTED=(research)                      # extend as profiles go live
-ENV="$HOME/.hermes/general/.env"
+ENV="$HOME/.hermes/profiles/general/.env"
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
 CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
 STATE=/tmp/hermes-watchdog; mkdir -p "$STATE"
 
 alerts=()
 for p in "${EXPECTED[@]}"; do
-  pid=$(launchctl list | awk -v l="com.hermes.$p" '$3==l {print $1}')
+  pid=$(launchctl list | awk -v l="ai.hermes.gateway-$p" '$3==l {print $1}')
   if [ -z "$pid" ] || [ "$pid" = "-" ]; then
     alerts+=("$p: DOWN")
   elif [ -f "$STATE/$p" ] && [ "$pid" != "$(cat "$STATE/$p")" ]; then
@@ -130,13 +130,13 @@ fi
 
 Two checks per profile: the launchd job has a live PID, and the PID hasn't changed since the last run — a changed PID means launchd restarted the gateway, which is exactly the event `KeepAlive` would otherwise hide. While something is down it re-alerts every 15 minutes; that nagging is a feature, not a bug. (The `sendMessage` works because you've already messaged the bot — Telegram bots can't initiate chats otherwise.)
 
-Schedule it at `~/Library/LaunchAgents/com.hermes.watchdog.plist`:
+Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
-    <key>Label</key>            <string>com.hermes.watchdog</string>
+    <key>Label</key>            <string>ai.hermes.watchdog</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>

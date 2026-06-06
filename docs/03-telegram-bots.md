@@ -10,7 +10,7 @@ sequenceDiagram
     actor You
     participant BF as BotFather
     participant API as Telegram Bot API
-    participant ENV as ~/.hermes/*/.env
+    participant ENV as ~/.hermes/profiles/*/.env
     You->>BF: /newbot ×7
     BF-->>You: 7 tokens
     You->>You: fill bot-tokens.env (7 tokens + ALLOWED_USERS)
@@ -71,7 +71,7 @@ This is the bridge between Telegram's side and Hermes's side. Each agent needs t
 
 ```bash
 # On the Mini, for the research agent:
-cat >> ~/.hermes/research/.env <<EOF
+cat >> ~/.hermes/profiles/research/.env <<EOF
 TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
 TELEGRAM_ALLOWED_USERS=123456789
 EOF
@@ -83,11 +83,11 @@ Important formatting rules:
 
 - **No quotes around the token value.** Telegram tokens contain a colon, which some env parsers misinterpret under quoting. Plain `TOKEN=value` form only.
 - **`TELEGRAM_ALLOWED_USERS` is comma-separated.** Single value for a personal setup. If you want a friend to also be able to talk to a specific bot, add their user ID separated by a comma (no spaces).
-- **Permissions on the `.env` file.** `chmod 600 ~/.hermes/*/.env` so only your user can read them. The tokens are bearer credentials.
+- **Permissions on the `.env` file.** `chmod 600 ~/.hermes/profiles/*/.env` so only your user can read them. The tokens are bearer credentials.
 
 ### 4.5 Per-agent config
 
-In each agent's `~/.hermes/<name>/config.yaml`, enable the Telegram gateway:
+In each agent's `~/.hermes/profiles/<name>/config.yaml`, enable the Telegram gateway:
 
 ```yaml
 gateway:
@@ -122,18 +122,18 @@ Do this for each token. Takes 30 seconds total and catches typos before they cau
 
 ### 4.8 First contact after bringing the agent up
 
-After starting the research gateway (`launchctl load ~/Library/LaunchAgents/com.hermes.research.plist`), open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
+After starting the research gateway (`launchctl load ~/Library/LaunchAgents/ai.hermes.gateway-research.plist`), open Telegram, find your bot (search for its username, or use the t.me/<username> link BotFather gave you), and send `/start` or any message. It should reply within a few seconds.
 
 If it doesn't reply:
 
 ```bash
-tail -n 100 ~/.hermes/logs/gateways/research/current | grep -i telegram
+tail -n 100 ~/.hermes/profiles/research/logs/gateway.log | grep -i telegram
 ```
 
 Common issues and fixes:
 
 - **`401 Unauthorized`** — token wrong or revoked. Re-issue via BotFather.
-- **`Conflict: terminated by other getUpdates request`** — another process is polling the same bot. Find it (`launchctl list | grep com.hermes` or check Activity Monitor) and stop the duplicate.
+- **`Conflict: terminated by other getUpdates request`** — another process is polling the same bot. Find it (`launchctl list | grep ai.hermes` or check Activity Monitor) and stop the duplicate.
 - **No log line about Telegram at all** — gateway not enabled in `config.yaml`. Recheck step 4.5.
 - **`TELEGRAM_ALLOWED_USERS not configured, denying`** — user ID missing or wrong. Check `.env`, verify with @userinfobot.
 
@@ -244,7 +244,7 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 ./scripts/setup-bots.sh
 ```
 
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Idempotent: rerun anytime to update the profile text.
+For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Idempotent: rerun anytime to update the profile text.
 
 Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
 

@@ -54,7 +54,7 @@ Be honest about the trade. Profiles are **not filesystem sandboxes** — Hermes 
 
 | Layer | Native single-install reality |
 |---|---|
-| **Per-profile data** | Each agent still gets its own `~/.hermes/<profile>/` — sessions, memories, skills, config are separate. Built-in session search never crosses profiles. |
+| **Per-profile data** | Each agent still gets its own `~/.hermes/profiles/<profile>/` — sessions, memories, skills, config are separate. Built-in session search never crosses profiles. |
 | **Filesystem sandbox** | **None between profiles.** A shell-capable profile can read any sibling's files, including `.env`. |
 | **Process isolation** | None — all gateways run under your macOS user. launchd supervises each; one crash doesn't take the others, but there is no resource cap per profile. |
 | **Host sandbox** | **None.** A shell or code-exec on the `local` backend runs directly on macOS with your user's access. The container that used to be the boundary is gone. |
@@ -72,7 +72,7 @@ The payoff of the old container choice (a kernel boundary) is replaced by **a mu
 ## 11. Native-install notes (macOS)
 
 - **Install path.** Native Hermes via the official installer / Homebrew formula (see [Section 14](10-operations.md) for the exact upgrade story). All state lives under `~/.hermes/`.
-- **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, you wire one **launchd LaunchAgent per profile** (`~/Library/LaunchAgents/com.hermes.<profile>.plist`) so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
+- **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, Hermes' **built-in installer** wires one launchd LaunchAgent per profile — `hermes -p <profile> gateway install` writes + bootstraps `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist` (verified v0.16.0) — so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
 - **Start-at-login.** LaunchAgents load at user login. The Mini must therefore **auto-login** after a reboot (System Settings → Users & Groups → Automatic login) or the agents won't come back unattended.
 - **Docker stays — for services only.** Honcho (Postgres) and SearXNG are infrastructure, not agents, and are far easier to run as containers. Keep a minimal Docker/OrbStack install for **those two only**; no agent runs in a container.
 - **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, on-demand agents (`coder`, `writer`, `producer`) are started only when used, and `ops` (once built) watches RAM — which it can finally do, since native it actually sees the host.

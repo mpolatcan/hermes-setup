@@ -33,7 +33,7 @@ Hermes memory has three layers that complement each other. Knowing which layer d
 
 **Layer 1 — Built-in memory (always on, per-agent).**
 
-Two agent-curated markdown files under each agent's `~/.hermes/<name>/memories/`:
+Two agent-curated markdown files under each agent's `~/.hermes/profiles/<name>/memories/`:
 
 - `MEMORY.md` — facts about the world, projects, environment. Hard cap ~2,200 chars by default.
 - `USER.md` — facts about you from this agent's perspective. Hard cap ~1,375 chars by default.
@@ -42,7 +42,7 @@ Injected into the system prompt as a frozen snapshot at session start. The agent
 
 **Layer 2 — Session search (always on, per-agent, local).**
 
-Every CLI and messaging session is stored in SQLite at `~/.hermes/<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions and uses an auxiliary LLM (Gemini Flash by default) to summarize matches.
+Every CLI and messaging session is stored in SQLite at `~/.hermes/profiles/<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions and uses an auxiliary LLM (Gemini Flash by default) to summarize matches.
 
 The distinction that matters: **Layer 1 is for facts that should *always* be in the prompt. Layer 2 is for facts that *might* be relevant if you ask.** Different jobs.
 
@@ -180,7 +180,7 @@ memory:
   provider: none                # no external provider
 ```
 
-For all the other agents that *do* use Honcho, each needs a config file telling Hermes where the Honcho server is and what AI peer name to use. Hermes looks for it at `~/.hermes/<name>/honcho.json`.
+For all the other agents that *do* use Honcho, each needs a config file telling Hermes where the Honcho server is and what AI peer name to use. Hermes looks for it at `~/.hermes/profiles/<name>/honcho.json`.
 
 Create one per agent. Example for `coder`:
 
@@ -217,7 +217,7 @@ memory:
   provider: honcho
 ```
 
-Restart the gateway (`launchctl kickstart -k gui/$(id -u)/com.hermes.<name>`) for changes to take effect.
+Restart the gateway (`launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-<name>`) for changes to take effect.
 
 ### 9.5 Initial seed: don't make the agent discover everything
 
@@ -256,7 +256,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
 
 **Week 1, per agent (15 min each):**
 
-- Open `~/.hermes/<name>/memories/MEMORY.md` and `USER.md` — read every line.
+- Open `~/.hermes/profiles/<name>/memories/MEMORY.md` and `USER.md` — read every line.
 - Delete anything wrong, outdated, or weirdly phrased. Edits stick.
 - If memory is near the character limit and the agent is consolidating poorly, raise the limit in `config.yaml`:
   ```yaml
@@ -264,7 +264,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
     memory_char_limit: 4000
     user_char_limit: 2000
   ```
-- Confirm sessions are being persisted: `ls ~/.hermes/<name>/sessions/` should show files.
+- Confirm sessions are being persisted: `ls ~/.hermes/profiles/<name>/sessions/` should show files.
 
 **Week 4 (30 min total):**
 
@@ -275,7 +275,7 @@ Memory is not set-and-forget. The agent can write noise to its files, lock in ea
 **Month 3 (1 hour):**
 
 - Pruning pass: each agent's MEMORY.md and USER.md will have grown things you didn't expect. Read through and remove genuinely stale facts. The agent may have written `User is working on Project Y` and Project Y ended a month ago.
-- Skills review: `ls ~/.hermes/<name>/skills/` for each agent. Useful skills get reused; dead skills accumulate. Delete dead ones.
+- Skills review: `ls ~/.hermes/profiles/<name>/skills/` for each agent. Useful skills get reused; dead skills accumulate. Delete dead ones.
 - Honcho representation export: from any agent, ask *"export your user representation"* — the agent can use `honcho_profile` or read the peer card directly. Save these; they're useful to compare across months and to back up.
 
 ### 9.7 Backups
@@ -284,10 +284,10 @@ Memory is the asset that compounds. Plan backups now, not after six months.
 
 **What to back up:**
 
-- `~/.hermes/*/memories/` on the Mini — agent-curated MEMORY.md and USER.md.
-- `~/.hermes/*/skills/` on the Mini — agent-created skills.
-- `~/.hermes/*/sessions/` on the Mini — conversation history (FTS5 index lives in `state.db`).
-- `~/.hermes/*/honcho.json` configs — provider settings per agent.
+- `~/.hermes/profiles/*/memories/` on the Mini — agent-curated MEMORY.md and USER.md.
+- `~/.hermes/profiles/*/skills/` on the Mini — agent-created skills.
+- `~/.hermes/profiles/*/sessions/` on the Mini — conversation history (FTS5 index lives in `state.db`).
+- `~/.hermes/profiles/*/honcho.json` configs — provider settings per agent.
 - The Honcho Postgres database on the Mini — this holds Honcho's accumulated observations, conclusions, user peer card, AI peer cards.
 
 **Hermes side (on the Mini):**

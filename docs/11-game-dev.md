@@ -65,11 +65,11 @@ Stand it up like any other profile (Section 6, Phase 3):
 
 ```bash
 hermes profile create producer
-hermes setup --profile producer          # Sarp bot token, MiniMax model, keys
-# write SOUL.md (16.8), prune toolsets (Section 6.6), add a launchd LaunchAgent
+hermes -p producer setup          # Sarp bot token, MiniMax model, keys
+# write SOUL.md (16.8), prune toolsets (Section 6.6), then: hermes -p producer gateway install
 ```
 
-No container, no port, no compose — just a profile under `~/.hermes/producer/`.
+No container, no port, no compose — just a profile under `~/.hermes/profiles/producer/`.
 
 ### 16.4 Model assignment (MiniMax + Codex only)
 
@@ -85,7 +85,7 @@ Balanced so the only **automated cron** (`research`'s weekly scout) stays on **M
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5). Keep aux *off* the MiniMax token-plan quota — constant small calls would drain the shared 5-hour budget; cheap pay-per-token OpenRouter protects it.
 - **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
 
-  `coder` (`~/.hermes/coder/config.yaml`) — **Codex-primary, MiniMax fallback**:
+  `coder` (`~/.hermes/profiles/coder/config.yaml`) — **Codex-primary, MiniMax fallback**:
   ```yaml
   model:
     provider: openai-codex
@@ -95,7 +95,7 @@ Balanced so the only **automated cron** (`research`'s weekly scout) stays on **M
       model: MiniMax-M3
   ```
 
-  `producer` (`~/.hermes/producer/config.yaml`):
+  `producer` (`~/.hermes/profiles/producer/config.yaml`):
   ```yaml
   model:
     provider: minimax
@@ -112,7 +112,7 @@ Balanced so the only **automated cron** (`research`'s weekly scout) stays on **M
 Add a scheduled job to the existing `research` agent. It runs Monday mornings, scans, and delivers a ranked raw-opportunity list to the Telegram home channel (`/sethome` in the research bot first, Section 4.9).
 
 ```yaml
-# ~/.hermes/research/cron/game-scout.yaml
+# ~/.hermes/profiles/research/cron/game-scout.yaml
 schedule: "0 8 * * 1"        # Mondays 08:00 local
 deliver_to: telegram_home
 prompt: |
@@ -138,15 +138,15 @@ Why complaint mining is flagged priority: chart-topper summaries tell you what e
 
 > **Until producer exists (Phase A):** the scout's weekly digest lands in Telegram and you curate by hand — star what interests you, ignore the rest. No backlog file, no automated scoring. The rubric below is still worth keeping in your head as you skim. When manual curation gets tedious, that's the signal to build producer and automate it.
 
-`producer` keeps a persistent backlog at `~/.hermes/producer/backlog.md` (Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
+`producer` keeps a persistent backlog at `~/.hermes/profiles/producer/backlog.md` (Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
 
 ```yaml
-# ~/.hermes/producer/cron/score-backlog.yaml
+# ~/.hermes/profiles/producer/cron/score-backlog.yaml
 schedule: "0 9 * * 1"        # Mondays 09:00, after the 08:00 scout
 deliver_to: telegram_home
 prompt: |
   Read this week's raw opportunities from the Honcho workspace and the existing
-  backlog at ~/.hermes/producer/backlog.md. Score each NEW candidate 1–5 on:
+  backlog at ~/.hermes/profiles/producer/backlog.md. Score each NEW candidate 1–5 on:
     - Buildable : solo prototype in under 3 months?
     - Loop      : core loop expressible in one sentence?
     - Discovery : niche, searchable, streamable — can players find it?
@@ -180,7 +180,7 @@ The taste gate is deliberately outside the agent's reach. A high-scoring candida
 Point `coder` at your Godot projects in its `config.yaml` (no mounts — it already has your user's filesystem):
 
 ```yaml
-# ~/.hermes/coder/config.yaml
+# ~/.hermes/profiles/coder/config.yaml
 project_roots:
   - ~/godot-projects
 ```

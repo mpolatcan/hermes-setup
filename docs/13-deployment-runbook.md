@@ -10,7 +10,7 @@ The concern docs (01–12) explain *why*; this is the *what, in order*. Follow t
 
 ```mermaid
 flowchart LR
-    s0["0 · keys"]:::p --> s1["1 · install<br/>+ verify CLI ⚠️"]:::v --> s2["2 · 7 bots"]:::p
+    s0["0 · keys"]:::p --> s1["1 · install<br/>+ verify CLI ✅"]:::a --> s2["2 · 7 bots"]:::p
     s2 --> s3["3 · Doruk<br/>soak 24h"]:::a --> s4["4 · Derya<br/>coexist test"]:::a --> s5["5 · scout cron"]:::a
     s5 --> s6["6 · Phase B<br/>Honcho · coder · writer"]:::b --> s7["7 · Phase C<br/>game-dev"]:::c
     classDef p fill:#1E88E5,stroke:#0D47A1,color:#fff
@@ -28,27 +28,32 @@ flowchart LR
 - [ ] **TinyFish key** — web research ([docs/08](08-web-search.md)).
 - [ ] **Mac Mini M4** — macOS current; **auto-login enabled** so launchd agents survive reboot ([docs/01 §11](01-architecture.md)); Docker/OrbStack installed (for Honcho + SearXNG **only**).
 
-## Step 1 — Install Hermes + verify the CLI ⚠️
+## Step 1 — Install Hermes + verify the CLI ✅ DONE (2026-06-06)
 
-- [ ] Install **native** (Homebrew formula / official installer — [docs/10 §14](10-operations.md)). `hermes --version`.
-- [ ] ⚠️ **Confirm the CLI verbs.** The plan assumes `hermes profile create <slug>`, `hermes setup --profile <slug>`, `hermes gateway run --profile <slug>`, `hermes tools --list`. Run `hermes --help` / `hermes profile --help` / `hermes gateway --help` and adjust if they differ.
-- [ ] ⚠️ **Supervision story.** Check whether native Hermes ships its own multi-profile runner or you wire **launchd LaunchAgents** yourself ([docs/05 §7](05-deployment.md)). Decide before Phase A.
+- [x] Installed `hermes-agent 2026.6.5` via Homebrew → **Hermes v0.16.0**.
+- [x] **CLI verbs verified** (gate resolved — plan corrected):
+  - `hermes profile create <slug>` ✓ as assumed; also drops a wrapper at `~/.local/bin/<slug>` (`research setup` ≡ `hermes -p research setup`).
+  - Profile selection is a **global `-p/--profile` flag**, not per-subcommand: `hermes -p <slug> setup`, `hermes -p <slug> gateway run`. (`setup --profile` / `gateway run --profile` don't exist.)
+  - `hermes tools list` (subcommand, not `--list`).
+  - **Layout:** named profiles live at `~/.hermes/profiles/<slug>/`, not `~/.hermes/<slug>/`. Logs: `profiles/<slug>/logs/gateway.log`.
+- [x] **Supervision resolved: built-in.** `hermes -p <slug> gateway install` writes + bootstraps a per-profile launchd service, label `ai.hermes.gateway-<slug>` (`RunAtLoad` + `KeepAlive`, `HERMES_HOME` pinned). No hand-rolled plists ([docs/05 §7](05-deployment.md)). Fleet view: `hermes gateway list`.
+- [x] All 7 profiles created (`general research assistant ops coder writer producer`) — idle until each gets keys + gateway install in its phase.
 
 ## Step 2 — Telegram bots ×7
 
 - [ ] @BotFather → `/newbot` ×7. Slug-based usernames `general_<you>_bot … producer_<you>_bot` ([docs/03](03-telegram-bots.md)). Save tokens.
 - [ ] `cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env` → fill `ALLOWED_USERS` (@userinfobot) + the 7 tokens.
-- [ ] `./scripts/setup-bots.sh` → sets bot profiles + writes `~/.hermes/<slug>/.env`. Watch for `getMe` **WARNING** lines (bad/revoked tokens).
+- [ ] `./scripts/setup-bots.sh` → sets bot profiles + writes `~/.hermes/profiles/<slug>/.env`. Watch for `getMe` **WARNING** lines (bad/revoked tokens).
 - [ ] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable.
 
 ## Step 3 — Phase A: research (Doruk) end-to-end
 
-- [ ] `hermes profile create research` → `hermes setup --profile research`.
+- [x] `hermes profile create research` (done in Step 1) → next: `hermes -p research setup`.
 - [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2). ⚠️ Use the **verified** model string + base URL from Step 0.
 - [ ] Add OpenRouter aux (§5.5) + fallback chain (§5.7).
 - [ ] **Fallback live test** — break the MiniMax key on purpose (one bad char), message the bot, confirm the reply arrives via OpenRouter (provider visible in logs); restore the key. An untested fallback is no fallback.
 - [ ] Write **Doruk** SOUL.md ([docs/02 §6.7](02-agents.md)); prune toolsets ([docs/05 §6.6](05-deployment.md)).
-- [ ] launchd LaunchAgent + load. Message the bot → it answers; a session file appears under `~/.hermes/research/sessions/`.
+- [ ] `hermes -p research gateway install` (built-in launchd service). Message the bot → it answers; a session file appears under `~/.hermes/profiles/research/sessions/`.
 - [ ] **Watchdog** ([docs/10 §14.5](10-operations.md)) — install `watchdog.sh` + its launchd plist. Test: `bootout` the research gateway → Telegram alert within 15 min → `bootstrap` it back. It then watches the soak below.
 - [ ] **24 h soak** — healthy next morning, RAM in budget (Activity Monitor). Acceptance = docs/05 Phase 1.
 
@@ -61,7 +66,7 @@ flowchart LR
 
 ## Step 5 — Game-scout cron
 
-- [ ] Add `~/.hermes/research/cron/game-scout.yaml` ([docs/11 §16.5](11-game-dev.md)); `/sethome` in the research bot. Confirm the Monday digest lands in Telegram.
+- [ ] Add `~/.hermes/profiles/research/cron/game-scout.yaml` ([docs/11 §16.5](11-game-dev.md)); `/sethome` in the research bot. Confirm the Monday digest lands in Telegram.
 
 ## Step 6 — Phase B (only once Phase A is proven)
 

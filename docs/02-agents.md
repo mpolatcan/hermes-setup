@@ -28,7 +28,7 @@ flowchart TB
 
 ## 2. Agent roster
 
-Seven agents, all native **profiles** in one Hermes install on the **Mac Mini M4**, split by workload pattern (always-on vs. on-demand). Each has a functional **slug** (its profile name and `~/.hermes/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
+Seven agents, all native **profiles** in one Hermes install on the **Mac Mini M4**, split by workload pattern (always-on vs. on-demand). Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
 
 ### Always-on agents (4)
 
@@ -65,7 +65,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 - **Model:** **MiniMax primary, Codex fallback.** Derya is your highest-volume conversational agent → it rides the flat **$20 MiniMax Token Plan** (standard M3) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback. (The only Codex-*primary* agents are `coder` + `writer` — the quality-critical creative pair; everything conversational/high-volume stays on MiniMax — [docs/04](04-models.md).)
   ```yaml
-  # ~/.hermes/general/config.yaml
+  # ~/.hermes/profiles/general/config.yaml
   model:
     provider: minimax
     default: MiniMax-M3
@@ -80,13 +80,13 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
   ```
 - **Memory:** full built-in + **Honcho** — Derya builds the richest user model, since it's where you talk about everything. Its own AI peer. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config.
   ```json
-  // ~/.hermes/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "hermes"
+  // ~/.hermes/profiles/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "hermes"
   ```
-- **Profile / directory:** profile `general`, data dir `~/.hermes/general/`. Stand it up like any other (Section 6):
+- **Profile / directory:** profile `general`, data dir `~/.hermes/profiles/general/`. Stand it up like any other (Section 6):
   ```bash
   hermes profile create general
-  hermes setup --profile general        # Derya bot token, MiniMax model, keys
-  # write SOUL.md (6.7), prune toolsets (6.6), add a launchd LaunchAgent (Section 7)
+  hermes -p general setup        # Derya bot token, MiniMax model, keys
+  # write SOUL.md (6.7), prune toolsets (6.6), then: hermes -p general gateway install (Section 7)
   ```
   No container, no port, no compose — Telegram is outbound, so Derya needs no inbound port.
 - **SOUL:** Section 6.7.
@@ -106,7 +106,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 ### 6.7 Agent SOULs — comic studio crew, seasoned (function-first)
 
-Each agent's `~/.hermes/<slug>/SOUL.md`. The style is **seasoned, not cosplay**: the persona and the actual instruction are the *same sentence*, so the comic trait reinforces good behavior without spending tokens on theatre (a skeptical producer kills hype; a blunt programmer defends its diffs). Keep them lean; edit anytime. These supersede the short inline examples earlier in the plan.
+Each agent's `~/.hermes/profiles/<slug>/SOUL.md`. The style is **seasoned, not cosplay**: the persona and the actual instruction are the *same sentence*, so the comic trait reinforces good behavior without spending tokens on theatre (a skeptical producer kills hype; a blunt programmer defends its diffs). Keep them lean; edit anytime. These supersede the short inline examples earlier in the plan.
 
 **`general` — Derya (founder / creative director):**
 ```

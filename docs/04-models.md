@@ -76,7 +76,7 @@ One Token-Plan key works across every MiniMax agent — all five share the plan'
 
 ```bash
 for agent in general research assistant ops producer; do
-  echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes/${agent}/.env
+  echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes/profiles/${agent}/.env
 done
 ```
 
@@ -96,21 +96,21 @@ model:
 
 > ⚠️ **Against OpenAI's consumer ToS, accepted (5.0).** Keep it to these two agents, **human-paced** (no automated cron on Codex). `writer` is occasional; `coder` is interactive (you drive it) but **high-volume** — it's the real exposure here. Decision on record: we run it for gpt-5.x's code + prose quality, knowing it's unenforced-today, *not* permitted. If you'd rather carry zero ToS risk, put `coder`/`writer` on an API key (escape hatch below) or MiniMax-M3 and skip the OAuth.
 
-Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes/<slug>/auth.json` per profile and survives restarts (persisted under `~/.hermes/<slug>/`). Two ways to bootstrap.
+Codex uses OAuth against your ChatGPT account — no API billing, your subscription pays. The token saves to `~/.hermes/profiles/<slug>/auth.json` per profile and survives restarts (persisted under `~/.hermes/profiles/<slug>/`). Two ways to bootstrap.
 
 **Path A — import existing Codex credentials** (if you use ChatGPT Desktop or the Codex CLI). Your creds live at `~/.codex/auth.json`; Hermes auto-imports on first start:
 
 ```bash
 # after: hermes profile create coder
-cp ~/.codex/auth.json ~/.hermes/coder/auth.json
-chmod 600 ~/.hermes/coder/auth.json
-# repeat for ~/.hermes/writer
+cp ~/.codex/auth.json ~/.hermes/profiles/coder/auth.json
+chmod 600 ~/.hermes/profiles/coder/auth.json
+# repeat for ~/.hermes/profiles/writer
 ```
 
 **Path B — fresh device-code login** (if you don't have Codex creds yet):
 
 ```bash
-hermes setup --profile coder
+hermes -p coder setup
 # at the model step pick "OpenAI Codex"; open the printed URL, paste the code, approve
 ```
 
@@ -127,7 +127,7 @@ model:
 **Escape hatch — keep an OpenAI API key ready.** Codex-via-sub is the *last* of the big-three sub-OAuth paths still working (Anthropic + Google enforced theirs in April 2026); OpenAI is the likely next. Treat it as **temporary.** The clean swap is **one line per agent** — drop the OAuth, point at an OpenAI API key:
 
 ```yaml
-# ~/.hermes/coder/config.yaml — the day Codex-OAuth stops or the risk isn't worth it
+# ~/.hermes/profiles/coder/config.yaml — the day Codex-OAuth stops or the risk isn't worth it
 model:
   provider: openai          # API key (platform.openai.com), NOT openai-codex OAuth
   default: gpt-5.4
@@ -140,7 +140,7 @@ Add `OPENAI_API_KEY=sk-...` to that agent's `.env`. Same GPT-5.x models, pay-per
 Not in the default stack. Add it only if you specifically want Claude for an agent (most likely `coder` on a hard refactor day). **Use an API key, not your Claude Code subscription** (5.0).
 
 ```bash
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes/coder/.env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.hermes/profiles/coder/.env
 ```
 
 ```yaml
@@ -159,7 +159,7 @@ Get a key at openrouter.ai → Keys, add $5–10 of credit (lasts months). Add i
 
 ```bash
 for agent in general research assistant ops coder writer producer; do
-  echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes/${agent}/.env
+  echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes/profiles/${agent}/.env
 done
 ```
 
@@ -236,7 +236,7 @@ So if a Codex call 503s or rate-limits, the session silently continues on MiniMa
 
 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` are written by `setup-bots.sh` (see [Telegram Bots](03-telegram-bots.md)); the model keys below you add yourself.
 
-`~/.hermes/general/.env` (Derya):
+`~/.hermes/profiles/general/.env` (Derya):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -244,7 +244,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/research/.env` (Doruk):
+`~/.hermes/profiles/research/.env` (Doruk):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -252,7 +252,7 @@ MINIMAX_API_KEY=mn_...        # primary
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/assistant/.env` (Tuna), `~/.hermes/ops/.env` (Nilay), `~/.hermes/producer/.env` (Sarp):
+`~/.hermes/profiles/assistant/.env` (Tuna), `~/.hermes/profiles/ops/.env` (Nilay), `~/.hermes/profiles/producer/.env` (Sarp):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -260,7 +260,7 @@ MINIMAX_API_KEY=mn_...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/coder/.env` (Naz) — **Codex-primary**:
+`~/.hermes/profiles/coder/.env` (Naz) — **Codex-primary**:
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -270,7 +270,7 @@ OPENROUTER_API_KEY=sk-or-...
 # ANTHROPIC_API_KEY=sk-ant-...   # optional, only if you want Claude (5.4)
 ```
 
-`~/.hermes/writer/.env` (Ozan):
+`~/.hermes/profiles/writer/.env` (Ozan):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
@@ -313,8 +313,8 @@ Codex can't be verified outside Hermes — its auth is bound to Hermes's credent
 Each agent's `config.yaml` is the source of truth:
 
 ```bash
-nano ~/.hermes/general/config.yaml   # change model.provider / model.default
-launchctl kickstart -k gui/$(id -u)/com.hermes.general
+nano ~/.hermes/profiles/general/config.yaml   # change model.provider / model.default
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-general
 ```
 
 History, memory, and skills are provider-agnostic and survive the switch. Use `/model <name>` inside a session to switch *temporarily* without editing the file; persistent changes need the config edit + restart.
@@ -346,7 +346,7 @@ Workflow: try a candidate with `/model openrouter/<slug>` in a live session, jud
 - Cost ~$1.74/$3.48 per M — real money on active dev days, but cheaper than Claude Opus.
 
 ```yaml
-# ~/.hermes/coder/config.yaml — the clean strong-coder swap (when you want off Codex)
+# ~/.hermes/profiles/coder/config.yaml — the clean strong-coder swap (when you want off Codex)
 model:
   provider: openrouter
   default: deepseek/deepseek-v4-pro      # verify exact slug at openrouter.ai/models
