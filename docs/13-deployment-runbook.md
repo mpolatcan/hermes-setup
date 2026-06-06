@@ -23,7 +23,7 @@ flowchart LR
 ## Step 0 — Accounts & keys (before anything)
 
 - [ ] **MiniMax $20 Token Plan** — platform.minimax.io. ⚠️ Confirm **M3 is included at the $20 tier**. Endpoint/model verified in v0.16.0 source: provider `minimax` reads `MINIMAX_API_KEY`, defaults to `https://api.minimax.io/anthropic` (override `MINIMAX_BASE_URL`; China: `api.minimaxi.com/anthropic`), model id `MiniMax-M3`. A `minimax-oauth` provider (account login, no key) also exists — if the Token Plan turns out to be subscription-style, use that instead ([docs/04 §5.2](04-models.md)).
-- [ ] **OpenRouter key** — openrouter.ai, ~$5–10 credit (aux + fallback + overflow — §5.5).
+- [~] **OpenRouter key** — **DEFERRED by decision (2026-06-07): start MiniMax-only.** Aux rides the MiniMax quota (provider aux default = M3); no fallback chain — a MiniMax outage silences the fleet until it passes. Revisit when: the 5h quota pinches, an always-on cron lands, or the first outage hurts. To add later: ~$10 one-time at openrouter.ai (also unlocks the 1000/day `:free` tier), fill `OPENROUTER_API_KEY` in bot-tokens.env, rerun setup-bots.sh, wire §5.5 + §5.7.
 - [ ] **Codex creds** — existing `~/.codex/auth.json` (ChatGPT Desktop / Codex CLI) or be ready for device-code login (coder + writer — §5.3). ⚠️ Accepted-risk — read §5.0 first.
 - [ ] **TinyFish key** — web research ([docs/08](08-web-search.md)).
 - [ ] **Mac Mini M4** — macOS current; **auto-login enabled** so launchd agents survive reboot ([docs/01 §11](01-architecture.md)); Docker/OrbStack installed (for Honcho + SearXNG **only**).
@@ -51,8 +51,7 @@ flowchart LR
 
 - [x] `hermes profile create researcher` (done in Step 1) → next: `hermes -p researcher setup`.
 - [ ] `config.yaml`: `provider: minimax` / `default: MiniMax-M3` (§5.2) — strings verified against v0.16.0 source (Step 0); default base URL is already `api.minimax.io/anthropic`, so set `MINIMAX_BASE_URL` only if your plan's endpoint differs.
-- [ ] Add OpenRouter aux (§5.5) + fallback chain (§5.7).
-- [ ] **Fallback live test** — break the MiniMax key on purpose (one bad char), message the bot, confirm the reply arrives via OpenRouter (provider visible in logs); restore the key. An untested fallback is no fallback.
+- [~] ~~Add OpenRouter aux (§5.5) + fallback chain (§5.7) + fallback live test~~ — **deferred with the OpenRouter key (Step 0)**. When the key lands, do all three together; an untested fallback is no fallback.
 - [ ] Write **Doruk** SOUL.md ([docs/02 §6.7](02-agents.md)); prune toolsets ([docs/05 §6.6](05-deployment.md)).
 - [ ] `hermes -p researcher gateway install` (built-in launchd service). Message the bot → it answers; a session file appears under `~/.hermes/profiles/researcher/sessions/`.
 - [ ] **Watchdog** ([docs/10 §14.5](10-operations.md)) — install `watchdog.sh` + its launchd plist. Test: `bootout` the researcher gateway → Telegram alert within 15 min → `bootstrap` it back. It then watches the soak below.
