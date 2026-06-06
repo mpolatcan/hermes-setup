@@ -11,9 +11,12 @@
 #   2. cp bot-tokens.env.example bot-tokens.env  &&  chmod 600 bot-tokens.env
 #      Fill in your numeric Telegram user ID (ALLOWED_USERS, from @userinfobot)
 #      and the seven tokens (slug=token per line).
-#   3. ./setup-bots.sh
+#   3. Optionally fill MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY
+#      in bot-tokens.env too — single entry point for all fleet secrets.
+#   4. ./setup-bots.sh
 #      → sets each bot's profile (name/about/description/commands) AND writes
-#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS into ~/.hermes/profiles/<slug>/.env
+#        TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS + the provider keys into
+#        ~/.hermes/profiles/<slug>/.env
 #        (chmod 600, non-destructive — other keys in the file are preserved).
 #
 # Still manual afterward (BotFather-only, ~10s each):
@@ -84,6 +87,25 @@ setup writer    "Ozan"  "Ozan — narrative designer. Drafts & edits." \
 setup producer  "Sarp"  "Sarp — producer. Scores game ideas." \
   "Producer and product lead. Holds the budget; scores ideas against the rubric and kills the hype. Skeptical, anti-inflation. Activates in Phase B."
 
+# 3) Fan out model-provider keys (docs/04 §5.8). Empty key = skip; existing
+#    values in profile .env files are preserved either way.
+ALL_SLUGS=(general research assistant ops coder writer producer)
+TINYFISH_SLUGS=(research assistant coder writer)   # docs/08
+
+fanout_key() { # key value slugs…
+  local key="$1" val="$2"; shift 2
+  [ -n "$val" ] || { echo "skip $key (empty in bot-tokens.env)"; return; }
+  for slug in "$@"; do
+    upsert_env "$HOME/.hermes/profiles/$slug/.env" "$key" "$val"
+  done
+  echo "wired $key into: $*"
+}
+
 echo
-echo "Done. Profiles set + tokens wired into ~/.hermes/profiles/<slug>/.env."
+fanout_key MINIMAX_API_KEY    "${MINIMAX_API_KEY:-}"    "${ALL_SLUGS[@]}"
+fanout_key OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}" "${ALL_SLUGS[@]}"
+fanout_key TINYFISH_API_KEY   "${TINYFISH_API_KEY:-}"   "${TINYFISH_SLUGS[@]}"
+
+echo
+echo "Done. Bot profiles set; tokens + keys wired into ~/.hermes/profiles/<slug>/.env."
 echo "Two settings still need BotFather (per bot): /setprivacy Disable, /setjoingroups Disable."

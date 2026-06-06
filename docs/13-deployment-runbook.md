@@ -43,8 +43,8 @@ flowchart LR
 ## Step 2 — Telegram bots ×7
 
 - [ ] @BotFather → `/newbot` ×7. Slug-based usernames `general_<you>_bot … producer_<you>_bot` ([docs/03](03-telegram-bots.md)). Save tokens.
-- [ ] `cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env` → fill `ALLOWED_USERS` (@userinfobot) + the 7 tokens.
-- [ ] `./scripts/setup-bots.sh` → sets bot profiles + writes `~/.hermes/profiles/<slug>/.env`. Watch for `getMe` **WARNING** lines (bad/revoked tokens).
+- [ ] `cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env` → fill `ALLOWED_USERS` (@userinfobot) + the 7 tokens **+ `MINIMAX_API_KEY` / `OPENROUTER_API_KEY`** (single entry point for all fleet secrets; `TINYFISH_API_KEY` can wait for Phase B).
+- [ ] `./scripts/setup-bots.sh` → sets bot profiles + fans tokens **and** provider keys out into `~/.hermes/profiles/<slug>/.env`. Watch for `getMe` **WARNING** lines (bad/revoked tokens). Idempotent — rerun after editing bot-tokens.env.
 - [ ] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable.
 
 ## Step 3 — Phase A: research (Doruk) end-to-end
