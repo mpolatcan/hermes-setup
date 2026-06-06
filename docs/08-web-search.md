@@ -56,7 +56,7 @@ Edit each agent's env file. On the Mini:
 
 ```bash
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/research/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/concierge/.env
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/assistant/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/coder/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/writer/.env
 # ops can skip — it doesn't need web search
@@ -116,7 +116,7 @@ The agent will reach for TinyFish first and fall back to built-in tools if neede
 
 **Recommendation for our setup:**
 
-- `research`, `concierge`: **Layer 2** (prefer TinyFish, fall back gracefully). These agents need web access to function; outages should degrade, not break.
+- `research`, `assistant`: **Layer 2** (prefer TinyFish, fall back gracefully). These agents need web access to function; outages should degrade, not break.
 - `coder`, `writer`: **Layer 1** (TinyFish only). Their web use is opportunistic; if TinyFish is down, asking the user to try again is fine.
 - `ops`: web disabled entirely (already in Section 6). Doesn't need search.
 
@@ -170,7 +170,7 @@ And the env var:
 
 ```bash
 echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/research/.env
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/concierge/.env
+echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/assistant/.env
 ```
 
 Now the agent has TinyFish as primary (via MCP), SearXNG as fallback (via built-in `web_search`). If TinyFish rate-limits or goes down, the agent still has working search.
@@ -209,7 +209,7 @@ For reference when wiring up each agent:
 |---|---|---|---|---|
 | `general` (Derya) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
 | `research` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
-| `concierge` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
+| `assistant` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
 | `ops` (Nilay) | No | Disabled entirely | None | Doesn't need web |
 | `coder` (Naz) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
 | `writer` (Ozan) | Yes (light use) | Disabled | None | Layer 1 — research while drafting |

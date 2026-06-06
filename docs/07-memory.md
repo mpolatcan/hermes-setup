@@ -12,7 +12,7 @@ flowchart TB
     end
     subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
         user["user peer = YOU<br/>shared across all agents"]:::user
-        peers["ai peers (= slugs): general, research,<br/>concierge, coder, writer, producer — one per agent"]:::infra
+        peers["ai peers (= slugs): general, research,<br/>assistant, coder, writer, producer — one per agent"]:::infra
     end
     per --> hon
     classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
@@ -58,7 +58,7 @@ For a seven-agent setup with shared user identity, **Honcho is the right choice*
 
 Honcho models conversations as **peers exchanging messages**. There's one **user peer** (you) that is **global across all agents in the same workspace**, and one **AI peer per agent**, each with its own identity.
 
-Concretely: all seven agents share a single understanding of who you are — your preferences, your timezone, your projects, your communication style. But each agent develops its own independent observations and identity. `coder` builds a model of you as a developer; `writer` builds a model of your editorial voice; `concierge` builds a model of your daily rhythms. They don't bleed into each other.
+Concretely: all seven agents share a single understanding of who you are — your preferences, your timezone, your projects, your communication style. But each agent develops its own independent observations and identity. `coder` builds a model of you as a developer; `writer` builds a model of your editorial voice; `assistant` builds a model of your daily rhythms. They don't bleed into each other.
 
 This solves a problem that built-in memory alone cannot: cross-agent continuity for the parts that should be shared, separation for the parts that should be distinct.
 
@@ -80,7 +80,7 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 ```mermaid
 flowchart TB
     subgraph mini["🖥️ M4 Mini · single host"]
-        ag["Native agents (launchd)<br/>general (Derya) · research (Doruk) · concierge (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
+        ag["Native agents (launchd)<br/>general (Derya) · research (Doruk) · assistant (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
         subgraph orb["OrbStack (Docker)"]
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
@@ -164,7 +164,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 |---|---|---|---|---|
 | `general` (Derya) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
 | `research` | Yes | Yes | Yes (peer: `research`) | Tracks topic interests, source preferences, depth |
-| `concierge` | Yes | Yes | Yes (peer: `concierge`) | Models daily rhythms, what reminders land |
+| `assistant` | Yes | Yes | Yes (peer: `assistant`) | Models daily rhythms, what reminders land |
 | `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization (deferred) |
 | `coder` | Yes | Yes | Yes (peer: `coder`) | Language preferences, project conventions |
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
@@ -204,7 +204,7 @@ Create one per agent. Example for `coder`:
 Key fields:
 
 - `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
-- `aiPeer` — **unique per agent** (`coder`, `writer`, `research`, `concierge`). This is the identity Honcho uses to build per-agent observations.
+- `aiPeer` — **unique per agent** (`coder`, `writer`, `research`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
 - `workspace` — keep as `hermes` for all seven. The workspace is what binds them into one shared environment.
 - `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only).
@@ -243,7 +243,7 @@ Per-agent additions:
 - **`coder` USER.md:** preferred languages, code style preferences, projects you work on most, "always show diffs", build tools you use, what error patterns you've seen before.
 - **`writer` USER.md:** voice references, audience defaults, kinds of pieces you write, what edits you typically accept vs. reject, your preferred draft → revise rhythm.
 - **`research` USER.md:** topics of standing interest, source-quality preferences, depth defaults, citation style.
-- **`concierge` USER.md:** schedule patterns, reminder preferences, what's worth pinging you about vs. queuing for digest.
+- **`assistant` USER.md:** schedule patterns, reminder preferences, what's worth pinging you about vs. queuing for digest.
 - **`ops` USER.md:** *(leave minimal — `ops` shouldn't develop a user model)*.
 
 **MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `research` agent's might note "default web search backend is Firecrawl, prefer primary sources over aggregators."
@@ -329,6 +329,6 @@ A few things worth being explicit about:
 - **`ops` won't develop personality over time.** That's deliberate. If you want it to, flip its config to use Honcho with its own AI peer. But the value of `ops` is determinism.
 - **`producer` (Sarp) memory stays minimal until Phase B.** It's deferred; when you build it, its Honcho peer (`producer`) and the backlog workspace get configured then. Don't pre-allocate.
 - **You still need to actually talk to the agents.** The system can only learn from interactions that happen. An agent that gets one message per week will have a thin user model regardless of how good the memory stack is.
-- **Cross-agent reasoning isn't automatic.** Honcho's user peer is shared, but each AI peer reasons independently. If `coder` learned something that `concierge` should know, you may need to tell `concierge` once. The agents do not auto-broadcast knowledge to each other.
+- **Cross-agent reasoning isn't automatic.** Honcho's user peer is shared, but each AI peer reasons independently. If `coder` learned something that `assistant` should know, you may need to tell `assistant` once. The agents do not auto-broadcast knowledge to each other.
 
 ---

@@ -10,7 +10,7 @@ flowchart TB
     subgraph install["native Hermes · one install · ~/.hermes"]
         direction LR
         derya["Derya · router"]:::mini
-        others["research · concierge<br/>writer · producer · coder"]:::mini
+        others["research · assistant<br/>writer · producer · coder"]:::mini
         honcho[("Honcho<br/>shared user model")]:::infra
         board[("kanban.db<br/>off — flip later")]:::off
     end
@@ -46,7 +46,7 @@ When agents genuinely need to share state or work — beyond you relaying — th
 | **Shared artifact** | **`backlog.md`** + Honcho workspace | The game-dev pipeline's durable state — candidates, scores, decisions. `producer` owns the file (`~/.hermes/producer/backlog.md`); the candidate list is shared to the other agents through the **Honcho workspace**, not by reaching into a sibling's directory. | **on** when `producer` lands ([Section 16](11-game-dev.md)) |
 | **Task orchestration** | **`kanban`** — single-host board, dispatcher spawns sibling profiles | Auto-promoting multi-stage pipelines with dependency chains, claims, crash recovery. | **off** — native-ready, flip when earned (17.3) |
 
-Honcho is *knowledge* sharing, not messaging — note Section 9's caveat that cross-agent reasoning isn't automatic: if `coder` learned something `concierge` should know, you may still need to say it once. `backlog.md` is the right *artifact* layer for a weekly pipeline. `kanban` is the heavy *orchestration* layer, held in reserve.
+Honcho is *knowledge* sharing, not messaging — note Section 9's caveat that cross-agent reasoning isn't automatic: if `coder` learned something `assistant` should know, you may still need to say it once. `backlog.md` is the right *artifact* layer for a weekly pipeline. `kanban` is the heavy *orchestration* layer, held in reserve.
 
 ### 17.3 `kanban` — why it's available now, and why it stays off
 

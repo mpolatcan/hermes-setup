@@ -23,7 +23,7 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
 ~/.hermes/
 ├── research/      ← Doruk
 ├── general/       ← Derya
-├── concierge/     ← Tuna
+├── assistant/     ← Tuna
 ├── ops/           ← Nilay  (deferred — Section 15)
 ├── coder/         ← Naz
 ├── writer/        ← Ozan
@@ -189,7 +189,7 @@ First, separate three things people conflate:
 
 **Per-agent matrix** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
 
-| Toolset | research | concierge | ops | coder | writer |
+| Toolset | research | assistant | ops | coder | writer |
 |---|:--:|:--:|:--:|:--:|:--:|
 | `terminal` | ✗ | ✗ | ✓ | ✓ | ✗ |
 | `code_execution` | ✗ | ✗ | ✗ | ✓ | ✗ |
@@ -218,7 +218,7 @@ agent:
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
 
-# concierge
+# assistant
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 

@@ -10,7 +10,7 @@ flowchart TB
         subgraph hermes["native Hermes · one install · ~/.hermes"]
             k["Derya · general"]:::mini
             m["Doruk · research"]:::mini
-            u["Tuna · concierge"]:::mini
+            u["Tuna · assistant"]:::mini
             w["Ozan · writer"]:::codex
             c["Naz · coder<br/>Metal GPU · Godot GUI"]:::codex
             o["Nilay · ops · deferred"]:::mini

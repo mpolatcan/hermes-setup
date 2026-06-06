@@ -61,7 +61,7 @@ need it in step 4.4. Then for the same bot, run these to harden settings:
 → /setabouttext → "Hermes Agent — research personality" (shows in bot info)
 ```
 
-Suggested username pattern: `<role>_<yourname>_bot`. So `research_alice_bot`, `concierge_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
+Suggested username pattern: `<role>_<yourname>_bot`. So `research_alice_bot`, `assistant_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
 
 By the end, you have seven tokens (six if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
 
@@ -160,7 +160,7 @@ help - Show available commands
 /sethome
 ```
 
-That marks the current chat as where the agent should send scheduled outputs. Useful for `concierge` (morning digest), `ops` (status reports), and `research` (cron'd briefings).
+That marks the current chat as where the agent should send scheduled outputs. Useful for `assistant` (morning digest), `ops` (status reports), and `research` (cron'd briefings).
 
 ### 4.10 Bot-to-agent mapping reference
 
@@ -170,7 +170,7 @@ Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rena
 |---|---|---|---|---|
 | `general` | Derya | `general_<you>_bot` | `…` | Founder / creative director — your main line |
 | `research` | Doruk | `research_<you>_bot` | `…` | Market analyst — research + game scout |
-| `concierge` | Tuna | `concierge_<you>_bot` | `…` | Studio manager — reminders, digest |
+| `assistant` | Tuna | `assistant_<you>_bot` | `…` | Studio manager — reminders, digest |
 | `ops` | Nilay | `ops_<you>_bot` | `…` | DevOps — watches the host |
 | `coder` | Naz | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
 | `writer` | Ozan | `writer_<you>_bot` | `…` | Narrative designer — drafts & PRDs |
@@ -191,7 +191,7 @@ Doruk    (research)
   description: The studio's market analyst and scout. Researches any domain — game
                markets, history, academic. Cites every source, quietly smug. Runs the weekly scout.
 
-Tuna     (concierge)
+Tuna     (assistant)
   about:       Tuna — studio manager. Keeps your day running.
   description: Studio manager and the actual adult. Calendar, reminders, your morning
                digest. Warm, brief, herds the cats so things ship on time.
@@ -229,7 +229,7 @@ A few details that matter for our setup:
 
 **File attachments use any path your user can read.** When the agent sends a file via `MEDIA:/...`, the path just needs to be readable by your user. Since the gateway runs natively on the Mini as you, any such path works directly — no mounts involved. For `writer`, point its output at `~/Documents/writer-output/` directly in config; files written there are immediately readable by the gateway.
 
-**Group chats are off by default.** With `/setjoingroups Disable` from step 4.3, the bots can't be added to groups at all. If you ever want a bot in a group (probably `concierge` for a family group), re-enable `/setjoingroups` and also set the per-platform `group_allow_from` allowlist in `config.yaml` to restrict who can invoke the bot.
+**Group chats are off by default.** With `/setjoingroups Disable` from step 4.3, the bots can't be added to groups at all. If you ever want a bot in a group (probably `assistant` for a family group), re-enable `/setjoingroups` and also set the per-platform `group_allow_from` allowlist in `config.yaml` to restrict who can invoke the bot.
 
 **Single Telegram account, seven bots, no conflict.** Telegram supports unlimited bots per account. Bots are independent of the account that created them — each has its own identity, its own token, and shows up as a separate chat. Your seven bots will appear as seven separate conversations in your chat list.
 

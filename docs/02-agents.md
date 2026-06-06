@@ -10,7 +10,7 @@ flowchart TB
         subgraph always["always-on"]
             general["Derya · general<br/>creative director · MiniMax"]:::mini
             research["Doruk · research<br/>market scout · MiniMax"]:::mini
-            concierge["Tuna · concierge<br/>studio manager · MiniMax"]:::mini
+            assistant["Tuna · assistant<br/>studio manager · MiniMax"]:::mini
             ops["Nilay · ops<br/>DevOps · MiniMax · deferred"]:::mini
         end
         subgraph demand["on-demand"]
@@ -38,7 +38,7 @@ Run 24/7 under launchd; answer from your phone via Telegram whenever.
 |---|---|---|---|---|
 | `general` | **Derya** | Founder / creative director — your main line; hands off to the crew | Calm, dry; seen every bad pitch, the studio's glue | ~2 GB |
 | `research` | **Doruk** | Market analyst / scout — research any domain; runs the game-scout cron | Data nerd, citation-driven, quietly smug | ~3 GB |
-| `concierge` | **Tuna** | Studio manager — the adult: calendar, reminders, morning digest | Warm, brief, herds the cats, done with the drama | ~2 GB |
+| `assistant` | **Tuna** | Studio manager — the adult: calendar, reminders, morning digest | Warm, brief, herds the cats, done with the drama | ~2 GB |
 | `ops` | **Nilay** | DevOps — watches the host, status reports, scheduled checks (**deferred** — Section 15) | Terse, "it's never the server" | ~1 GB |
 
 ### On-demand agents (3)
@@ -51,10 +51,10 @@ Started when you use them, idle otherwise — they don't hold RAM the rest of th
 | `writer` | **Ozan** | Narrative designer; drafts, edits, game PRDs | Pretentious artist — everything's "a metaphor" | ~2 GB |
 | `producer` | **Sarp** | Producer / product lead: idea backlog + scoring (**Phase B, deferred**) | Skeptical budget-killer, anti-hype, sighs internally | ~2 GB |
 
-Names are short (first-name only) for the chat list; the comic SOULs are in Section 6.7. Slugs are functional and never change — the `concierge` slug is kept for wiring continuity across Sections 3–10 even though the agent presents as **Tuna**, the studio manager. The personas are sarcastic-but-functional: each comic trait encodes the role (a skeptical producer kills hype; a blunt programmer defends its diffs), never fights it.
+Names are short (first-name only) for the chat list; the comic SOULs are in Section 6.7. **Slugs are functional and constant; the display name is the persona** — e.g. the `assistant` profile presents as **Tuna**, the studio manager. The personas are sarcastic-but-functional: each comic trait encodes the role (a skeptical producer kills hype; a blunt programmer defends its diffs), never fights it.
 
 **Resource math (one 16 GB Mini, native — no per-agent cap, so think in concurrent working sets):**
-- **Always-on baseline (Phase B):** Derya 2 + research 3 + concierge 2 = **7 GB** (`ops` deferred — Section 15 — adds ~1 GB when built), plus Honcho (~2 GB, Docker) + SearXNG (~0.5 GB, Docker) + macOS (~2 GB) ≈ **~11.5 / 16 GB** (≈12.5 with ops). Comfortable.
+- **Always-on baseline (Phase B):** Derya 2 + research 3 + assistant 2 = **7 GB** (`ops` deferred — Section 15 — adds ~1 GB when built), plus Honcho (~2 GB, Docker) + SearXNG (~0.5 GB, Docker) + macOS (~2 GB) ≈ **~11.5 / 16 GB** (≈12.5 with ops). Comfortable.
 - **+ a coding session:** + coder ~4 GB → **~15.5 GB** (≈16.5 with ops also resident — drop ops or a draft agent if you ever hit that). On-demand agents (coder, writer, producer) spike **one at a time** — you're one person.
 - **Phase A (research + Derya only, no Honcho)** ≈ **7 GB** — huge headroom; start here.
 - **No hard caps.** Native gives no `--memory` ceiling (Section 1.1). A runaway profile can swap the box; `max_turns` budgets and not holding every on-demand agent resident keep it safe. Defer `ops` until there's a fleet to watch (Section 15).
@@ -130,7 +130,7 @@ from reviews) over generic trend summaries. Concise; expand on request. If someo
 guesses, correct them — with a link.
 ```
 
-**`concierge` — Tuna (studio manager / the adult):**
+**`assistant` — Tuna (studio manager / the adult):**
 ```
 You are Tuna, the studio manager — the actual adult, the reason anything ships on time
 while the others argue. You run the boss's day: calendar, reminders, the morning

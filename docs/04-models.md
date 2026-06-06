@@ -55,7 +55,7 @@ The distinction that governs everything below: **an API key (you pay per token) 
 |---|---|---|---|---|---|
 | `general` | Derya | `MiniMax-M3` | `minimax` | ✅ | Highest-volume daily driver → $20 token plan; 5h quota is generous for solo use |
 | `research` | Doruk | `MiniMax-M3` | `minimax` | ✅ | Web-tool-driven; M3's browsing + 1M context fit it, and it keeps the weekly cron off the gray-area sub |
-| `concierge` | Tuna | `MiniMax-M3` | `minimax` | ✅ | Daily logistics |
+| `assistant` | Tuna | `MiniMax-M3` | `minimax` | ✅ | Daily logistics |
 | `ops` | Nilay | `MiniMax-M3` | `minimax` | ✅ | Light, deterministic; standard M3 on the entry token-plan tier |
 | `coder` | Naz | `gpt-5.x` | `openai-codex` | ⚠️ | gpt-5.x coding quality; interactive/human-paced (lower flag risk than a cron). **Heaviest agent → watch the ChatGPT quota**; MiniMax fallback |
 | `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
@@ -65,7 +65,7 @@ For all seven, the **auxiliary model** (vision, web summarization, context compr
 
 Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `research`'s weekly scout — lives on **MiniMax**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and **A/B `coder` against MiniMax-M3** (a strong agentic coder itself, SWE-Bench 59 / Terminal-Bench 66). If gpt-5.x isn't clearly better for GDScript, move `coder` back to M3 (`/model` per session, or the config) — safer and $0.
 
-### 5.2 MiniMax setup — your primary (Derya, research, concierge, ops, producer)
+### 5.2 MiniMax setup — your primary (Derya, research, assistant, ops, producer)
 
 Get an API key at platform.minimax.io. Two regional endpoints:
 
@@ -75,7 +75,7 @@ Get an API key at platform.minimax.io. Two regional endpoints:
 One Token-Plan key works across every MiniMax agent — all five share the plan's rolling request quota:
 
 ```bash
-for agent in general research concierge ops producer; do
+for agent in general research assistant ops producer; do
   echo "MINIMAX_API_KEY=mn_..." >> ~/.hermes/${agent}/.env
 done
 ```
@@ -158,7 +158,7 @@ Aux tasks fire constantly — vision, page summaries, session titles, context co
 Get a key at openrouter.ai → Keys, add $5–10 of credit (lasts months). Add it to **every** agent's `.env`:
 
 ```bash
-for agent in general research concierge ops coder writer producer; do
+for agent in general research assistant ops coder writer producer; do
   echo "OPENROUTER_API_KEY=sk-or-..." >> ~/.hermes/${agent}/.env
 done
 ```
@@ -205,7 +205,7 @@ The real constraint is the **request quota**, not dollars — so the bill won't 
 
 Hermes retries a failed primary (rate limit, 5xx, auth) against the next provider in the chain without losing the conversation. Each agent falls back to a *different* provider so one outage can't take it down. The OpenRouter key from 5.5 covers all of these — **MiniMax agents fall back via OpenRouter so they never need Codex credentials.**
 
-MiniMax-primary agents (`general`, `research`, `concierge`, `producer`):
+MiniMax-primary agents (`general`, `research`, `assistant`, `producer`):
 ```yaml
 fallback_providers:
   - provider: openrouter
@@ -252,7 +252,7 @@ MINIMAX_API_KEY=mn_...        # primary
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-`~/.hermes/concierge/.env` (Tuna), `~/.hermes/ops/.env` (Nilay), `~/.hermes/producer/.env` (Sarp):
+`~/.hermes/assistant/.env` (Tuna), `~/.hermes/ops/.env` (Nilay), `~/.hermes/producer/.env` (Sarp):
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...

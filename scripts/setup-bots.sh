@@ -73,7 +73,7 @@ setup general   "Derya"  "Derya — studio founder & creative director. Ask anyt
   "Founder and creative director. Your main line: open conversation, brainstorming, quick answers, hand-offs to the crew. Dry, calm, has seen every pitch."
 setup research  "Doruk" "Doruk — market analyst. Research, any topic." \
   "The studio's market analyst and scout. Researches any domain — game markets, history, academic. Cites every source, quietly smug. Runs the weekly game scout."
-setup concierge "Tuna"  "Tuna — studio manager. Keeps your day running." \
+setup assistant "Tuna"  "Tuna — studio manager. Keeps your day running." \
   "Studio manager and the actual adult. Calendar, reminders, your morning digest. Warm, brief, herds the cats so things ship on time."
 setup ops       "Nilay" "Nilay — DevOps. Watches the host." \
   "DevOps and sysadmin. Monitors the host and the agent fleet, status reports, scheduled checks. Terse. Certain it's never the server."

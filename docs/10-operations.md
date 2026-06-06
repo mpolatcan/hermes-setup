@@ -24,7 +24,7 @@ On the Mini, weekly check:
 Build a 15–30 task personal eval suite. For each agent, define 3–5 representative tasks with known-good outcomes. Examples:
 
 - **research:** "Find three recent peer-reviewed papers on X, summarize each in 2 sentences, link each." Score on source quality, summary accuracy, citation correctness.
-- **concierge:** "What's on my calendar tomorrow morning? Set a reminder for the 9am call." Score on tool selection (calendar vs. web search), action completion.
+- **assistant:** "What's on my calendar tomorrow morning? Set a reminder for the 9am call." Score on tool selection (calendar vs. web search), action completion.
 - **ops:** "Check disk usage on this host. Alert me if any volume is over 80%." Score on correct command, correct interpretation.
 - **coder:** "Find the bug in this function and propose a fix." Score on diagnosis accuracy, fix correctness.
 - **writer:** "Draft a 200-word product description for X in voice Y." Score on voice match, word count compliance, factual accuracy.
@@ -99,7 +99,7 @@ These are decisions worth deferring until you have real usage data:
 
 - **Does `coder` need its own machine after all?** It runs native on the Mini for the Metal GPU. If Godot builds start starving the always-on agents (no per-profile RAM cap exists natively — Section 1.1), the clean escalation is to bring the shelved MacBook Pro back online as a dedicated `coder` host — which also restores `coder`'s credential isolation from the fleet ([Section 13](09-security.md)). Revisit only if you feel the resource or blast-radius pressure.
 - **Should `ops` get Honcho after all?** Section 9 keeps it off because determinism is the goal. After a month, if `ops` feels too generic or repeats explanations you've given before, flip it on with `aiPeer: "ops"`.
-- **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (ops, concierge title generation) makes sense. Revisit once you have a month of usage data.
+- **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (ops, assistant title generation) makes sense. Revisit once you have a month of usage data.
 - **When to build `producer`?** Sarp, the game-development scoring agent (Section 16), is spec'd but **deferred**. Phase A is research-only (a single cron on the `research` agent). Stand up the `producer` profile only when the opportunity backlog outpaces hand-curation. Until then it stays unbuilt.
 
 ---
