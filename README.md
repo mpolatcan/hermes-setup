@@ -46,15 +46,17 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 
 | Bot | Slug | Mode | Role | Model |
 |---|---|---|---|---|
-| **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
+| **Derya** | `general` | always-on | Generalist main line (studio **+ anything else**) — themed as founder/creative director | MiniMax |
 | **Doruk** | `researcher` | always-on | Market analyst — research any topic + game scout | MiniMax |
-| **Tuna** | `assistant` | always-on | Studio manager — reminders, morning digest | MiniMax |
+| **Tuna** | `assistant` | always-on | Manager — studio **+ personal**: calendar, reminders, morning digest | MiniMax |
 | **Nilay** | `marketing` | always-on | Marketing & community — Steam page, wishlists, devlog/social, outreach (briefs Ozan for copy) | MiniMax |
 | **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | Codex |
 | **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
 | **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
 
 Names are a (mildly sarcastic) Turkish game-studio crew — short first names in the chat list, distinct comic personas in each bot's SOUL. Each persona reinforces its role (a skeptical producer, a blunt programmer) rather than fighting it. Slugs are functional and constant.
+
+**The titles are costume, not a capability fence.** The studio theme is flavor on top of general-purpose agents. In particular **Derya (`general`) and Tuna (`assistant`) are dual-use** — Derya is your main line for *anything* (work and life), Tuna manages both the studio day and your personal admin. Doruk/Ozan/Nilay/Naz/Sarp lean studio (research/writing/marketing/code/scoring) but the glue agents serve your whole life, not just games. For wholly separate domains (finance, fitness, …) add a dedicated personal-tier profile — [docs/02 §2.2](docs/02-agents.md).
 
 ## Why native single-install (not containers)
 
