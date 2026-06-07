@@ -91,7 +91,18 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 | **Naz** | `coder` | on-demand | Godot/GDScript game code — **the only agent that runs code**, native for Metal GPU + the editor; fenced | Codex gpt-5.4 |
 | **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 · TinyFish |
 
-Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it. **For a wholly separate domain** (finance, fitness, a language tutor) add a dedicated personal-tier profile instead of overloading the studio crew — [docs/02 §2.2](docs/02-agents.md).
+Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it.
+
+### 🧑 Personal tier — separate life domains
+
+Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; Honcho means it already knows who you are). Built so far:
+
+| Display | Slug | Does | Model |
+|---|---|---|---|
+| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | MiniMax M3 |
+| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | MiniMax M3 |
+
+`finance` is the 2nd shell-capable agent (with `coder`), fenced identically (`code_execution` only, `approvals: manual`, blocklist) — see [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
 
 ---
 

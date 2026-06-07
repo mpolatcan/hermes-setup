@@ -87,10 +87,16 @@ setup producer  "Sarp"  "Sarp — producer. Scores game ideas." \
 setup marketing "Nilay" "Nilay — marketing & community lead." \
   "Marketing and community lead. Go-to-market: Steam page + wishlists, devlog/social cadence, community, trailer briefs, creator outreach, ASO. Decides what/when/where; briefs Ozan for the words. Honest about reach, no growth-hack fantasies."
 
+# --- Personal tier (non-studio, docs/02 §2.2) ---
+setup finance   "Murat" "Murat — markets & finance analyst." \
+  "Personal markets & finance analyst. Analyzes read-only data you share (published Google Sheets CSVs, statements, screenshots), scans news/Reddit/finance sites (BIST + global), crunches numbers with code execution. Informational, not investment advice."
+setup health    "Defne" "Defne — health & fitness coach." \
+  "Personal health & fitness coach. Tracks workouts/nutrition, estimates calories & macros from food photos (ballpark), summarizes trends. Warm, practical. Not a doctor — flags clinical stuff to a professional."
+
 # 3) Fan out model-provider keys (docs/04 §5.8). Empty key = skip; existing
 #    values in profile .env files are preserved either way.
-ALL_SLUGS=(general researcher assistant coder writer producer marketing)
-TINYFISH_SLUGS=(researcher assistant coder writer marketing)   # docs/08
+ALL_SLUGS=(general researcher assistant coder writer producer marketing finance health)
+TINYFISH_SLUGS=(researcher assistant coder writer marketing finance health)   # docs/08
 
 fanout_key() { # key value slugs…
   local key="$1" val="$2"; shift 2
