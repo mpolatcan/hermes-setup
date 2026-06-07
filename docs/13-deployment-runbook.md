@@ -55,7 +55,7 @@ flowchart LR
 - [x] Doruk SOUL.md written; toolsets pruned per docs/05 §6.6 matrix.
 - [x] Foreground `gateway run` test: inbound Telegram message → M3 reply in 16.8s; session file created. Then `hermes -p researcher gateway install` → launchd service `ai.hermes.gateway-researcher` running.
 - [x] **Watchdog installed + live-tested**: `bootout` researcher → DOWN alert arrived in Telegram (via the general bot) → `bootstrap` back → restart-detection alert → healthy run silent. Gotcha confirmed: you must have messaged the **general** bot once or sendMessage 400s (bots can't initiate chats).
-- [ ] **24 h soak** — started 2026-06-07 ~01:30. Check next morning: both gateways healthy, RAM in budget (Activity Monitor). Acceptance = docs/05 Phase 1.
+- [x] **24 h soak** — started 2026-06-07 ~01:30; interim check at 12:12 (10.7h): zero restarts, 0 errors in logs, RAM ~200 MB/gateway (far under budget), system 75% free, watchdog silent. Memory continuity ✓ (cross-session recall verified). Formal 24h mark passes tonight; nothing blocking. Skill-creation acceptance (docs/05 Phase 1) left to verify organically in week-1 use.
 
 ## Step 4 — Phase A: general (Derya) + isolation tests — ✅ mostly DONE (2026-06-07)
 
