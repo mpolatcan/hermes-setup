@@ -100,7 +100,18 @@ flowchart TB
     style hs fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
 
-Honcho itself needs an LLM provider for its background work. The cheapest sensible choice is OpenRouter pointed at Gemini Flash or Claude Haiku — Honcho's reasoning calls are short, frequent, and don't need a top-tier model.
+Honcho itself needs an LLM provider for its background work. The cheapest sensible choice is OpenRouter pointed at a small fast model — Honcho's reasoning calls are short, frequent, and don't need a top-tier model.
+
+**What we actually run (2026-06, verified against billing):**
+
+| Honcho job | Model (via OpenRouter) | Why | Cost at solo volume |
+|---|---|---|---|
+| **deriver / dialectic / summary / dream** (text generation — extract facts from messages) | `deepseek/deepseek-v4-flash` | strong, cheap extraction; $0.098/M in · $0.197/M out | the cost driver — **~$2–5/mo** |
+| **embeddings** (vectorize messages for recall) | `openai/text-embedding-3-small` | de-facto standard, 1536-dim, plays nice with pgvector; $0.02/M | **~$0/mo** (rounds to zero) |
+
+Both go through the **OpenRouter API key** (the clean pay-per-token one — *not* the Codex ChatGPT OAuth), so neither carries any ToS gray-area. Real numbers from the first days of use: 337 embedding calls = **$0.00**, the deriver = **$0.12** — embeddings are a rounding error, the deriver dominates, and the whole memory layer lands around **$2–5/month**.
+
+**Privacy posture — say it plainly.** Self-hosting Honcho keeps your **data** (messages, derived user model, vectors) on the Mini's Postgres. But this is the *self-hosted + API* tier: **inference still leaves the box** — the deriver sends message text to DeepSeek (via OpenRouter) to extract facts, and the embedder sends message text to OpenAI's embedding endpoint (via OpenRouter) to vectorize it. The providers see request content but don't store your memory. If you want **zero text leaving the Mini** (full *self-hosted + local model* tier), point both `[deriver.model_config]` **and** `[embedding.model_config]` at a local server (Ollama / llama.cpp) — note you must move **both**, since moving only one still ships text. For a solo box the API tier is the pragmatic default; the embedder choice is just OpenAI's `text-embedding-3-small` because it's the standard and effectively free, not because it's special — swap it for any OpenRouter-served embedding model by editing `[embedding.model_config]` (config is baked into the image — `docker compose up -d --build` after).
 
 #### Bring it up
 
