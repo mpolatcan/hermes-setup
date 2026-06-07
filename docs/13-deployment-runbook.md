@@ -66,13 +66,13 @@ flowchart LR
 
 ## Step 5 — Game-scout cron
 
-- [ ] Add `~/.hermes/profiles/researcher/cron/game-scout.yaml` ([docs/11 §16.5](11-game-dev.md)); `/sethome` in the researcher bot. Confirm the Monday digest lands in Telegram.
+- [x] **DONE 2026-06-07** — created via `hermes -p researcher cron create` (CLI, not a hand-written yaml; jobs live in `cron/jobs.json`), schedule `0 8 * * 1`, `--deliver telegram`; `/sethome` done in all 5 bots. **Live-tested end-to-end**: triggered with `cron run game-scout` → 5.3 min, ~18 TinyFish searches + 3 page fetches, 6.6 KB digest delivered to Telegram. Notes vs the docs/11 spec: prompt adapted (no Honcho yet — digest-only); web layer = **TinyFish MCP wired early** (OAuth 2.1 — the API key is for the REST API only, MCP auth is a browser login via `hermes mcp login tinyfish`; config key is top-level `mcp_servers:` in config.yaml) + `ddgs` as free search fallback. First run honestly reported "no web tools" instead of fabricating — SOUL working.
 
 ## Step 6 — Phase B (only once Phase A is proven)
 
 - [ ] **Honcho** — 5-container stack via Docker, bound `127.0.0.1:8000` ([docs/07 §9.3](07-memory.md)). ⚠️ Validate `honcho.json` peer config (peers = **slugs**) + agents reach it over loopback.
 - [ ] **SearXNG** — Docker, `127.0.0.1:8888` ([docs/08 §10.4](08-web-search.md)).
-- [ ] **TinyFish MCP** — wire + key (docs/08).
+- [x] **TinyFish MCP** — done early (2026-06-07, with Step 5) on `researcher`. To add on assistant/coder/writer later: same `mcp_servers:` block + per-profile `hermes -p <slug> mcp login tinyfish`.
 - [ ] Add profiles: **Tuna** (assistant, MiniMax) · **Naz** (coder — **Codex**, `terminal`+`code_execution`, Godot projects, fenced per [docs/09 §13.7](09-security.md)) · **Ozan** (writer — Codex). ⚠️ **coder is the ToS + shared-ChatGPT-quota watch-point** (§5.3); A/B it vs M3 / DeepSeek V4 Pro (§5.12).
 - [ ] Wire Honcho peers on the agents that use it (docs/07).
 
