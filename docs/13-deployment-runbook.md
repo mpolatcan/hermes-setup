@@ -68,13 +68,15 @@ flowchart LR
 
 - [x] **DONE 2026-06-07** — created via `hermes -p researcher cron create` (CLI, not a hand-written yaml; jobs live in `cron/jobs.json`), schedule `0 8 * * 1`, `--deliver telegram`; `/sethome` done in all 5 bots. **Live-tested end-to-end**: triggered with `cron run game-scout` → 5.3 min, ~18 TinyFish searches + 3 page fetches, 6.6 KB digest delivered to Telegram. Notes vs the docs/11 spec: prompt adapted (no Honcho yet — digest-only); web layer = **TinyFish MCP wired early** (OAuth 2.1 — the API key is for the REST API only, MCP auth is a browser login via `hermes mcp login tinyfish`; config key is top-level `mcp_servers:` in config.yaml) + `ddgs` as free search fallback. First run honestly reported "no web tools" instead of fabricating — SOUL working.
 
-## Step 6 — Phase B (only once Phase A is proven)
+## Step 6 — Phase B — ⏳ mostly DONE 2026-06-07 (started early; Phase A tests were all green)
 
-- [ ] **Honcho** — 5-container stack via Docker, bound `127.0.0.1:8000` ([docs/07 §9.3](07-memory.md)). ⚠️ Validate `honcho.json` peer config (peers = **slugs**) + agents reach it over loopback.
-- [ ] **SearXNG** — Docker, `127.0.0.1:8888` ([docs/08 §10.4](08-web-search.md)).
+- [x] **OpenRouter un-deferred** (Honcho needs a cheap worker LLM): $10 credit, key live-tested (341 models). Fallback chains wired per §5.7 on general/researcher/assistant (`openrouter: minimax/minimax-m3` → `google/gemini-2.5-flash`) and writer (`minimax: MiniMax-M3` → `openrouter: openai/gpt-5`). **Fallback live test PASSED**: broke MiniMax key → one-shot CLI reply still arrived → OpenRouter usage counter moved; key restored, primary re-verified.
+- [x] **Honcho** — `elkimek/honcho-self-hosted` quick-start + upstream clone at `~/honcho-stack/server`, compose up (api/database/redis/deriver), bound `127.0.0.1:8000` (had to patch compose: shipped `8000:8000` on all interfaces). All worker models → `deepseek/deepseek-v4-flash` via OpenRouter ("vllm" slot); Venice backup slot removed. Config: shared `~/.hermes/honcho.json`, host keys `hermes_<slug>` (auto-derived), aiPeers = slugs, user peer `mutlu`. **Activation gotcha ×2: per-profile `memory.provider: honcho` in config.yaml is required** (doctor must say "Honcho connected"), and the venv needs `pip install honcho-ai` (formula gap #5). Enabled on general/researcher/assistant/writer; ops/coder/producer host-blocks pre-written as disabled. Peers + message traffic verified against the API; deriver derives observations after ~5 min session-staleness (async).
+- [x] **SearXNG** — Docker at `~/hermes-services/`, `127.0.0.1:8888`, JSON format enabled, live-tested. `SEARXNG_URL` in general/researcher/assistant `.env` → auto-selected as built-in web_search backend (beats ddgs in the autodetect order).
 - [x] **TinyFish MCP** — done early (2026-06-07, with Step 5) on `researcher`. To add on assistant/coder/writer later: same `mcp_servers:` block + per-profile `hermes -p <slug> mcp login tinyfish`.
-- [ ] Add profiles: **Tuna** (assistant, MiniMax) · **Naz** (coder — **Codex**, `terminal`+`code_execution`, Godot projects, fenced per [docs/09 §13.7](09-security.md)) · **Ozan** (writer — Codex). ⚠️ **coder is the ToS + shared-ChatGPT-quota watch-point** (§5.3); A/B it vs M3 / DeepSeek V4 Pro (§5.12).
-- [ ] Wire Honcho peers on the agents that use it (docs/07).
+- [~] Profiles: **Tuna** (assistant, MiniMax) ✓ live · **Ozan** (writer — Codex `gpt-5.4` via `hermes -p writer auth add openai-codex --type oauth`; note `hermes login` is removed) ✓ live · **Naz** (coder) ⏳ blocked on BotFather cooldown (~12h), then: bot + token + Codex auth + fence per docs/09 §13.7. ⚠️ coder = ToS + quota watch-point (§5.3).
+- [x] Watchdog `EXPECTED=(researcher general assistant writer)`.
+- [ ] **Cross-agent Honcho recall test** — seed via Derya, recall via Doruk after deriver processes. First attempt was premature (asked before the 5-min staleness window); retest.
 
 ## Step 7 — Phase C: game-dev
 
