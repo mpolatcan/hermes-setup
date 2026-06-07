@@ -79,9 +79,26 @@ flowchart LR
 - [x] Watchdog `EXPECTED=(researcher general assistant writer coder producer marketing)` — all 7 (host monitoring is the watchdog's job; no ops agent).
 - [x] **Cross-agent Honcho recall test — PASSED 2026-06-07**: fact seeded via Derya → deriver extracted observations → Doruk recalled it verbatim ("Plastron the tortoise"). Two real bugs fixed on the way: **(1) schema drift** — the elkimek quick-start config.toml uses the old `PROVIDER`/`MODEL` keys; upstream main expects `[module.model_config]` blocks (`transport`/`model` + `[…overrides] base_url`), so every worker silently fell back to `openai/gpt-5.4-mini` against api.openai.com → 401s; config.toml rewritten on the new schema (all modules → `deepseek/deepseek-v4-flash` via OpenRouter, embeddings via OpenRouter too — verified their `/embeddings` endpoint works). **(2)** `FLUSH_ENABLED = true` for a solo fleet — default batching waits for 1024 tokens per session before deriving, which on low-volume chat means "never". ⚠️ config.toml is **baked into the image** — `docker compose up -d --build` after every config edit, restart is not enough.
 
-## Step 7 — Phase C: game-dev
+## ✅ FLEET COMPLETE — 7/7 live (2026-06-08)
+
+All seven gateways under launchd, all smoke-tested from Telegram, all on Honcho:
+Derya (general, dual-use) · Doruk (researcher) · Tuna (assistant, dual-use) · Nilay
+(marketing) · Naz (coder, fenced) · Ozan (writer) · Sarp (producer). Watchdog watches
+all 7; SearXNG + Honcho stack up; OpenRouter fallback chains live. Host monitoring is
+the watchdog's job — no ops agent by design.
+
+**Operational reminders:** maintenance mute = `touch /tmp/hermes-watchdog/mute` before
+deliberate restarts. After `brew upgrade hermes-agent`, re-pip the venv extras
+(python-telegram-bot ddgs websockets mcp honcho-ai) + `docker compose up -d --build`
+Honcho if its config changed. `bot-tokens.env` is the rebuild source — keep it 600 and
+don't edit it in a stale GUI buffer.
+
+## Step 7 — Phase C: game-dev (when you start a real game)
 
 - [ ] A picked idea (16.9 gate) → **Ozan** lean PRD → **Naz** Godot prototype, native on the Mini's **Metal GPU** ([docs/11](11-game-dev.md)).
+- [ ] Wire Sarp's weekly backlog-scoring cron once the scout's digests accumulate candidates.
+- [ ] Naz `approvals: manual` → `smart` after a week of watching what it flags.
+- [ ] Nilay TinyFish OAuth (`hermes -p marketing mcp login tinyfish`) when you want her deep-fetch beyond SearXNG.
 
 ## Deferred — don't build at first
 
