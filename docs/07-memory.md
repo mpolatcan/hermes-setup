@@ -15,10 +15,10 @@ flowchart TB
         peers["ai peers (= slugs): general, researcher, assistant,<br/>marketing, coder, writer, producer — one per agent"]:::infra
     end
     per --> hon
-    classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef l2 fill:#00ACC1,stroke:#006064,color:#fff
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef l1 fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef l2 fill:#00838F,stroke:#006064,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     style per fill:#E3F2FD,stroke:#64B5F6,color:#0D47A1
     style hon fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
@@ -92,9 +92,9 @@ flowchart TB
         end
     end
     ag -. "Honcho over loopback<br/>http://127.0.0.1:8000" .-> api
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     style mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style orb fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hs fill:#F3E5F5,stroke:#BA68C8,color:#4A148C

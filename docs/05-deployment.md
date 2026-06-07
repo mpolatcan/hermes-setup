@@ -8,9 +8,9 @@
 flowchart LR
     P1["Phase 1 · day 1<br/>native install + first profile<br/>researcher · 24h soak"]:::p1 --> P2["Phase 2 · day 2-3<br/>second profile<br/>prove per-profile state + launchd"]:::p2
     P2 --> P3["Phase 3 · week 1+<br/>remaining profiles<br/>copy the pattern"]:::p3
-    classDef p1 fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef p2 fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef p3 fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef p1 fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef p2 fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef p3 fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
 Everything runs **native** on one Mac Mini M4 — one Hermes install, one profile per agent under `~/.hermes/`. No agent runs in a container. Docker is used **only** for Honcho and SearXNG (Section 7).

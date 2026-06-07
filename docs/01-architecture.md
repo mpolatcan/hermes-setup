@@ -24,12 +24,12 @@ flowchart TB
     phone["📱 You · Telegram + Tailscale"]:::user --> mini
     note["One install = one trust domain.<br/>Profiles share ~/.hermes — NOT filesystem sandboxes.<br/>Isolation = single-tenant host + toolset hygiene + coder guardrails."]:::danger
     hermes --- note
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
-    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
-    classDef danger fill:#E53935,stroke:#B71C1C,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef danger fill:#D32F2F,stroke:#B71C1C,color:#fff
     style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064

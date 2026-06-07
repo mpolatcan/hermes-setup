@@ -49,14 +49,14 @@ flowchart TB
     hermes --> ext
     Honcho --> ext
 
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef net fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
-    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
-    classDef ext fill:#00897B,stroke:#004D40,color:#fff
-    classDef wd fill:#E53935,stroke:#B71C1C,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef wd fill:#D32F2F,stroke:#B71C1C,color:#fff
     style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style gen fill:#E3F2FD,stroke:#42A5F5,color:#0D47A1
@@ -107,10 +107,10 @@ flowchart LR
     pick -->|chosen idea| prd["Ozan · writer<br/>lean 2-page PRD"]:::studio
       -->|spec| build["Naz · coder<br/>Godot prototype · Metal GPU"]:::studio
     build -->|a real build| gtm["Nilay · marketing<br/>Steam page · wishlists · launch"]:::gen2
-    classDef gen fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef gen2 fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef studio fill:#FB8C00,stroke:#E65100,color:#fff
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
+    classDef gen fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef gen2 fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef studio fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
 ```
 
 > Only the discovery end (Doruk's scout) runs today; the rest of the chain has work once you start a real game (Phase C). `kanban` can auto-promote cards across this pipeline, but it's **off** until recurring hand-offs are real ([docs/12](docs/12-agent-comms.md)).
@@ -132,10 +132,10 @@ flowchart LR
     Codex -. fallback .-> MiniMax
     MiniMax -. fallback / overflow .-> OR["OpenRouter<br/>pay-per-token"]:::ext
     Honcho["Honcho memory workers"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
-    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef ext fill:#00897B,stroke:#004D40,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
 - **MiniMax M3** ($20 flat token plan, ~4,500 req/5h shared) — the five conversational agents.
@@ -195,8 +195,8 @@ flowchart LR
     A["Phase A ✅<br/>native install · Derya + Doruk<br/>launchd · watchdog · scout cron"]:::done
       --> B["Phase B ✅<br/>Tuna · Naz · Ozan · Sarp · Nilay<br/>Honcho · SearXNG · TinyFish · fallback"]:::done
       --> C["Phase C ⏳<br/>first real game:<br/>idea → PRD → Godot prototype"]:::next
-    classDef done fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef next fill:#8E24AA,stroke:#4A148C,color:#fff
+    classDef done fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef next fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
 - **Phase A ✅** — native install, Derya + Doruk under launchd, per-profile state proven, watchdog live-tested, weekly game-scout cron delivering.
@@ -217,9 +217,9 @@ flowchart TB
     root --> scripts["scripts/"]:::svc
     scripts --> sb["setup-bots.sh<br/>configure 7 bots + fan secrets to .env"]:::svc
     scripts --> ex["bot-tokens.env.example<br/>(real bot-tokens.env is gitignored)"]:::svc
-    classDef root fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef doc fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef svc fill:#00ACC1,stroke:#006064,color:#fff
+    classDef root fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef doc fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
 State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), `~/.hermes/honcho.json`, `~/.hermes/scripts/watchdog.sh`, `~/honcho-stack/` + `~/hermes-services/` (Docker), and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*`.

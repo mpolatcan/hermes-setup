@@ -11,10 +11,10 @@ flowchart LR
     phone -. "optional · dashboard/HTTP only" .-> ts(["Tailnet · WireGuard"]):::net
     ts -. "bound to 100.x" .-> mini
     pub["🌐 Public internet / LAN"]:::danger -. blocked .- mini
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef net fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef danger fill:#E53935,stroke:#B71C1C,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef danger fill:#D32F2F,stroke:#B71C1C,color:#fff
 ```
 
 ## 8. Networking

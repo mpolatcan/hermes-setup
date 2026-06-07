@@ -13,11 +13,11 @@ flowchart LR
     s0["0 · keys"]:::p --> s1["1 · install<br/>+ verify CLI ✅"]:::a --> s2["2 · 7 bots"]:::p
     s2 --> s3["3 · Doruk<br/>soak 24h"]:::a --> s4["4 · Derya<br/>coexist test"]:::a --> s5["5 · scout cron"]:::a
     s5 --> s6["6 · Phase B<br/>Honcho · coder · writer"]:::b --> s7["7 · Phase C<br/>game-dev"]:::c
-    classDef p fill:#1E88E5,stroke:#0D47A1,color:#fff
-    classDef v fill:#E53935,stroke:#B71C1C,color:#fff
-    classDef a fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef b fill:#8E24AA,stroke:#4A148C,color:#fff
-    classDef c fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef p fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef v fill:#D32F2F,stroke:#B71C1C,color:#fff
+    classDef a fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef b fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef c fill:#EF6C00,stroke:#E65100,color:#fff
 ```
 
 ## Step 0 — Accounts & keys (before anything)

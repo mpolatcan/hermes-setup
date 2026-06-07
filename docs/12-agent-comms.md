@@ -19,10 +19,10 @@ flowchart TB
     others -.-> honcho
     derya -.-> honcho
     others -. "opt · when earned" .-> board
-    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
-    classDef off fill:#90A4AE,stroke:#455A64,color:#fff
+    classDef user fill:#303F9F,stroke:#1A237E,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef off fill:#B0BEC5,stroke:#607D8B,color:#263238
     style install fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
 ```
 

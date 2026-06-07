@@ -11,10 +11,10 @@ flowchart LR
     aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini Flash<br/>API key · pay-per-token · overflow valve"]
     codex -. fallback .-> mini
     mini -. fallback/overflow .-> or
-    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef ext fill:#00897B,stroke:#004D40,color:#fff
-    classDef neutral fill:#546E7A,stroke:#263238,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef neutral fill:#455A64,stroke:#263238,color:#fff
     class Naz,Ozan,codex codex
     class Derya,Doruk,Tuna,Sarp,Nilay,mini mini
     class or ext

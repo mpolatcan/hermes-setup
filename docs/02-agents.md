@@ -19,8 +19,8 @@ flowchart TB
             producer["Sarp · producer<br/>product lead · MiniMax · Phase B"]:::mini
         end
     end
-    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
-    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     style Mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style always fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style demand fill:#FFF3E0,stroke:#FFB74D,color:#E65100
