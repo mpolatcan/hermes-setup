@@ -108,34 +108,61 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 
 ```bash
 #!/bin/bash
-# watchdog.sh — gateway health → Telegram, bypassing the agents.
+# watchdog.sh — fleet health → Telegram, bypassing the agents.
 # Reuses the general bot's token; talks straight to api.telegram.org.
 set -u
-EXPECTED=(researcher)                      # extend as profiles go live
+EXPECTED=(researcher general assistant writer)  # extend as profiles go live
 ENV="$HOME/.hermes/profiles/general/.env"
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
 CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
 STATE=/tmp/hermes-watchdog; mkdir -p "$STATE"
 
-alerts=()
+# Maintenance mute: `touch /tmp/hermes-watchdog/mute` silences alerts for 1h
+# (use while deliberately restarting gateways). Still tracks PIDs meanwhile.
+MUTED=0
+if [ -f "$STATE/mute" ]; then
+  age=$(( $(date +%s) - $(stat -f %m "$STATE/mute") ))
+  if [ "$age" -lt 3600 ]; then MUTED=1; else rm -f "$STATE/mute"; fi
+fi
+
+down=(); restarted=(); ok=()
 for p in "${EXPECTED[@]}"; do
   pid=$(launchctl list | awk -v l="ai.hermes.gateway-$p" '$3==l {print $1}')
   if [ -z "$pid" ] || [ "$pid" = "-" ]; then
-    alerts+=("$p: DOWN")
+    down+=("$p")
   elif [ -f "$STATE/$p" ] && [ "$pid" != "$(cat "$STATE/$p")" ]; then
-    alerts+=("$p: restarted since last check (crash-loop?)")
+    restarted+=("$p")
+  else
+    ok+=("$p")
   fi
   echo "${pid:-none}" > "$STATE/$p"
 done
 
-if [ ${#alerts[@]} -gt 0 ]; then
-  curl -fsS "https://api.telegram.org/bot$TOKEN/sendMessage" \
-    --data-urlencode chat_id="$CHAT" \
-    --data-urlencode text="⚠️ hermes watchdog: ${alerts[*]}" >/dev/null
+[ "$MUTED" = "1" ] && exit 0
+[ ${#down[@]} -eq 0 ] && [ ${#restarted[@]} -eq 0 ] && exit 0
+
+msg="🐕 Hermes watchdog · $(date '+%H:%M')"
+if [ ${#down[@]} -gt 0 ]; then
+  msg="$msg
+🔴 DOWN: ${down[*]}
+   → not running under launchd. Logs: ~/.hermes/profiles/<name>/logs/gateway.error.log"
 fi
+if [ ${#restarted[@]} -gt 0 ]; then
+  msg="$msg
+🟡 Restarted in the last 15 min: ${restarted[*]}
+   → one-off = fine (manual restart/upgrade). Same alert repeating = crash loop."
+fi
+if [ ${#ok[@]} -gt 0 ]; then
+  msg="$msg
+🟢 OK: ${ok[*]}"
+fi
+
+curl -fsS "https://api.telegram.org/bot$TOKEN/sendMessage" \
+  --data-urlencode chat_id="$CHAT" \
+  --data-urlencode text="$msg" >/dev/null
 ```
 
-Two checks per profile: the launchd job has a live PID, and the PID hasn't changed since the last run — a changed PID means launchd restarted the gateway, which is exactly the event `KeepAlive` would otherwise hide. While something is down it re-alerts every 15 minutes; that nagging is a feature, not a bug. (The `sendMessage` works because you've already messaged the bot — Telegram bots can't initiate chats otherwise.)
+Two checks per profile: the launchd job has a live PID, and the PID hasn't changed since the last run — a changed PID means launchd restarted the gateway, which is exactly the event `KeepAlive` would otherwise hide. While something is down it re-alerts every 15 minutes; that nagging is a feature, not a bug. (The `sendMessage` works because you've already messaged the bot — Telegram bots can't initiate chats otherwise.) Status lines are grouped (🔴 down / 🟡 restarted / 🟢 ok) with a hint per group, and the **mute file** keeps planned-maintenance restarts from reading like crash loops. Separate noise source to know about: Hermes itself messages recently-active chats "⚠️ Gateway shutting down/restarting" on every restart — expected during config sessions, rare in steady state.
 
 Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
