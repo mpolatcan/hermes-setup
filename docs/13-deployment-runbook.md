@@ -100,6 +100,14 @@ don't edit it in a stale GUI buffer.
 - [ ] Naz `approvals: manual` → `smart` after a week of watching what it flags.
 - [ ] Nilay TinyFish OAuth (`hermes -p marketing mcp login tinyfish`) when you want her deep-fetch beyond SearXNG.
 
+## Personal tier — LIVE (2026-06-08)
+
+- [x] **`finance` (Murat)** + **`health` (Defne)** gateways installed under launchd → **fleet now 9 agents**. Both MiniMax M3 + OpenRouter fallback + TinyFish + Honcho; bots created, tokens valid, Telegram + Honcho confirmed. Watchdog `EXPECTED` extended to all 9.
+- [x] `finance` fenced (2nd shell agent): `code_execution` ON, `approvals: manual`, website blocklist, no `terminal`.
+- [ ] Per-profile **TinyFish OAuth** when you want deep-fetch: `hermes -p finance mcp login tinyfish` (+ `-p health`). Until then they use SearXNG/ddgs.
+- [ ] **Finance Google Sheet:** publish a tab → CSV (File → Share → Publish to web → CSV), give Murat the URL; he fetches + crunches it read-only.
+- [ ] Murat `approvals: manual` → `smart` after a week (like Naz).
+
 ## Optional extras done
 
 - [x] **Web dashboard (2026-06-08)** — fleet console at `http://127.0.0.1:9119`, persistent under launchd `ai.hermes.dashboard`. The package ships no frontend (formula gap), so it was built from the `v2026.6.5` tag's `web/` and served via `HERMES_WEB_DIST` + `--skip-build` ([docs/06 §8.2.1](06-networking.md)). One console for all profiles (in-UI profile switcher + unified sessions); localhost-only — Tailscale for remote, never `--insecure`.

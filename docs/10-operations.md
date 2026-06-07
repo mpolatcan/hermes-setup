@@ -111,7 +111,7 @@ There is **no dedicated ops agent** — host/fleet monitoring is deliberately *n
 # watchdog.sh — fleet health → Telegram, bypassing the agents.
 # Reuses the general bot's token; talks straight to api.telegram.org.
 set -u
-EXPECTED=(researcher general assistant writer)  # extend as profiles go live
+EXPECTED=(general researcher assistant marketing coder writer producer finance health)  # full fleet
 ENV="$HOME/.hermes/profiles/general/.env"
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
 CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
