@@ -100,6 +100,10 @@ don't edit it in a stale GUI buffer.
 - [ ] Naz `approvals: manual` → `smart` after a week of watching what it flags.
 - [ ] Nilay TinyFish OAuth (`hermes -p marketing mcp login tinyfish`) when you want her deep-fetch beyond SearXNG.
 
+## Optional extras done
+
+- [x] **Web dashboard (2026-06-08)** — fleet console at `http://127.0.0.1:9119`, persistent under launchd `ai.hermes.dashboard`. The package ships no frontend (formula gap), so it was built from the `v2026.6.5` tag's `web/` and served via `HERMES_WEB_DIST` + `--skip-build` ([docs/06 §8.2.1](06-networking.md)). One console for all profiles (in-UI profile switcher + unified sessions); localhost-only — Tailscale for remote, never `--insecure`.
+
 ## Deferred — don't build at first
 
 - **a real ops agent** — not needed; the watchdog owns host alerting. Build one only for NL host *diagnosis*, fenced like `coder`, never the Docker socket ([docs/10 open-Q](10-operations.md)).

@@ -31,12 +31,36 @@ Because agent-to-agent communication is now **local** (same install — see [Sec
 
 You only need Tailscale if you turn on a feature that **listens** and you want to reach it from your phone/laptop:
 
-- the **Hermes web dashboard** (a browser UI per profile)
+- the **Hermes web dashboard** (a browser fleet console — see 8.2.1)
 - the **HTTP API server** for an external (non-Telegram) client
 
 Hermes has no auth on these by default, so any port reachable from the public internet is a complete-access port. If you enable one, **do not expose it publicly** — put it behind Tailscale. Nous Research's own guidance: *"Do not expose application ports publicly; use SSH tunnels, Caddy with HTTPS, or Tailscale."*
 
 If you never enable the dashboard or HTTP API, **skip this whole section** — Telegram is enough.
+
+#### 8.2.1 The web dashboard — build, multi-profile, persistence
+
+The dashboard is **one console for the whole fleet**, not one-per-agent: the UI has a profile **list + switcher** (`/api/profiles`, `/api/profiles/active`) and a **unified sessions view aggregated across all profiles**, plus per-profile config / API-key editing and create/delete. The `-p <slug>` flag only sets which profile is *selected on load*. Config/keys stay *stored* per-profile (that's the isolation); the dashboard is just one window onto all of them. (Cross-*agent* activity is the kanban board's job — separate, and CLI/TUI only.)
+
+⚠️ **Formula gap (verified v0.16.0):** the Homebrew/pip package ships **neither the built frontend (`hermes_cli/web_dist/`) nor its `web/` source**, so `hermes dashboard` 404s with `{"error":"Frontend not built. Run: cd web && npm run build"}`. Build it once from the matching repo tag and point `HERMES_WEB_DIST` at the output (keeps it outside the brew cellar, which `brew upgrade` wipes):
+
+```bash
+# clone just web/ at the tag matching your install (hermes --version → v2026.6.5)
+git clone --depth 1 --branch v2026.6.5 --filter=blob:none --sparse \
+  https://github.com/NousResearch/hermes-agent.git ~/hermes-dashboard-src
+git -C ~/hermes-dashboard-src sparse-checkout set web
+cd ~/hermes-dashboard-src/web && npm install && npm run build   # → ../hermes_cli/web_dist
+```
+
+Run it persistently under launchd (`~/Library/LaunchAgents/ai.hermes.dashboard.plist`, `RunAtLoad`+`KeepAlive`, bound `127.0.0.1:9119`), with `HERMES_WEB_DIST` and a node-capable `PATH` in `EnvironmentVariables`, and `--skip-build` so it serves the prebuilt dist:
+
+```bash
+hermes -p general dashboard --no-open --skip-build --host 127.0.0.1 --port 9119
+# env: HERMES_WEB_DIST=/Users/<you>/hermes-dashboard-src/hermes_cli/web_dist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.dashboard.plist
+```
+
+On `brew upgrade hermes-agent`: the cellar's `web_dist` is irrelevant (we use `HERMES_WEB_DIST`), but rebuild the source dir against the **new** tag so the frontend matches the backend — `git -C ~/hermes-dashboard-src fetch --tags && git checkout v<new> && (cd web && npm run build)` — then `launchctl kickstart -k gui/$(id -u)/ai.hermes.dashboard`.
 
 ### 8.3 If you do enable a listener — bind it to Tailscale
 
