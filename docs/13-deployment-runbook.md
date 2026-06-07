@@ -38,7 +38,7 @@ flowchart LR
   - **Layout:** named profiles live at `~/.hermes/profiles/<slug>/`, not `~/.hermes/<slug>/`. Logs: `profiles/<slug>/logs/gateway.log`.
 - [x] **Supervision resolved: built-in.** `hermes -p <slug> gateway install` writes + bootstraps a per-profile launchd service, label `ai.hermes.gateway-<slug>` (`RunAtLoad` + `KeepAlive`, `HERMES_HOME` pinned). No hand-rolled plists ([docs/05 §7](05-deployment.md)). Fleet view: `hermes gateway list`.
 - [x] All 7 profiles created (`general researcher assistant ops coder writer producer`) — idle until each gets keys + gateway install in its phase.
-- [x] **Telegram extra installed** — `python-telegram-bot` is not bundled by the Homebrew formula; installed into its venv (`$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot`). ⚠️ Re-run after every `brew upgrade hermes-agent` ([docs/10 §14](10-operations.md)).
+- [x] **Pip extras installed** — the Homebrew formula bundles neither `python-telegram-bot` (bots silent without it), `ddgs` (built-in web_search has no backend — agents report "no web tools"), nor `websockets`. Installed into its venv (`$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot ddgs websockets`). ⚠️ Re-run after every `brew upgrade hermes-agent` ([docs/10 §14](10-operations.md)).
 
 ## Step 2 — Telegram bots ×7 — ⏳ 5/7 DONE (2026-06-07)
 

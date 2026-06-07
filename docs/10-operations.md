@@ -60,10 +60,12 @@ hermes --version
 # 2. upgrade the binary
 brew upgrade hermes-agent          # or rerun the official installer
 
-# 2b. re-add the Telegram extra — brew upgrade replaces the formula's venv,
-#     which drops it (the gateway logs "Telegram: python-telegram-bot not
-#     installed" and the bots go silent). Then verify with `hermes doctor`.
-$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot
+# 2b. re-add the pip extras — brew upgrade replaces the formula's venv, which
+#     drops them. Without python-telegram-bot the bots go silent; without ddgs
+#     the built-in web_search has no backend (agents report "no web tools");
+#     websockets silences a browser_dialog import warning.
+#     Then verify with `hermes doctor`.
+$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot ddgs websockets
 
 # 3. restart every gateway so they pick up the new binary
 launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-researcher
