@@ -45,7 +45,7 @@ flowchart LR
 - [~] @BotFather → `/newbot`: **5 of 7 created** (general, researcher, assistant, ops, writer). `coder` + `producer` blocked by BotFather's ~24h rate limit — both are Phase B+ anyway. Create after cooldown, paste tokens, rerun the script.
 - [x] bot-tokens.env filled: `ALLOWED_USERS` + 5 tokens + `MINIMAX_API_KEY` + `TINYFISH_API_KEY` (OpenRouter deferred — Step 0).
 - [x] `./scripts/setup-bots.sh` ran clean — all 5 tokens passed `getMe`; keys fanned out to profile `.env`s.
-- [ ] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable (do anytime).
+- [x] Per bot in BotFather: `/setprivacy` Disable, `/setjoingroups` Disable — done 2026-06-07 for the 5 existing bots. (New BotFather UI: buttons are **Group Privacy** and **Allow Groups?**.) Repeat for coder + producer when created.
 
 ## Step 3 — Phase A: researcher (Doruk) end-to-end ✅ DONE except soak (2026-06-07)
 
