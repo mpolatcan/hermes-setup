@@ -1,31 +1,54 @@
 # Hermes Setup
 
-A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. (Host monitoring needs no agent — a dumb launchd **watchdog** covers it — [docs/10 §14.5](docs/10-operations.md).)
+A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
+
+**Status: fully deployed — 7/7 agents live** under launchd on the Mini, all answering from Telegram, all on shared Honcho memory.
+
+The fleet is **not** game-studio-only. It's a **general-purpose personal assistant layer** (works for your whole life) **plus** a **game-studio pipeline** layered on top. The studio names are flavor; the capabilities underneath are general.
+
+---
+
+## 1 · System architecture
 
 ```mermaid
 flowchart TB
     you["📱 You · Telegram (7 bots)"]:::user
-    you --> tg(["Telegram cloud"]):::net
-    subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
+    you <--> tg(["Telegram cloud"]):::net
+
+    subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on · auto-login"]
+        direction TB
         subgraph hermes["native Hermes · one install · ~/.hermes · launchd"]
-            general["Derya · director"]:::mini
-            researcher["Doruk · analyst"]:::mini
-            assistant["Tuna · manager"]:::mini
-            marketing["Nilay · marketing"]:::mini
-            coder["Naz · programmer · Metal GPU"]:::codex
-            writer["Ozan · writer"]:::codex
-            producer["Sarp · producer · Phase B"]:::mini
+            direction TB
+            subgraph gen["🌐 general-use"]
+                Derya["Derya · general"]:::mini
+                Tuna["Tuna · assistant"]:::mini
+                Doruk["Doruk · researcher"]:::mini
+            end
+            subgraph studio["🎮 game studio"]
+                Sarp["Sarp · producer"]:::mini
+                Ozan["Ozan · writer"]:::codex
+                Naz["Naz · coder · Metal GPU"]:::codex
+                Nilay["Nilay · marketing"]:::mini
+            end
         end
-        subgraph svc["Docker · services only"]
-            Honcho[("Honcho<br/>shared memory")]:::infra
-            SearXNG["SearXNG<br/>search fallback"]:::svc
+        wd["🐕 watchdog · launchd<br/>15-min health check"]:::wd
+        subgraph svc["Docker · services only (loopback)"]
+            Honcho[("Honcho · :8000<br/>5-container shared memory")]:::infra
+            SearXNG["SearXNG · :8888<br/>search fallback"]:::svc
         end
     end
-    tg --> mini
-    coder -. memory .-> Honcho
-    researcher -. memory .-> Honcho
-    ext["TinyFish · MiniMax · Codex · OpenRouter"]:::ext
+
+    tg <--> hermes
+    gen -. shared memory .-> Honcho
+    studio -. shared memory .-> Honcho
+    gen --> SearXNG
+    Nilay --> SearXNG
+    wd -. "down/crash alert<br/>(bypasses agents)" .-> tg
+
+    ext["☁️ TinyFish · MiniMax · Codex · OpenRouter"]:::ext
     hermes --> ext
+    Honcho --> ext
+
     classDef user fill:#3949AB,stroke:#1A237E,color:#fff
     classDef net fill:#1E88E5,stroke:#0D47A1,color:#fff
     classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
@@ -33,41 +56,108 @@ flowchart TB
     classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
     classDef svc fill:#00ACC1,stroke:#006064,color:#fff
     classDef ext fill:#00897B,stroke:#004D40,color:#fff
+    classDef wd fill:#E53935,stroke:#B71C1C,color:#fff
     style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
+    style gen fill:#E3F2FD,stroke:#42A5F5,color:#0D47A1
+    style studio fill:#FFF3E0,stroke:#FFB74D,color:#E65100
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-**Colours:** green = MiniMax agents · orange = Codex agents · purple = Honcho · teal = services · indigo = you · blue = network.
+**Colours:** green = MiniMax agent · orange = Codex agent · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
 
-## The fleet
+---
 
-All seven are native profiles in one Hermes install on the Mini. **Mode** = always-on (under launchd) vs on-demand (started when used).
+## 2 · The fleet — two tiers
 
-| Bot | Slug | Mode | Role | Model |
+All seven are native profiles in one Hermes install. **Slug** = the functional name (constant, ASCII, what the directory/peer/bot-username use). **Display** = the persona shown in Telegram (flavor only — titles don't fence capability).
+
+### 🌐 General-use — your whole life, not just games
+
+| Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Derya** | `general` | always-on | Generalist main line (studio **+ anything else**) — themed as founder/creative director | MiniMax |
-| **Doruk** | `researcher` | always-on | Market analyst — research any topic + game scout | MiniMax |
-| **Tuna** | `assistant` | always-on | Manager — studio **+ personal**: calendar, reminders, morning digest | MiniMax |
-| **Nilay** | `marketing` | always-on | Marketing & community — Steam page, wishlists, devlog/social, outreach (briefs Ozan for copy) | MiniMax |
-| **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | Codex |
-| **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
-| **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
+| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | MiniMax M3 |
+| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | MiniMax M3 |
+| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | MiniMax M3 · TinyFish |
 
-Names are a (mildly sarcastic) Turkish game-studio crew — short first names in the chat list, distinct comic personas in each bot's SOUL. Each persona reinforces its role (a skeptical producer, a blunt programmer) rather than fighting it. Slugs are functional and constant.
+These three you'd want even with no game studio. Start here for day-to-day use.
 
-**The titles are costume, not a capability fence.** The studio theme is flavor on top of general-purpose agents. In particular **Derya (`general`) and Tuna (`assistant`) are dual-use** — Derya is your main line for *anything* (work and life), Tuna manages both the studio day and your personal admin. Doruk/Ozan/Nilay/Naz/Sarp lean studio (research/writing/marketing/code/scoring) but the glue agents serve your whole life, not just games. For wholly separate domains (finance, fitness, …) add a dedicated personal-tier profile — [docs/02 §2.2](docs/02-agents.md).
+### 🎮 Game-studio pipeline — specialists
 
-## Why native single-install (not containers)
+| Display | Slug | Mode | What it actually does | Model |
+|---|---|---|---|---|
+| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | MiniMax M3 |
+| **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | Codex gpt-5.4 |
+| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the only agent that runs code**, native for Metal GPU + the editor; fenced | Codex gpt-5.4 |
+| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 · TinyFish |
 
-The earlier draft ran one Docker container per agent across two Macs. We dropped it — see [docs/01](docs/01-architecture.md) for the full reasoning. In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (**only `coder` gets a shell**) and focused guardrails on `coder` ([docs/09](docs/09-security.md)).
+Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it. **For a wholly separate domain** (finance, fitness, a language tutor) add a dedicated personal-tier profile instead of overloading the studio crew — [docs/02 §2.2](docs/02-agents.md).
 
-## Documentation
+---
+
+## 3 · How the studio agents chain — the game-dev pipeline
+
+Discovery-first: you don't commit to a game, you let the fleet surface and score opportunities, *then* prototype the one you pick.
+
+```mermaid
+flowchart LR
+    scout["Doruk · researcher<br/>weekly game-scout cron"]:::gen
+      -->|raw opportunities| score["Sarp · producer<br/>score on rubric, rank, kill hype"]:::studio
+      -->|ranked shortlist| pick(("🧑 You<br/>pick one")):::user
+    pick -->|chosen idea| prd["Ozan · writer<br/>lean 2-page PRD"]:::studio
+      -->|spec| build["Naz · coder<br/>Godot prototype · Metal GPU"]:::studio
+    build -->|a real build| gtm["Nilay · marketing<br/>Steam page · wishlists · launch"]:::gen2
+    classDef gen fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef gen2 fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef studio fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef user fill:#3949AB,stroke:#1A237E,color:#fff
+```
+
+> Only the discovery end (Doruk's scout) runs today; the rest of the chain has work once you start a real game (Phase C). `kanban` can auto-promote cards across this pipeline, but it's **off** until recurring hand-offs are real ([docs/12](docs/12-agent-comms.md)).
+
+---
+
+## 4 · Model routing & fallback
+
+Two paid providers do the work; OpenRouter is the cheap aux + the resilience valve.
+
+```mermaid
+flowchart LR
+    subgraph agents["agents"]
+        cx["Naz · Ozan<br/>(quality-critical creative)"]:::codex
+        mm["Derya · Doruk · Tuna<br/>Nilay · Sarp"]:::mini
+    end
+    cx -->|primary| Codex["Codex · gpt-5.4<br/>ChatGPT sub"]:::codex
+    mm -->|primary| MiniMax["MiniMax · M3<br/>$20 token plan · ~4.5k req/5h"]:::mini
+    Codex -. fallback .-> MiniMax
+    MiniMax -. fallback / overflow .-> OR["OpenRouter<br/>pay-per-token"]:::ext
+    Honcho["Honcho memory workers"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
+    classDef codex fill:#FB8C00,stroke:#E65100,color:#fff
+    classDef mini fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef ext fill:#00897B,stroke:#004D40,color:#fff
+    classDef infra fill:#8E24AA,stroke:#4A148C,color:#fff
+```
+
+- **MiniMax M3** ($20 flat token plan, ~4,500 req/5h shared) — the five conversational agents.
+- **Codex gpt-5.4** (your ChatGPT sub, OAuth — accepted gray-area) — only Naz + Ozan, the quality-critical creative pair; neither runs an automated cron.
+- **OpenRouter** (~$10 credit) — aux tasks, every agent's fallback chain (so one outage can't take an agent down), and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo). Live-tested: break the MiniMax key → replies still arrive via OpenRouter.
+
+Full routing + the per-agent fallback chains: [docs/04](docs/04-models.md).
+
+---
+
+## 5 · Why native single-install (not containers)
+
+The earlier draft ran one Docker container per agent across two Macs. Dropped — full reasoning in [docs/01](docs/01-architecture.md). In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (**only `coder` gets a shell**) and focused guardrails on `coder` ([docs/09](docs/09-security.md)).
+
+---
+
+## 6 · Documentation
 
 The plan is split by concern. Original section numbers (`## 1` … `## 17`) are preserved, so inline cross-references like "Section 13.7" resolve across files.
 
 1. [Architecture & Isolation](docs/01-architecture.md) — native single-install multi-profile; what isolation we keep and give up
-2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the seven agents, Derya spec, comic studio SOULs
+2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the seven agents, dual-use vs studio, comic SOULs
 3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, the `setup-bots.sh` shortcut
 4. [Model Providers](docs/04-models.md) — MiniMax + Codex routing, fallback chains
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
@@ -75,47 +165,71 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 7. [Memory — Honcho](docs/07-memory.md) — three layers, shared user model, backups
 8. [Web Search — TinyFish & SearXNG](docs/08-web-search.md) — MCP integration, fallback
 9. [Security & Sandboxing](docs/09-security.md) — native guardrails; fencing the one code-running agent
-10. [Operations](docs/10-operations.md) — evaluation, native upgrade, open questions
+10. [Operations](docs/10-operations.md) — evaluation, native upgrade, watchdog, open questions
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
-13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*: keys → install → bots → Phase A/B/C, with verify-gates
+13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
 
-## Quick start
+---
+
+## 7 · Quick start
 
 ```bash
-# 1. Telegram: @BotFather → /newbot ×7   (general_<you>_bot … producer_<you>_bot; slug-based, rename-safe)
-# 2. wire the bots (creation is the only manual step):
+# 1. Telegram: @BotFather → /newbot ×7   (general_<you>_bot … marketing_<you>_bot; slug-based, rename-safe)
+# 2. wire the bots + keys (creation is the only manual Telegram step):
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-#    fill ALLOWED_USERS (from @userinfobot) + the 7 tokens, then:
-./scripts/setup-bots.sh        # sets bot profiles + writes ~/.hermes/profiles/<slug>/.env
-# 3. install Hermes natively + deploy researcher first:
-#    follow docs/05-deployment.md  (Phase 1 → Doruk/researcher end-to-end, under launchd)
+#    fill ALLOWED_USERS (from @userinfobot) + the 7 tokens + MINIMAX/OPENROUTER/TINYFISH keys, then:
+./scripts/setup-bots.sh        # sets bot profiles + fans tokens & keys into ~/.hermes/profiles/<slug>/.env
+# 3. install Hermes natively + bring up one profile, then the rest:
+#    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
 ```
 
-## Rollout status
+`bot-tokens.env` is the **single entry point for all secrets** — the script fans them out per profile. It's gitignored; keep it `chmod 600` and don't edit it in a stale GUI buffer.
 
-- **Phase A (now)** — researcher (**Doruk**) + **Derya** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
-- **Phase B** — add Tuna, Naz, Ozan, **Nilay** (marketing), **Sarp** (producer) + self-hosted Honcho memory.
-- **Phase C** — game-dev: a picked idea graduates to a lean PRD (Ozan) → Godot prototype (Naz), native on the Mini's GPU.
+---
 
-## Repo layout
+## 8 · Rollout status — ✅ complete
+
+```mermaid
+flowchart LR
+    A["Phase A ✅<br/>native install · Derya + Doruk<br/>launchd · watchdog · scout cron"]:::done
+      --> B["Phase B ✅<br/>Tuna · Naz · Ozan · Sarp · Nilay<br/>Honcho · SearXNG · TinyFish · fallback"]:::done
+      --> C["Phase C ⏳<br/>first real game:<br/>idea → PRD → Godot prototype"]:::next
+    classDef done fill:#43A047,stroke:#1B5E20,color:#fff
+    classDef next fill:#8E24AA,stroke:#4A148C,color:#fff
+```
+
+- **Phase A ✅** — native install, Derya + Doruk under launchd, per-profile state proven, watchdog live-tested, weekly game-scout cron delivering.
+- **Phase B ✅** — all seven agents live; self-hosted Honcho shared memory (cross-agent recall proven); SearXNG + TinyFish web; OpenRouter fallback chains live-tested; `coder` fenced.
+- **Phase C ⏳** — when you start a real game: a picked idea → lean PRD (Ozan) → Godot prototype (Naz) on the Mini's GPU → go-to-market (Nilay).
+
+**Pending follow-ups (all pull, none blocking):** Nilay TinyFish OAuth login · Naz `approvals: manual`→`smart` after a week · Sarp weekly score-cron once digests accumulate.
+
+---
+
+## 9 · Repo layout
 
 ```mermaid
 flowchart TB
     root["📦 hermes-setup"]:::root
-    root --> readme["README.md"]:::doc
-    root --> docs["docs/ · 01-13<br/>plan by concern + runbook"]:::doc
+    root --> readme["README.md · this file"]:::doc
+    root --> docs["docs/ · 01-13<br/>plan by concern + live runbook"]:::doc
     root --> scripts["scripts/"]:::svc
-    scripts --> sb["setup-bots.sh<br/>configure 7 bots + wire .env"]:::svc
-    scripts --> ex["bot-tokens.env.example"]:::svc
+    scripts --> sb["setup-bots.sh<br/>configure 7 bots + fan secrets to .env"]:::svc
+    scripts --> ex["bot-tokens.env.example<br/>(real bot-tokens.env is gitignored)"]:::svc
     classDef root fill:#3949AB,stroke:#1A237E,color:#fff
     classDef doc fill:#1E88E5,stroke:#0D47A1,color:#fff
     classDef svc fill:#00ACC1,stroke:#006064,color:#fff
 ```
 
-## Security notes
+State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), `~/.hermes/honcho.json`, `~/.hermes/scripts/watchdog.sh`, `~/honcho-stack/` + `~/hermes-services/` (Docker), and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*`.
 
-- **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local.
+---
+
+## 10 · Security notes
+
+- **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local, `chmod 600`.
 - **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Only `coder` gets a shell** — the one arbitrary-code agent, fenced with `approvals: manual`→`smart`, credential redaction, and a website blocklist ([details](docs/09-security.md)).
 - **Telegram is the front door** and needs no open ports (gateways connect outbound). Don't expose the optional HTTP API / dashboard publicly — put it behind Tailscale ([details](docs/06-networking.md)).
+- **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`; nothing off-box.
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).
