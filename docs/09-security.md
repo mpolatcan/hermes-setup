@@ -6,7 +6,7 @@
 
 ## 13. Safety and operational guardrails
 
-Seven agents touching the network and filesystem need explicit guardrails — and two of them (`coder`, `ops`) hold a real host shell.
+Seven agents touching the network and filesystem need explicit guardrails — and exactly one of them (`coder`) holds a real host shell.
 
 **Approvals policy.** In each agent's `config.yaml`:
 
@@ -17,14 +17,14 @@ approvals:
 
 Start with `manual` for the first week to see what gets flagged. Switch to `smart` once you trust the patterns. Never use `off` on the always-on agents.
 
-**Iteration budget.** Default is 90 turns per conversation. For `ops` (which should be short and deterministic), lower it:
+**Iteration budget.** Default is 90 turns per conversation. For a chat-only agent that should answer in a couple of steps (e.g. `producer` scoring, or a quick `assistant` lookup), lower it:
 
 ```yaml
 agent:
   max_turns: 30
 ```
 
-For `researcher` (which legitimately needs many tool calls for a thorough job), keep the default or raise to 120.
+For `researcher` and `marketing` (which legitimately need many tool calls for a thorough research job), keep the default or raise to 120.
 
 **Website blocklist.** If any agent should never touch internal hosts, list them:
 
@@ -67,9 +67,9 @@ And because all profiles share one install, a shell-capable agent can read **any
 
 **Threat model — be precise about what you're defending against.** This is single-tenant: every token `coder` could read is *yours*. One profile reading another's `.env` is you reading your own data, not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration** — a poisoned web page or repository tricking `coder` into sending your keys somewhere, or running a destructive command. The guardrails below target that.
 
-The fence around `coder` (and, when built, `ops`):
+The fence around `coder`:
 
-- **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `researcher`, `assistant`, `writer`, and `producer` — five of the agents have **zero** command-execution surface. Only `coder` (terminal + Python) and `ops` (terminal) can run host commands. Toolset pruning is the primary control now that there is no container.
+- **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `general`, `researcher`, `assistant`, `marketing`, `writer`, and `producer` — **six of the seven agents have zero command-execution surface.** Only `coder` (terminal + Python) can run host commands. Toolset pruning is the primary control now that there is no container.
 - **`approvals: smart` is mandatory on `coder`.** With no container boundary, the approval layer is the *only* gate between LLM-generated code and your Mac. It judges risk and escalates dangerous commands — especially the network sends that an exfiltration attempt needs. Run `manual` for `coder`'s first week.
 - **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from the child processes of `terminal` and `code_execution`, so generated code can't read your keys *from the environment*. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. (Note: this protects the environment, not `.env` files on disk — see the optional docker backend below for that.)
 - **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on `coder` so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.

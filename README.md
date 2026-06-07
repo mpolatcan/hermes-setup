@@ -1,6 +1,6 @@
 # Hermes Setup
 
-A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services.
+A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. (Host monitoring needs no agent — a dumb launchd **watchdog** covers it — [docs/10 §14.5](docs/10-operations.md).)
 
 ```mermaid
 flowchart TB
@@ -11,7 +11,7 @@ flowchart TB
             general["Derya · director"]:::mini
             researcher["Doruk · analyst"]:::mini
             assistant["Tuna · manager"]:::mini
-            ops["Nilay · DevOps · deferred"]:::mini
+            marketing["Nilay · marketing"]:::mini
             coder["Naz · programmer · Metal GPU"]:::codex
             writer["Ozan · writer"]:::codex
             producer["Sarp · producer · Phase B"]:::mini
@@ -49,7 +49,7 @@ All seven are native profiles in one Hermes install on the Mini. **Mode** = alwa
 | **Derya** | `general` | always-on | Founder / creative director — your main line | MiniMax |
 | **Doruk** | `researcher` | always-on | Market analyst — research any topic + game scout | MiniMax |
 | **Tuna** | `assistant` | always-on | Studio manager — reminders, morning digest | MiniMax |
-| **Nilay** | `ops` | always-on | DevOps — watches the host (**deferred** — Phase B) | MiniMax (standard) |
+| **Nilay** | `marketing` | always-on | Marketing & community — Steam page, wishlists, devlog/social, outreach (briefs Ozan for copy) | MiniMax |
 | **Naz** | `coder` | on-demand | Lead programmer — the only agent that runs code; native for Metal GPU + the editor | Codex |
 | **Ozan** | `writer` | on-demand | Narrative designer — drafts, game PRDs | Codex |
 | **Sarp** | `producer` | on-demand | Producer — game-idea backlog + scoring (**Phase B, deferred**) | MiniMax |
@@ -58,7 +58,7 @@ Names are a (mildly sarcastic) Turkish game-studio crew — short first names in
 
 ## Why native single-install (not containers)
 
-The earlier draft ran one Docker container per agent across two Macs. We dropped it — see [docs/01](docs/01-architecture.md) for the full reasoning. In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (only `coder`/`ops` get a shell) and focused guardrails on `coder` ([docs/09](docs/09-security.md)).
+The earlier draft ran one Docker container per agent across two Macs. We dropped it — see [docs/01](docs/01-architecture.md) for the full reasoning. In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (**only `coder` gets a shell**) and focused guardrails on `coder` ([docs/09](docs/09-security.md)).
 
 ## Documentation
 
@@ -93,7 +93,7 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 ## Rollout status
 
 - **Phase A (now)** — researcher (**Doruk**) + **Derya** only. Native install, prove two profiles coexist, run the weekly game-scout cron. ~7 GB, loose.
-- **Phase B** — add Tuna, Naz, Ozan + self-hosted Honcho memory. Add **Nilay** (ops) once there's a fleet to watch; add **Sarp** (producer) once the game-idea backlog outpaces hand-curation.
+- **Phase B** — add Tuna, Naz, Ozan, **Nilay** (marketing), **Sarp** (producer) + self-hosted Honcho memory.
 - **Phase C** — game-dev: a picked idea graduates to a lean PRD (Ozan) → Godot prototype (Naz), native on the Mini's GPU.
 
 ## Repo layout
@@ -114,6 +114,6 @@ flowchart TB
 ## Security notes
 
 - **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local.
-- **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. Only `coder` and `ops` get a shell; `coder` (the one arbitrary-code agent) is fenced with `approvals: smart`, credential redaction, and a website blocklist ([details](docs/09-security.md)).
+- **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Only `coder` gets a shell** — the one arbitrary-code agent, fenced with `approvals: manual`→`smart`, credential redaction, and a website blocklist ([details](docs/09-security.md)).
 - **Telegram is the front door** and needs no open ports (gateways connect outbound). Don't expose the optional HTTP API / dashboard publicly — put it behind Tailscale ([details](docs/06-networking.md)).
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).

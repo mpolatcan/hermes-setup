@@ -12,7 +12,7 @@ flowchart TB
     end
     subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
         user["user peer = YOU<br/>shared across all agents"]:::user
-        peers["ai peers (= slugs): general, researcher,<br/>assistant, coder, writer, producer — one per agent"]:::infra
+        peers["ai peers (= slugs): general, researcher, assistant,<br/>marketing, coder, writer, producer — one per agent"]:::infra
     end
     per --> hon
     classDef l1 fill:#1E88E5,stroke:#0D47A1,color:#fff
@@ -80,7 +80,7 @@ The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver 
 ```mermaid
 flowchart TB
     subgraph mini["🖥️ M4 Mini · single host"]
-        ag["Native agents (launchd)<br/>general (Derya) · researcher (Doruk) · assistant (Tuna)<br/>ops (Nilay) · coder (Naz) · writer (Ozan) · producer (Sarp · Phase B)"]:::mini
+        ag["Native agents (launchd)<br/>general (Derya) · researcher (Doruk) · assistant (Tuna) · marketing (Nilay)<br/>coder (Naz) · writer (Ozan) · producer (Sarp)"]:::mini
         subgraph orb["OrbStack (Docker)"]
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
@@ -165,22 +165,12 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `general` (Derya) | Yes | Yes | Yes (peer: `general`) | Your main line — builds the richest user model |
 | `researcher` | Yes | Yes | Yes (peer: `researcher`) | Tracks topic interests, source preferences, depth |
 | `assistant` | Yes | Yes | Yes (peer: `assistant`) | Models daily rhythms, what reminders land |
-| `ops` | Yes (tight) | Optional | **No** | Wants determinism, not personalization (deferred) |
+| `marketing` | Yes | Yes | Yes (peer: `marketing`) | Audience/positioning notes, what messaging landed, channel history |
 | `coder` | Yes | Yes | Yes (peer: `coder`) | Language preferences, project conventions |
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
-| `producer` (Phase B) | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
+| `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
 
-`ops` is the deliberate exception. The more personalized it gets, the more it drifts from doing exactly what you asked. Keep it lean. In its `config.yaml`:
-
-```yaml
-memory:
-  memory_enabled: true
-  user_profile_enabled: false   # don't build a USER.md
-  memory_char_limit: 1500       # tighter than default
-  provider: none                # no external provider
-```
-
-For all the other agents that *do* use Honcho, each needs a config file telling Hermes where the Honcho server is and what AI peer name to use. Hermes looks for it at `~/.hermes/profiles/<name>/honcho.json`.
+All seven use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>`, see Section 9.3), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
 
 Create one per agent. Example for `coder`:
 
@@ -244,7 +234,7 @@ Per-agent additions:
 - **`writer` USER.md:** voice references, audience defaults, kinds of pieces you write, what edits you typically accept vs. reject, your preferred draft → revise rhythm.
 - **`researcher` USER.md:** topics of standing interest, source-quality preferences, depth defaults, citation style.
 - **`assistant` USER.md:** schedule patterns, reminder preferences, what's worth pinging you about vs. queuing for digest.
-- **`ops` USER.md:** *(leave minimal — `ops` shouldn't develop a user model)*.
+- **`marketing` USER.md:** target audience and platforms, brand voice, which channels you actually post to, what messaging has landed vs. flopped before.
 
 **MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `researcher` agent's might note "default web search backend is Firecrawl, prefer primary sources over aggregators."
 
@@ -326,8 +316,8 @@ Verify a backup is restorable at least once. Sometime in month 1, do a test rest
 
 A few things worth being explicit about:
 
-- **`ops` won't develop personality over time.** That's deliberate. If you want it to, flip its config to use Honcho with its own AI peer. But the value of `ops` is determinism.
-- **`producer` (Sarp) memory stays minimal until Phase B.** It's deferred; when you build it, its Honcho peer (`producer`) and the backlog workspace get configured then. Don't pre-allocate.
+- **`marketing` (Nilay) builds an audience model over time.** Its Honcho peer accumulates what messaging and channels actually work for you — the opposite of throwaway; the more it learns your positioning, the better its go-to-market advice.
+- **`producer` (Sarp) memory grows with the idea backlog.** Its Honcho peer (`producer`) plus the backlog workspace hold your taste profile across scored ideas.
 - **You still need to actually talk to the agents.** The system can only learn from interactions that happen. An agent that gets one message per week will have a thin user model regardless of how good the memory stack is.
 - **Cross-agent reasoning isn't automatic.** Honcho's user peer is shared, but each AI peer reasons independently. If `coder` learned something that `assistant` should know, you may need to tell `assistant` once. The agents do not auto-broadcast knowledge to each other.
 

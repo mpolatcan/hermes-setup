@@ -13,8 +13,8 @@ flowchart TB
             u["Tuna · assistant"]:::mini
             w["Ozan · writer"]:::codex
             c["Naz · coder<br/>Metal GPU · Godot GUI"]:::codex
-            o["Nilay · ops · deferred"]:::mini
-            p["Sarp · producer · Phase B"]:::mini
+            o["Nilay · marketing"]:::mini
+            p["Sarp · producer"]:::mini
         end
         subgraph svc["Docker · services only"]
             Honcho[("Honcho<br/>shared memory")]:::infra
@@ -62,7 +62,7 @@ Be honest about the trade. Profiles are **not filesystem sandboxes** — Hermes 
 So isolation is no longer *structural*. It comes from three things instead:
 
 1. **Single tenant.** Every agent, token, and file is yours. Cross-profile reads are you reading your own data — not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another.
-2. **Toolset hygiene.** Only **two** of the agents have a shell at all — `coder` (`terminal` + `code_execution`) and `ops` (`terminal`). The other five have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever.
+2. **Toolset hygiene.** Only **one** agent has a shell at all — `coder` (`terminal` + `code_execution`). The other six have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever.
 3. **`coder` guardrails.** `coder` is the one arbitrary-code agent sharing the install, so it carries the residual risk. It is fenced with `approvals: smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
 
 The payoff of the old container choice (a kernel boundary) is replaced by **a much smaller attack surface** (five no-shell agents) plus **focused guardrails on the one agent that can do damage**. For a solo operator that is the right altitude.
@@ -75,6 +75,6 @@ The payoff of the old container choice (a kernel boundary) is replaced by **a mu
 - **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, Hermes' **built-in installer** wires one launchd LaunchAgent per profile — `hermes -p <profile> gateway install` writes + bootstraps `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist` (verified v0.16.0) — so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
 - **Start-at-login.** LaunchAgents load at user login. The Mini must therefore **auto-login** after a reboot (System Settings → Users & Groups → Automatic login) or the agents won't come back unattended.
 - **Docker stays — for services only.** Honcho (Postgres) and SearXNG are infrastructure, not agents, and are far easier to run as containers. Keep a minimal Docker/OrbStack install for **those two only**; no agent runs in a container.
-- **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, on-demand agents (`coder`, `writer`, `producer`) are started only when used, and `ops` (once built) watches RAM — which it can finally do, since native it actually sees the host.
+- **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, on-demand agents (`coder`, `writer`, `producer`) are started only when used, and the **watchdog** ([Section 14.5](10-operations.md)) catches a down or crash-looping gateway within 15 minutes.
 
 ---

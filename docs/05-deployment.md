@@ -26,10 +26,10 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
     ├── researcher/    ← Doruk
     ├── general/       ← Derya
     ├── assistant/     ← Tuna
-    ├── ops/           ← Nilay  (deferred — Section 15)
+    ├── marketing/     ← Nilay
     ├── coder/         ← Naz
     ├── writer/        ← Ozan
-    └── producer/      ← Sarp  (Phase B)
+    └── producer/      ← Sarp
 ```
 
 *(Verified against v0.16.0: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs at `~/.hermes/profiles/<slug>/logs/gateway.log`. `profile create` also drops a wrapper at `~/.local/bin/<slug>`, so `researcher setup` ≡ `hermes -p researcher setup`.)*
@@ -141,7 +141,7 @@ hermes -p general setup          # different bot token, different SOUL.md
 
 From a chat with `researcher`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `researcher`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
-> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why only `coder` and `ops` get a shell, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
+> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why **only `coder` gets a shell**, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
 
 **Step 2.4: Independent-lifecycle test**
 
@@ -167,7 +167,7 @@ For each new agent:
 **Special considerations per agent:**
 
 - **`coder`** — the only agent that runs code, and it runs **natively** for Metal GPU + the Godot GUI ([Section 16](11-game-dev.md)). Mount nothing; it already has your user's filesystem. Fence it: `approvals: smart`, credential redaction, website blocklist, optional `docker` code-exec backend ([Section 13](09-security.md)). Point it at your projects directory in config (e.g. `~/godot-projects`).
-- **`ops`** — deferred (Section 15). When built, it keeps the tightest iteration budget and — being native — can finally see the host it's meant to monitor. Treat its `terminal` access with care; native, that shell is your real Mac.
+- **`marketing`** — no shell; `web` + TinyFish for market/competitor research, `cronjob` for the devlog/social cadence. Briefs `writer` when it needs finished copy.
 - **`writer`** — if you want finished drafts in a tidy spot, set its file output to `~/Documents/writer-output/` in config.
 
 ### 6.6 Toolset hygiene — disable what each agent doesn't need
@@ -185,21 +185,21 @@ First, separate three things people conflate:
 **The high-value disables** (all default-on, rarely needed):
 
 - **`browser`** — heavy (≈10 tools, needs Chromium). We use **TinyFish via MCP** (Section 10) for web. Disable everywhere; re-enable only on an agent that genuinely needs interactive page automation (none do, at first).
-- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. Only `coder` and `ops` get it. Everyone else: off.
+- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. **Only `coder` gets it.** Everyone else: off.
 - **`code_execution`** — runs Python on the host. Only `coder`.
 - **`image_gen`** — requires a FAL.ai key you don't have; dead schema weight. Disable everywhere.
 - **`delegation`** — spawns in-process subagents = surprise token spend. Disable until you deliberately want fan-out.
 
 **Per-agent matrix** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
 
-| Toolset | researcher | assistant | ops | coder | writer |
+| Toolset | researcher | assistant | marketing | coder | writer |
 |---|:--:|:--:|:--:|:--:|:--:|
-| `terminal` | ✗ | ✗ | ✓ | ✓ | ✗ |
+| `terminal` | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `code_execution` | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `browser` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `web` (built-in) | ✓ fallback | ✓ fallback | ✗ | ✗ | ✗ |
+| `web` (built-in) | ✓ fallback | ✓ fallback | ✓ fallback | ✗ | ✗ |
 | `file` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `vision` | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `vision` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `image_gen` | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `tts` | ✗ | ✓ | ✗ | ✗ | ✗ |
 | `cronjob` | ✓ | ✓ | ✓ | ✗ | ✗ |
@@ -208,7 +208,7 @@ First, separate three things people conflate:
 | `kanban` | opt | ✗ | ✗ | opt | opt |
 | `todo` | ✗ | ✗ | ✗ | ✓ | ✗ |
 
-The `kanban` row is **opt** on the studio pipeline (`researcher`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). Everything else is off where unused.
+The `kanban` row is **opt** on the studio pipeline (`researcher`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). `marketing` mirrors `researcher` (web + TinyFish + cron, no shell). Everything else is off where unused.
 
 **Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
 
@@ -225,9 +225,9 @@ agent:
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
 
-# ops  (deferred; terminal + cronjob are its job)
+# marketing (Nilay) — web + TinyFish + cron, no shell; mirrors researcher
 agent:
-  disabled_toolsets: [browser, web, image_gen, vision, tts, code_execution, delegation, messaging, todo, kanban, session_search]
+  disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
 
 # coder  (the only agent with shell + code execution)
 agent:
@@ -246,7 +246,7 @@ hermes -p <name> tools list   # active vs available-but-disabled
 
 **`producer` (Phase B):** disable `[terminal, code_execution, browser, web, image_gen, vision, tts, delegation, messaging]`. Keeps `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
 
-**One flag worth remembering:** native, **`terminal` is the real host.** A `coder` or `ops` shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason only those two get a shell and `coder` is fenced in [Section 13](09-security.md).
+**One flag worth remembering:** native, **`terminal` is the real host.** `coder`'s shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason **only `coder` gets a shell** and it is fenced in [Section 13](09-security.md).
 
 **Phase A relevance:** only `researcher` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
 

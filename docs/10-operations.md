@@ -25,7 +25,7 @@ Build a 15–30 task personal eval suite. For each agent, define 3–5 represent
 
 - **researcher:** "Find three recent peer-reviewed papers on X, summarize each in 2 sentences, link each." Score on source quality, summary accuracy, citation correctness.
 - **assistant:** "What's on my calendar tomorrow morning? Set a reminder for the 9am call." Score on tool selection (calendar vs. web search), action completion.
-- **ops:** "Check disk usage on this host. Alert me if any volume is over 80%." Score on correct command, correct interpretation.
+- **marketing:** "Three comparable cozy-sim launches — their Steam tags, price, and what their first trailer led with." Score on real/current data, source links, no hype.
 - **coder:** "Find the bug in this function and propose a fix." Score on diagnosis accuracy, fix correctness.
 - **writer:** "Draft a 200-word product description for X in voice Y." Score on voice match, word count compliance, factual accuracy.
 
@@ -100,9 +100,9 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 ---
 
 
-## 14.5 Phase-A health alerting — a watchdog before Nilay exists
+## 14.5 Fleet health alerting — a dumb watchdog (no agent needed)
 
-`ops` (Nilay) is deferred to Phase B, so in Phase A **nothing tells you a gateway is down**. `KeepAlive` restarts a crashed process but *masks crash-loops*, and the Layer-1 checks (Section 12) are weekly-manual — up to a week blind. Close the gap with a dumb watchdog that bypasses the agents entirely: a launchd job that checks the fleet every 15 minutes and, on failure, messages you through the **raw Telegram Bot API**. It must not depend on any agent — it has to work precisely when they don't.
+There is **no dedicated ops agent** — host/fleet monitoring is deliberately *not* an LLM's job. An agent that watches the fleet would be a second shell-capable agent (more attack surface, §13) doing a job that wants determinism, not reasoning. The right tool is a **dumb watchdog**: a launchd job that checks the fleet every 15 minutes and, on failure, messages you through the **raw Telegram Bot API**, bypassing the agents entirely. It must not depend on any agent — it has to work precisely when they don't. `KeepAlive` restarts a crashed process but *masks crash-loops*, and the Layer-1 checks (Section 12) are weekly-manual — this closes that gap. (Richer "why is X slow" diagnosis stays a manual ask, or a future ops agent if you ever genuinely need one.)
 
 `~/.hermes/scripts/watchdog.sh`:
 
@@ -195,8 +195,8 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 These are decisions worth deferring until you have real usage data:
 
 - **Does `coder` need its own machine after all?** It runs native on the Mini for the Metal GPU. If Godot builds start starving the always-on agents (no per-profile RAM cap exists natively — Section 1.1), the clean escalation is to bring the shelved MacBook Pro back online as a dedicated `coder` host — which also restores `coder`'s credential isolation from the fleet ([Section 13](09-security.md)). Revisit only if you feel the resource or blast-radius pressure.
-- **Should `ops` get Honcho after all?** Section 9 keeps it off because determinism is the goal. After a month, if `ops` feels too generic or repeats explanations you've given before, flip it on with `aiPeer: "ops"`.
-- **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (ops, assistant title generation) makes sense. Revisit once you have a month of usage data.
-- **When to build `producer`?** Sarp, the game-development scoring agent (Section 16), is spec'd but **deferred**. Phase A is research-only (a single cron on the `researcher` agent). Stand up the `producer` profile only when the opportunity backlog outpaces hand-curation. Until then it stays unbuilt.
+- **Do you ever need a real ops agent?** Probably not — the watchdog (§14.5) owns the critical alert path deterministically. Only build one if you start wanting natural-language host *diagnosis* ("why is X slow / what's eating RAM") often enough that manual checks get tedious. If you do, it's a second shell agent — fence it like `coder` (§13) and never give it the Docker socket.
+- **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (assistant title generation, Honcho deriver) makes sense. Revisit once you have a month of usage data.
+- **`producer` scoring cadence.** Sarp is live but its weekly backlog-scoring cron (Section 16) isn't wired yet — add it once the scout's digests actually accumulate candidates worth scoring on a schedule.
 
 ---

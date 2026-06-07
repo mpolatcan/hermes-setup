@@ -59,7 +59,7 @@ echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/researcher/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/assistant/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/coder/.env
 echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/writer/.env
-# ops can skip — it doesn't need web search
+echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/marketing/.env   # market/competitor research
 ```
 
 #### Step 4: Configure the MCP server in each agent's `config.yaml`
@@ -116,9 +116,8 @@ The agent will reach for TinyFish first and fall back to built-in tools if neede
 
 **Recommendation for our setup:**
 
-- `researcher`, `assistant`: **Layer 2** (prefer TinyFish, fall back gracefully). These agents need web access to function; outages should degrade, not break.
+- `researcher`, `assistant`, `marketing`: **Layer 2** (prefer TinyFish, fall back to SearXNG). These agents need web access to function — `marketing` for competitor/ASO/trend research; outages should degrade, not break.
 - `coder`, `writer`: **Layer 1** (TinyFish only). Their web use is opportunistic; if TinyFish is down, asking the user to try again is fine.
-- `ops`: web disabled entirely (already in Section 6). Doesn't need search.
 
 ### 10.4 Fallback: SearXNG on the Mini
 
@@ -210,10 +209,10 @@ For reference when wiring up each agent:
 | `general` (Derya) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — conversational main line |
 | `researcher` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
 | `assistant` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
-| `ops` (Nilay) | No | Disabled entirely | None | Doesn't need web |
+| `marketing` (Nilay) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — competitor/ASO/trend research |
 | `coder` (Naz) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
 | `writer` (Ozan) | Yes (light use) | Disabled | None | Layer 1 — research while drafting |
-| `producer` (Sarp) | No | Disabled | None | Offline rubric scoring (Phase B) |
+| `producer` (Sarp) | No | Disabled | None | Offline rubric scoring |
 
 ### 10.7 Per-agent skill for TinyFish (optional but recommended)
 

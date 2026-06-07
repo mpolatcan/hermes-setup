@@ -160,7 +160,7 @@ help - Show available commands
 /sethome
 ```
 
-That marks the current chat as where the agent should send scheduled outputs. Useful for `assistant` (morning digest), `ops` (status reports), and `researcher` (cron'd briefings).
+That marks the current chat as where the agent should send scheduled outputs. Useful for `assistant` (morning digest), `marketing` (devlog/social reminders), and `researcher` (cron'd briefings).
 
 ### 4.10 Bot-to-agent mapping reference
 
@@ -171,10 +171,10 @@ Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rena
 | `general` | Derya | `general_<you>_bot` | `…` | Founder / creative director — your main line |
 | `researcher` | Doruk | `researcher_<you>_bot` | `…` | Market analyst — research + game scout |
 | `assistant` | Tuna | `assistant_<you>_bot` | `…` | Studio manager — reminders, digest |
-| `ops` | Nilay | `ops_<you>_bot` | `…` | DevOps — watches the host |
 | `coder` | Naz | `coder_<you>_bot` | `…` | Lead programmer — writes & runs code |
 | `writer` | Ozan | `writer_<you>_bot` | `…` | Narrative designer — drafts & PRDs |
-| `producer` | Sarp | `producer_<you>_bot` | `…` | Producer — scores game ideas (Phase B) |
+| `producer` | Sarp | `producer_<you>_bot` | `…` | Producer — scores game ideas |
+| `marketing` | Nilay | `marketing_<you>_bot` | `…` | Marketing & community — go-to-market |
 
 Save this. Seven similar bots in a chat list blur together without notes.
 
@@ -196,11 +196,6 @@ Tuna     (assistant)
   description: Studio manager and the actual adult. Calendar, reminders, your morning
                digest. Warm, brief, herds the cats so things ship on time.
 
-Nilay    (ops)
-  about:       Nilay — DevOps. Watches the host.
-  description: DevOps and sysadmin. Monitors the host and the agent fleet, status
-               reports, scheduled checks. Terse. Certain it's never the server.
-
 Naz      (coder)
   about:       Naz — lead programmer. Writes & runs code.
   description: Lead programmer. Godot-first game code, refactors, debugging. Blunt,
@@ -215,6 +210,12 @@ Sarp     (producer)
   about:       Sarp — producer. Scores game ideas.
   description: Producer and product lead. Holds the budget; scores ideas against the
                rubric and kills the hype. Skeptical, anti-inflation. (Activates in Phase B.)
+
+Nilay    (marketing)
+  about:       Nilay — marketing & community lead.
+  description: Marketing and community lead. Go-to-market: Steam page + wishlists,
+               devlog/social cadence, community, trailer briefs, creator outreach, ASO.
+               Decides what/when/where; briefs Ozan for the words.
 ```
 
 ### 4.11 Things to know about Telegram + Hermes specifically
