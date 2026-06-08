@@ -25,7 +25,7 @@ flowchart TB
 
 ## 9. Memory architecture
 
-Memory is the *defining* feature of Hermes — the whole reason for this setup rather than seven chatbot wrappers. It's worth treating as a first-class part of the design, not an afterthought.
+Memory is the *defining* feature of Hermes — the whole reason for this setup rather than nine chatbot wrappers. It's worth treating as a first-class part of the design, not an afterthought.
 
 ### 9.1 The three layers
 
@@ -52,13 +52,13 @@ This layer is local to each profile and never crosses agent boundaries. `coder` 
 
 Hermes ships with 8 plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory. Only one can be active at a time. They run alongside Layers 1 and 2, never replacing them. They add capabilities the built-in layer doesn't have: automatic fact extraction (no agent intervention needed), semantic search across long history, knowledge-graph reasoning, or — in Honcho's case — running user models with dialectic reasoning.
 
-For a seven-agent setup with shared user identity, **Honcho is the right choice**. The reason is its data model.
+For a nine-agent setup with shared user identity, **Honcho is the right choice**. The reason is its data model.
 
-### 9.2 Why Honcho fits a seven-agent setup specifically
+### 9.2 Why Honcho fits a nine-agent setup specifically
 
 Honcho models conversations as **peers exchanging messages**. There's one **user peer** (you) that is **global across all agents in the same workspace**, and one **AI peer per agent**, each with its own identity.
 
-Concretely: all seven agents share a single understanding of who you are — your preferences, your timezone, your projects, your communication style. But each agent develops its own independent observations and identity. `coder` builds a model of you as a developer; `writer` builds a model of your editorial voice; `assistant` builds a model of your daily rhythms. They don't bleed into each other.
+Concretely: all nine agents share a single understanding of who you are — your preferences, your timezone, your projects, your communication style. But each agent develops its own independent observations and identity. `coder` builds a model of you as a developer; `writer` builds a model of your editorial voice; `assistant` builds a model of your daily rhythms. They don't bleed into each other.
 
 This solves a problem that built-in memory alone cannot: cross-agent continuity for the parts that should be shared, separation for the parts that should be distinct.
 
@@ -181,7 +181,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
 | `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
 
-All seven use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>`, see Section 9.3), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
+All nine use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>`, see Section 9.3), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
 
 Create one per agent. Example for `coder`:
 
@@ -207,7 +207,7 @@ Key fields:
 - `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
 - `aiPeer` — **unique per agent** (`coder`, `writer`, `researcher`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
-- `workspace` — keep as `hermes` for all seven. The workspace is what binds them into one shared environment.
+- `workspace` — keep as `hermes` for all nine. The workspace is what binds them into one shared environment.
 - `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only).
 - `dialecticReasoningLevel` — `minimal`/`low`/`medium`/`high`/`max`. Higher = better reasoning, more tokens, more cost. Start at `medium` and adjust.
 

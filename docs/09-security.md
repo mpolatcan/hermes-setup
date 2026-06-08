@@ -6,7 +6,7 @@
 
 ## 13. Safety and operational guardrails
 
-Seven agents touching the network and filesystem need explicit guardrails — and exactly one of them (`coder`) holds a real host shell.
+Nine agents touching the network and filesystem need explicit guardrails — exactly one (`coder`) holds a real host shell; a second (`finance`) runs fenced Python only.
 
 **Approvals policy.** In each agent's `config.yaml`:
 
@@ -69,7 +69,7 @@ And because all profiles share one install, a shell-capable agent can read **any
 
 The fence around `coder`:
 
-- **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `general`, `researcher`, `assistant`, `marketing`, `writer`, and `producer` — **six of the seven agents have zero command-execution surface.** Only `coder` (terminal + Python) can run host commands. Toolset pruning is the primary control now that there is no container.
+- **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `general`, `researcher`, `assistant`, `marketing`, `writer`, `producer`, and `health` — **seven of the nine agents have zero command-execution surface.** Only `coder` (terminal + Python) and `finance` (fenced `code_execution` only, no shell) can run code. Toolset pruning is the primary control now that there is no container.
 - **`approvals: smart` is mandatory on `coder`.** With no container boundary, the approval layer is the *only* gate between LLM-generated code and your Mac. It judges risk and escalates dangerous commands — especially the network sends that an exfiltration attempt needs. Run `manual` for `coder`'s first week.
 - **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from the child processes of `terminal` and `code_execution`, so generated code can't read your keys *from the environment*. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. (Note: this protects the environment, not `.env` files on disk — see the optional docker backend below for that.)
 - **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on `coder` so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.
@@ -105,7 +105,7 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 
 | Credential | Rotate where | Then |
 |---|---|---|
-| Telegram bot tokens (×7) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
+| Telegram bot tokens (×9) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
 | MiniMax API key | platform.minimax.io | update the five MiniMax profiles' config/`.env` |
 | OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
 | Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |

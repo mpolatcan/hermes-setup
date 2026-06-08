@@ -11,9 +11,9 @@ sequenceDiagram
     participant BF as BotFather
     participant API as Telegram Bot API
     participant ENV as ~/.hermes/profiles/*/.env
-    You->>BF: /newbot ×7
-    BF-->>You: 7 tokens
-    You->>You: fill bot-tokens.env (7 tokens + ALLOWED_USERS)
+    You->>BF: /newbot ×9
+    BF-->>You: 9 tokens
+    You->>You: fill bot-tokens.env (9 tokens + ALLOWED_USERS)
     You->>API: setup-bots.sh → setMyName / Description / Commands
     You->>ENV: setup-bots.sh → write TELEGRAM_BOT_TOKEN + ALLOWED_USERS
     You->>BF: /setprivacy Disable · /setjoingroups Disable
@@ -21,9 +21,9 @@ sequenceDiagram
 
 ## 4. Telegram bot prerequisites
 
-Each agent connects to a separate Telegram bot. Seven agents = seven bots. Bots have to exist on Telegram's side *before* you bring up the agents, so this is pre-work for Phase 1 of the deployment plan.
+Each agent connects to a separate Telegram bot. Nine agents = nine bots. Bots have to exist on Telegram's side *before* you bring up the agents, so this is pre-work for Phase 1 of the deployment plan.
 
-Total time: ~20 minutes for all seven bots. Do it in one sitting. (Bot *creation* is manual; everything after is automated — see 4.12.)
+Total time: ~25 minutes for all nine bots. Do it in one sitting. (Bot *creation* is manual; everything after is automated — see 4.12.)
 
 ### 4.1 What you're creating
 
@@ -31,7 +31,7 @@ For each agent, you need:
 
 - A Telegram **bot** created via @BotFather (one per agent).
 - A Telegram **bot token** — a string like `7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...`. Treat this like a password. Anyone with the token controls the bot.
-- Your numeric Telegram **user ID** (not your @username) — used to lock each bot down to only you. Single value, reused for all seven bots.
+- Your numeric Telegram **user ID** (not your @username) — used to lock each bot down to only you. Single value, reused for all nine bots.
 - Optional: a friendly **display name** and **description** for each bot, since you'll see them in your Telegram chat list.
 
 ### 4.2 Get your Telegram user ID (one-time, do this first)
@@ -42,9 +42,9 @@ Alternative bots if `@userinfobot` is unreachable: `@get_id_bot`, `@RawDataBot`.
 
 **Important:** your @username is not your user ID. The ID is a stable number that never changes even if you rename yourself.
 
-### 4.3 Create seven bots via BotFather
+### 4.3 Create nine bots via BotFather
 
-Open Telegram, search for `@BotFather`, start a conversation. Then for each of your seven agents, repeat this flow (or do the minimum here — just `/newbot` to get tokens — and let 4.12's script set names, descriptions, and commands in bulk):
+Open Telegram, search for `@BotFather`, start a conversation. Then for each of your nine agents, repeat this flow (or do the minimum here — just `/newbot` to get tokens — and let 4.12's script set names, descriptions, and commands in bulk):
 
 ```
 /newbot
@@ -63,7 +63,7 @@ need it in step 4.4. Then for the same bot, run these to harden settings:
 
 Suggested username pattern: `<role>_<yourname>_bot`. So `researcher_alice_bot`, `assistant_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
 
-By the end, you have seven tokens (six if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
+By the end, you have nine tokens (eight if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
 
 ### 4.4 Distribute tokens into each agent's `.env`
 
@@ -169,7 +169,7 @@ That marks the current chat as where the agent should send scheduled outputs. Us
 
 ### 4.10 Bot-to-agent mapping reference
 
-Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rename-safe — like the Honcho peer); the **display name** in the chat list is the persona, set via `/setname` (Section 4.9). So `@general_<you>_bot` shows as "Derya". Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames must be globally unique, so suffix with your handle.
+Nine bots, nine agents. The **@username uses the slug** (constant, ASCII, rename-safe — like the Honcho peer); the **display name** in the chat list is the persona, set via `/setname` (Section 4.9). So `@general_<you>_bot` shows as "Derya". Fill the token column as you create each bot. Replace `<you>` with your Telegram handle; usernames must be globally unique, so suffix with your handle.
 
 | Slug | Display (chat) | Username | Token (first 10) | Role at a glance |
 |---|---|---|---|---|
@@ -180,8 +180,10 @@ Seven bots, seven agents. The **@username uses the slug** (constant, ASCII, rena
 | `writer` | Ozan | `writer_<you>_bot` | `…` | Narrative designer — drafts & PRDs |
 | `producer` | Sarp | `producer_<you>_bot` | `…` | Producer — scores game ideas |
 | `marketing` | Nilay | `marketing_<you>_bot` | `…` | Marketing & community — go-to-market |
+| `finance` | Murat | `finance_<you>_bot` | `…` | Markets & finance analyst (personal tier) |
+| `health` | Defne | `health_<you>_bot` | `…` | Health & fitness coach (personal tier) |
 
-Save this. Seven similar bots in a chat list blur together without notes.
+Save this. Nine similar bots in a chat list blur together without notes.
 
 **Telegram profile text — paste per bot in BotFather.** `/setabouttext` is the short line in the bot's info card; `/setdescription` is the longer blurb shown on the empty-chat screen. These double as your "which agent does what" reference.
 
@@ -221,6 +223,17 @@ Nilay    (marketing)
   description: Marketing and community lead. Go-to-market: Steam page + wishlists,
                devlog/social cadence, community, trailer briefs, creator outreach, ASO.
                Decides what/when/where; briefs Ozan for the words.
+
+Murat    (finance)  — personal tier
+  about:       Murat — markets & finance analyst.
+  description: Personal markets & finance analyst. Analyzes read-only data you share
+               (Google Sheets CSVs, statements, screenshots), scans news/Reddit/finance
+               sites (BIST + global), crunches numbers. Informational, not investment advice.
+
+Defne    (health)  — personal tier
+  about:       Defne — health & fitness coach.
+  description: Personal health & fitness coach. Tracks workouts/nutrition, estimates
+               calories & macros from food photos (ballpark), summarizes trends. Not a doctor.
 ```
 
 ### 4.11 Things to know about Telegram + Hermes specifically
@@ -237,21 +250,21 @@ A few details that matter for our setup:
 
 **Group chats are off by default.** With `/setjoingroups Disable` from step 4.3, the bots can't be added to groups at all. If you ever want a bot in a group (probably `assistant` for a family group), re-enable `/setjoingroups` and also set the per-platform `group_allow_from` allowlist in `config.yaml` to restrict who can invoke the bot.
 
-**Single Telegram account, seven bots, no conflict.** Telegram supports unlimited bots per account. Bots are independent of the account that created them — each has its own identity, its own token, and shows up as a separate chat. Your seven bots will appear as seven separate conversations in your chat list.
+**Single Telegram account, nine bots, no conflict.** Telegram supports unlimited bots per account. Bots are independent of the account that created them — each has its own identity, its own token, and shows up as a separate chat. Your nine bots will appear as nine separate conversations in your chat list.
 
 ### 4.12 Shortcut — automate everything after bot creation
 
-Bot *creation* (4.3) is the only manual part; Telegram has no API for it. Once the seven bots exist and you have their tokens, `scripts/setup-bots.sh` does the rest in one command — it replaces the hand-work in **4.4** (token → `.env`) and **4.9** (commands, description, about text).
+Bot *creation* (4.3) is the only manual part; Telegram has no API for it. Once the nine bots exist and you have their tokens, `scripts/setup-bots.sh` does the rest in one command — it replaces the hand-work in **4.4** (token → `.env`) and **4.9** (commands, description, about text).
 
 ```bash
 # from the repo root
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-# edit scripts/bot-tokens.env: paste ALLOWED_USERS (your @userinfobot ID) + the 7 tokens
+# edit scripts/bot-tokens.env: paste ALLOWED_USERS (your @userinfobot ID) + the 9 tokens
 # + optionally MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY (docs/04 §5.8)
 ./scripts/setup-bots.sh
 ```
 
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all seven profiles; `TINYFISH_API_KEY` → researcher, assistant, coder, writer), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
+For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all nine profiles; `TINYFISH_API_KEY` → all nine, though TinyFish authenticates via OAuth so the key is optional — docs/08), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
 
 Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
 

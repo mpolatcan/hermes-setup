@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TB
-    you["📱 You · 7 Telegram bots"]:::user
+    you["📱 You · 9 Telegram bots"]:::user
     subgraph install["native Hermes · one install · ~/.hermes"]
         direction LR
         derya["Derya · router"]:::mini
@@ -28,7 +28,7 @@ flowchart TB
 
 ## 17. Agent-to-agent communication
 
-The single-machine, single-install decision (Section 1) **collapses this whole topic.** When the agents were containers split across two machines, agent-to-agent work needed a network fabric — a per-gateway HTTP API, Tailscale routing, API keys, a router with an HTTP tool. None of that survives. All seven agents are profiles in one install on one Mac, so coordination is **local**. This section is short because the hard version of the problem no longer exists.
+The single-machine, single-install decision (Section 1) **collapses this whole topic.** When the agents were containers split across two machines, agent-to-agent work needed a network fabric — a per-gateway HTTP API, Tailscale routing, API keys, a router with an HTTP tool. None of that survives. All nine agents are profiles in one install on one Mac, so coordination is **local**. This section is short because the hard version of the problem no longer exists.
 
 ### 17.1 You are the primary router
 

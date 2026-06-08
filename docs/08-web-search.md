@@ -6,7 +6,7 @@
 
 ## 10. Web search and fetch: TinyFish
 
-Hermes ships with five built-in web backends (Firecrawl, SearXNG, Parallel, Tavily, Exa). TinyFish isn't one of them, but it integrates cleanly via MCP — and for an agent setup, it's a stronger fit than several of the built-in options. This section covers what TinyFish is, why it earns the slot for our seven agents, and how to wire it in.
+Hermes ships with five built-in web backends (Firecrawl, SearXNG, Parallel, Tavily, Exa). TinyFish isn't one of them, but it integrates cleanly via MCP — and for an agent setup, it's a stronger fit than several of the built-in options. This section covers what TinyFish is, why it earns the slot for our nine agents, and how to wire it in.
 
 ### 10.1 What TinyFish is and what changes for us
 
@@ -17,14 +17,14 @@ TinyFish is purpose-built for agent web access. Four endpoints under one API key
 - **Browser** — raw CDP sessions for interactive automation. Metered.
 - **Agent** — natural-language browser automation ("go to X, extract Y as JSON"). Metered.
 
-For our seven agents, Search and Fetch are the relevant pair, and they're both free. Free tier is **5 search queries/minute** and **25 fetches/minute** per API key — generous for personal use, but worth knowing per-key.
+For our nine agents, Search and Fetch are the relevant pair, and they're both free. Free tier is **5 search queries/minute** and **25 fetches/minute** per API key — generous for personal use, but worth knowing per-key.
 
 Why this matters for us specifically:
 
-- **Cleaner context, fewer tokens.** TinyFish Fetch strips boilerplate before returning content. With seven agents talking to an LLM provider, every kilobyte of cookie-banner HTML stripped is real money saved on context tokens.
+- **Cleaner context, fewer tokens.** TinyFish Fetch strips boilerplate before returning content. With nine agents talking to an LLM provider, every kilobyte of cookie-banner HTML stripped is real money saved on context tokens.
 - **Built for agent patterns, not human eyes.** Search results are structured JSON — title, URL, snippet, position. No HTML parsing required. Rank-stable means repeated calls return the same results in the same order, which makes session reproducibility and `session_search` indexing behave predictably.
 - **Live pages, not cached.** Several search backends return stale results. For `researcher` agent's job in particular, this is a meaningful quality difference.
-- **One key handles all seven agents.** Sign up once at agent.tinyfish.ai, distribute the key to whichever agents need search. No per-agent provider setup.
+- **One key handles all nine agents.** Sign up once at agent.tinyfish.ai, distribute the key to whichever agents need search. No per-agent provider setup.
 
 Trade-offs to know:
 

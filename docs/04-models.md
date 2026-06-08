@@ -25,7 +25,7 @@ flowchart LR
 
 The subscriptions actually on hand: **MiniMax**, **Codex** (ChatGPT), **Claude Code**, and **Gemini Antigravity**. Not all of them are *safe* to wire into a third-party agent like Hermes — "works technically" and "won't get your account flagged" are different questions. This doc maps them to a safe, sustainable stack:
 
-- **MiniMax = primary** (5 of 7 agents). Zero risk.
+- **MiniMax = primary** (7 of 9 agents). Zero risk.
 - **Codex = accepted-risk extra** on the two **quality-critical** agents (`writer`, `coder`) — gpt-5.x for prose + code. ⚠️ `coder` is high-volume; see the risk note in 5.0.
 - **OpenRouter API key** for cheap aux + cross-provider fallback. Safe.
 - **Claude** via a plain Anthropic API key *only if you want it* — not the Claude Code subscription.
@@ -61,7 +61,7 @@ The distinction that governs everything below: **an API key (you pay per token) 
 | `writer` | Ozan | `gpt-5.x` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
 | `producer` | Sarp | `MiniMax-M3` | `minimax` | ✅ | Idea scoring (Phase B) |
 
-For all seven, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
+For all nine, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
 Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `researcher`'s weekly scout — lives on **MiniMax**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and **A/B `coder` against MiniMax-M3** (a strong agentic coder itself, SWE-Bench 59 / Terminal-Bench 66). If gpt-5.x isn't clearly better for GDScript, move `coder` back to M3 (`/model` per session, or the config) — safer and $0.
 
@@ -151,7 +151,7 @@ model:
 
 Pay-per-token via console.anthropic.com. Switch to Opus for hard work with `/model claude-opus-4-6` in-session (same provider). **Do not** use `hermes model → Anthropic OAuth` with your Claude Code/Max login — that's the gray-area path that risks your coding subscription.
 
-### 5.5 OpenRouter for auxiliary tasks (one key, all seven agents)
+### 5.5 OpenRouter for auxiliary tasks (one key, all nine agents)
 
 Aux tasks fire constantly — vision, page summaries, session titles, context compression. Hermes defaults them to the main chat model unless overridden. Routing them to a cheap fast model via OpenRouter saves real money, and — importantly — it's an **API key**, so this is the *safe* way to use Gemini (not the banned subscription-OAuth route from 5.0).
 
@@ -196,7 +196,7 @@ Two flat subscriptions plus a little pay-per-token. There is **no per-agent mete
 |---|---|---|
 | MiniMax agents (Derya, Doruk, Tuna, Nilay, Sarp) | **$20 Token Plan** (Plus, standard) | **$20/mo flat** — shared 5h request quota, no per-token billing |
 | Codex agents (Naz, Ozan) | ChatGPT sub | **$0 extra** — included; but `coder` (Naz) is heavy → watch the ChatGPT cap |
-| Aux (all seven) + overflow/fallback | OpenRouter · Gemini Flash (pay-per-token) | **~$1–5/mo** |
+| Aux (all nine) + overflow/fallback | OpenRouter · Gemini Flash (pay-per-token) | **~$1–5/mo** |
 | **Total new spend** | | **~$21–25/mo** on top of the ChatGPT sub you already have |
 
 The real constraint is the **request quota**, not dollars — so the bill won't surprise you. If the shared 5-hour quota gets tight (heavy daily `coder` use), the levers are: route `coder` to the OpenRouter fallback during big sessions (5.7), or step up a MiniMax token-plan tier (~$50 / ~$120 = more quota/throughput). Claude stays opt-in (5.4).

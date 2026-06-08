@@ -28,7 +28,7 @@ flowchart TB
 
 ## 2. Agent roster
 
-Seven agents, all native **profiles** in one Hermes install on the **Mac Mini M4**, split by workload pattern (always-on vs. on-demand). Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
+Nine agents, all native **profiles** in one Hermes install on the **Mac Mini M4**, split by workload pattern (always-on vs. on-demand) — the **seven** below form the game-studio crew; a **two-agent personal tier** (`finance`, `health`) joins them in §2.2. Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
 
 ### Always-on agents (4)
 

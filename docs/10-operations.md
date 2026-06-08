@@ -196,7 +196,7 @@ These are decisions worth deferring until you have real usage data:
 
 - **Does `coder` need its own machine after all?** It runs native on the Mini for the Metal GPU. If Godot builds start starving the always-on agents (no per-profile RAM cap exists natively — Section 1.1), the clean escalation is to bring the shelved MacBook Pro back online as a dedicated `coder` host — which also restores `coder`'s credential isolation from the fleet ([Section 13](09-security.md)). Revisit only if you feel the resource or blast-radius pressure.
 - **Do you ever need a real ops agent?** Probably not — the watchdog (§14.5) owns the critical alert path deterministically. Only build one if you start wanting natural-language host *diagnosis* ("why is X slow / what's eating RAM") often enough that manual checks get tedious. If you do, it's a second shell agent — fence it like `coder` (§13) and never give it the Docker socket.
-- **Local inference?** Currently everything goes to remote API providers. With seven agents the bill adds up — at some point a local 7B model for the cheap tasks (assistant title generation, Honcho deriver) makes sense. Revisit once you have a month of usage data.
+- **Local inference?** Currently everything goes to remote API providers. With nine agents the bill adds up — at some point a local 7B model for the cheap tasks (assistant title generation, Honcho deriver) makes sense. Revisit once you have a month of usage data.
 - **`producer` scoring cadence.** Sarp is live but its weekly backlog-scoring cron (Section 16) isn't wired yet — add it once the scout's digests actually accumulate candidates worth scoring on a schedule.
 
 ---

@@ -10,7 +10,7 @@ The concern docs (01–12) explain *why*; this is the *what, in order*. Follow t
 
 ```mermaid
 flowchart LR
-    s0["0 · keys"]:::p --> s1["1 · install<br/>+ verify CLI ✅"]:::a --> s2["2 · 7 bots"]:::p
+    s0["0 · keys"]:::p --> s1["1 · install<br/>+ verify CLI ✅"]:::a --> s2["2 · 9 bots"]:::p
     s2 --> s3["3 · Doruk<br/>soak 24h"]:::a --> s4["4 · Derya<br/>coexist test"]:::a --> s5["5 · scout cron"]:::a
     s5 --> s6["6 · Phase B<br/>Honcho · coder · writer"]:::b --> s7["7 · Phase C<br/>game-dev"]:::c
     classDef p fill:#1976D2,stroke:#0D47A1,color:#fff
@@ -37,10 +37,10 @@ flowchart LR
   - `hermes tools list` (subcommand, not `--list`).
   - **Layout:** named profiles live at `~/.hermes/profiles/<slug>/`, not `~/.hermes/<slug>/`. Logs: `profiles/<slug>/logs/gateway.log`.
 - [x] **Supervision resolved: built-in.** `hermes -p <slug> gateway install` writes + bootstraps a per-profile launchd service, label `ai.hermes.gateway-<slug>` (`RunAtLoad` + `KeepAlive`, `HERMES_HOME` pinned). No hand-rolled plists ([docs/05 §7](05-deployment.md)). Fleet view: `hermes gateway list`.
-- [x] All 7 profiles created (`general researcher assistant marketing coder writer producer`) — idle until each gets keys + gateway install in its phase. *(Original 7th was `ops`/Nilay-DevOps; repurposed 2026-06-08 to `marketing`/Nilay since the watchdog covers host monitoring — see the role note below.)*
+- [x] All 7 studio profiles created (`general researcher assistant marketing coder writer producer`); **+ `finance`, `health` added 2026-06-08 (§2.2) → nine total** — idle until each gets keys + gateway install in its phase. *(Original 7th was `ops`/Nilay-DevOps; repurposed 2026-06-08 to `marketing`/Nilay since the watchdog covers host monitoring — see the role note below.)*
 - [x] **Pip extras installed** — the Homebrew formula bundles neither `python-telegram-bot` (bots silent without it), `ddgs` (built-in web_search has no backend — agents report "no web tools"), nor `websockets`. Installed into its venv (`$(brew --prefix hermes-agent)/libexec/bin/python -m pip install python-telegram-bot ddgs websockets`). ⚠️ Re-run after every `brew upgrade hermes-agent` ([docs/10 §14](10-operations.md)).
 
-## Step 2 — Telegram bots ×7 — ⏳ 5/7 DONE (2026-06-07)
+## Step 2 — Telegram bots ×9 — ✅ DONE (studio 7 by 2026-06-07; +finance/health 2026-06-08)
 
 - [x] @BotFather → `/newbot`: all created across two sittings (general, researcher, assistant, writer first; coder + producer next day after the ~24h rate limit). The old `ops` bot was abandoned when ops→marketing; a `marketing_<you>_bot` is the 7th.
 - [x] bot-tokens.env filled: `ALLOWED_USERS` + tokens + `MINIMAX_API_KEY` + `TINYFISH_API_KEY` + `OPENROUTER_API_KEY`.
@@ -76,16 +76,16 @@ flowchart LR
 - [x] **TinyFish MCP** — done early (2026-06-07, with Step 5) on `researcher`. To add on assistant/coder/writer later: same `mcp_servers:` block + per-profile `hermes -p <slug> mcp login tinyfish`.
 - [x] Profiles: **Tuna** (assistant, MiniMax) ✓ · **Ozan** (writer — Codex `gpt-5.4`) ✓ · **Naz** (coder — Codex `gpt-5.4`, MiniMax→OpenRouter fallback) ✓ **2026-06-08, FENCED** per docs/09 §13.7: `terminal`+`code_execution` ON (Metal/Godot), `web`+`browser` OFF, `approvals: mode=manual` (first week), website_blocklist on (100.*/169.254.*/RFC1918), `terminal.backend: local`, Honcho on. ⚠️ Naz+Ozan share the ChatGPT quota; Naz = the high-volume ToS watch-point (§5.3). · **Sarp** (producer — MiniMax) ✓ · **Nilay** (marketing — MiniMax, web+TinyFish+cron, no shell) ✓ **repurposed from ops 2026-06-08**.
 - [x] **Role change — ops → marketing (2026-06-08).** The planned 7th agent was `ops`/Nilay (DevOps). With the watchdog owning the critical host-alert path deterministically, a shell-capable ops *agent* was redundant *and* doubled the arbitrary-code attack surface — so Nilay was repurposed to **marketing & community** (a real gap: nobody owned go-to-market; Ozan only writes craft prose). New slug `marketing`, MiniMax, web+TinyFish+cron, **no shell**. Net security win: now **only `coder` has a shell**. Host monitoring stays the watchdog's job; build a real ops agent later only if you need NL host *diagnosis* (docs/10 open-Q).
-- [x] Watchdog `EXPECTED=(researcher general assistant writer coder producer marketing)` — all 7 (host monitoring is the watchdog's job; no ops agent).
+- [x] Watchdog `EXPECTED=(general researcher assistant marketing coder writer producer finance health)` — all 9 (host monitoring is the watchdog's job; no ops agent).
 - [x] **Cross-agent Honcho recall test — PASSED 2026-06-07**: fact seeded via Derya → deriver extracted observations → Doruk recalled it verbatim ("Plastron the tortoise"). Two real bugs fixed on the way: **(1) schema drift** — the elkimek quick-start config.toml uses the old `PROVIDER`/`MODEL` keys; upstream main expects `[module.model_config]` blocks (`transport`/`model` + `[…overrides] base_url`), so every worker silently fell back to `openai/gpt-5.4-mini` against api.openai.com → 401s; config.toml rewritten on the new schema (all modules → `deepseek/deepseek-v4-flash` via OpenRouter, embeddings via OpenRouter too — verified their `/embeddings` endpoint works). **(2)** `FLUSH_ENABLED = true` for a solo fleet — default batching waits for 1024 tokens per session before deriving, which on low-volume chat means "never". ⚠️ config.toml is **baked into the image** — `docker compose up -d --build` after every config edit, restart is not enough.
 
-## ✅ FLEET COMPLETE — 7/7 live (2026-06-08)
+## ✅ FLEET COMPLETE — 9/9 live (2026-06-08)
 
-All seven gateways under launchd, all smoke-tested from Telegram, all on Honcho:
+All nine gateways under launchd, all smoke-tested from Telegram, all on Honcho:
 Derya (general, dual-use) · Doruk (researcher) · Tuna (assistant, dual-use) · Nilay
-(marketing) · Naz (coder, fenced) · Ozan (writer) · Sarp (producer). Watchdog watches
-all 7; SearXNG + Honcho stack up; OpenRouter fallback chains live. Host monitoring is
-the watchdog's job — no ops agent by design.
+(marketing) · Naz (coder, fenced) · Ozan (writer) · Sarp (producer) · Murat (finance,
+fenced) · Defne (health). Watchdog watches all 9; SearXNG + Honcho stack up; OpenRouter
+fallback chains live. Host monitoring is the watchdog's job — no ops agent by design.
 
 **Operational reminders:** maintenance mute = `touch /tmp/hermes-watchdog/mute` before
 deliberate restarts. After `brew upgrade hermes-agent`, re-pip the venv extras
