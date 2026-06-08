@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # setup-bots.sh — apply name, about text, description, and command menu to the
-# seven Hermes Telegram bots via the Bot API.
+# nine Hermes Telegram bots via the Bot API.
 #
 # Bot CREATION is manual (BotFather has no API). This automates everything
 # *after* you have the tokens.
 #
 # Usage:
-#   1. In @BotFather: /newbot  x7  (slug-based usernames: general_<you>_bot, researcher_<you>_bot, …)
+#   1. In @BotFather: /newbot  x9  (slug-based usernames: general_<you>_bot, researcher_<you>_bot, … health_<you>_bot)
 #      Grab each token.
 #   2. cp bot-tokens.env.example bot-tokens.env  &&  chmod 600 bot-tokens.env
 #      Fill in your numeric Telegram user ID (ALLOWED_USERS, from @userinfobot)
-#      and the seven tokens (slug=token per line).
+#      and the nine tokens (slug=token per line).
 #   3. Optionally fill MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY
 #      in bot-tokens.env too — single entry point for all fleet secrets.
 #   4. ./setup-bots.sh

@@ -1,8 +1,8 @@
 # Hermes Setup
 
-A personal fleet of **seven [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
+A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
 
-**Status: fully deployed — 7/7 agents live** under launchd on the Mini, all answering from Telegram, all on shared Honcho memory.
+**Status: fully deployed — 9/9 agents live** under launchd on the Mini, all answering from Telegram, all on shared Honcho memory.
 
 The fleet is **not** game-studio-only. It's a **general-purpose personal assistant layer** (works for your whole life) **plus** a **game-studio pipeline** layered on top. The studio names are flavor; the capabilities underneath are general.
 
@@ -12,7 +12,7 @@ The fleet is **not** game-studio-only. It's a **general-purpose personal assista
 
 ```mermaid
 flowchart TB
-    you["📱 You · Telegram (7 bots)"]:::user
+    you["📱 You · Telegram (9 bots)"]:::user
     you <--> tg(["Telegram cloud"]):::net
 
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on · auto-login"]
@@ -30,6 +30,10 @@ flowchart TB
                 Naz["Naz · coder · Metal GPU"]:::codex
                 Nilay["Nilay · marketing"]:::mini
             end
+            subgraph personal["🧑 personal tier"]
+                Murat["Murat · finance"]:::mini
+                Defne["Defne · health"]:::mini
+            end
         end
         wd["🐕 watchdog · launchd<br/>15-min health check"]:::wd
         subgraph svc["Docker · services only (loopback)"]
@@ -41,8 +45,10 @@ flowchart TB
     tg <--> hermes
     gen -. shared memory .-> Honcho
     studio -. shared memory .-> Honcho
-    gen --> SearXNG
-    Nilay --> SearXNG
+    personal -. shared memory .-> Honcho
+    gen -. "search fallback" .-> SearXNG
+    studio -. "search fallback" .-> SearXNG
+    personal -. "search fallback" .-> SearXNG
     wd -. "down/crash alert<br/>(bypasses agents)" .-> tg
 
     ext["☁️ TinyFish · MiniMax · Codex · OpenRouter"]:::ext
@@ -61,6 +67,7 @@ flowchart TB
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style gen fill:#E3F2FD,stroke:#42A5F5,color:#0D47A1
     style studio fill:#FFF3E0,stroke:#FFB74D,color:#E65100
+    style personal fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
@@ -108,7 +115,7 @@ Nine native profiles in one Hermes install. **Slug** = the functional name (cons
 |---|---|---|---|---|
 | **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | MiniMax M3 |
 | **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | MiniMax M3 |
-| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | MiniMax M3 · TinyFish |
+| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | MiniMax M3 |
 
 These three you'd want even with no game studio. Start here for day-to-day use.
 
@@ -119,7 +126,7 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 | **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | MiniMax M3 |
 | **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | Codex gpt-5.4 |
 | **Naz** | `coder` | on-demand | Godot/GDScript game code — **the only agent that runs code**, native for Metal GPU + the editor; fenced | Codex gpt-5.4 |
-| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 · TinyFish |
+| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 |
 
 Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it.
 
@@ -133,6 +140,8 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 | **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | MiniMax M3 |
 
 `finance` is the 2nd shell-capable agent (with `coder`), fenced identically (`code_execution` only, `approvals: manual`, blocklist) — see [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
+
+**🔍 Web stack — all 9 agents:** every agent searches via **TinyFish** (MCP, OAuth 2.1 PKCE — *no API key*) with **SearXNG** as automatic fallback. None is walled off from the web and search never hard-fails; an outage on either side degrades to the other. Wired uniformly by `scripts/wire-tinyfish.sh` — [docs/08](docs/08-web-search.md).
 
 ---
 
@@ -198,13 +207,13 @@ The earlier draft ran one Docker container per agent across two Macs. Dropped �
 The plan is split by concern. Original section numbers (`## 1` … `## 17`) are preserved, so inline cross-references like "Section 13.7" resolve across files.
 
 1. [Architecture & Isolation](docs/01-architecture.md) — native single-install multi-profile; what isolation we keep and give up
-2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the seven agents, dual-use vs studio, comic SOULs
+2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the nine agents, dual-use vs studio + personal tier, comic SOULs
 3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, the `setup-bots.sh` shortcut
 4. [Model Providers](docs/04-models.md) — MiniMax + Codex routing, fallback chains
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
 6. [Networking](docs/06-networking.md) — Telegram needs no ports; Tailscale optional for the dashboard
 7. [Memory — Honcho](docs/07-memory.md) — three layers, shared user model, backups
-8. [Web Search — TinyFish & SearXNG](docs/08-web-search.md) — MCP integration, fallback
+8. [Web Search — TinyFish & SearXNG](docs/08-web-search.md) — TinyFish MCP (OAuth) primary + SearXNG fallback, all 9 agents
 9. [Security & Sandboxing](docs/09-security.md) — native guardrails; fencing the one code-running agent
 10. [Operations](docs/10-operations.md) — evaluation, native upgrade, watchdog, open questions
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
@@ -216,13 +225,17 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 ## 7 · Quick start
 
 ```bash
-# 1. Telegram: @BotFather → /newbot ×7   (general_<you>_bot … marketing_<you>_bot; slug-based, rename-safe)
+# 1. Telegram: @BotFather → /newbot ×9   (general_<you>_bot … health_<you>_bot; slug-based, rename-safe)
 # 2. wire the bots + keys (creation is the only manual Telegram step):
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-#    fill ALLOWED_USERS (from @userinfobot) + the 7 tokens + MINIMAX/OPENROUTER/TINYFISH keys, then:
+#    fill ALLOWED_USERS (from @userinfobot) + the 9 tokens + MINIMAX/OPENROUTER keys, then:
+#    (TinyFish needs no key — it authenticates via OAuth in step 4)
 ./scripts/setup-bots.sh        # sets bot profiles + fans tokens & keys into ~/.hermes/profiles/<slug>/.env
 # 3. install Hermes natively + bring up one profile, then the rest:
 #    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
+# 4. web stack — TinyFish (primary, OAuth) + SearXNG (fallback), all agents:
+hermes -p researcher mcp add tinyfish --url https://agent.tinyfish.ai/mcp   # one browser OAuth
+./scripts/wire-tinyfish.sh     # seeds OAuth to the other 8 + SearXNG fallback + restarts gateways
 ```
 
 `bot-tokens.env` is the **single entry point for all secrets** — the script fans them out per profile. It's gitignored; keep it `chmod 600` and don't edit it in a stale GUI buffer.
@@ -241,10 +254,10 @@ flowchart LR
 ```
 
 - **Phase A ✅** — native install, Derya + Doruk under launchd, per-profile state proven, watchdog live-tested, weekly game-scout cron delivering.
-- **Phase B ✅** — all seven agents live; self-hosted Honcho shared memory (cross-agent recall proven); SearXNG + TinyFish web; OpenRouter fallback chains live-tested; `coder` fenced.
+- **Phase B ✅** — all nine agents live; self-hosted Honcho shared memory (cross-agent recall proven); **all 9 agents on TinyFish (OAuth) primary + SearXNG fallback** (`mcp test` → Connected, 17 tools each); OpenRouter fallback chains live-tested; `coder` fenced.
 - **Phase C ⏳** — when you start a real game: a picked idea → lean PRD (Ozan) → Godot prototype (Naz) on the Mini's GPU → go-to-market (Nilay).
 
-**Pending follow-ups (all pull, none blocking):** Nilay TinyFish OAuth login · Naz `approvals: manual`→`smart` after a week · Sarp weekly score-cron once digests accumulate.
+**Pending follow-ups (all pull, none blocking):** Naz `approvals: manual`→`smart` after a week · Sarp weekly score-cron once digests accumulate.
 
 ---
 
@@ -256,7 +269,8 @@ flowchart TB
     root --> readme["README.md · this file"]:::doc
     root --> docs["docs/ · 01-13<br/>plan by concern + live runbook"]:::doc
     root --> scripts["scripts/"]:::svc
-    scripts --> sb["setup-bots.sh<br/>configure 7 bots + fan secrets to .env"]:::svc
+    scripts --> sb["setup-bots.sh<br/>configure 9 bots + fan secrets to .env"]:::svc
+    scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> ex["bot-tokens.env.example<br/>(real bot-tokens.env is gitignored)"]:::svc
     classDef root fill:#303F9F,stroke:#1A237E,color:#fff
     classDef doc fill:#1976D2,stroke:#0D47A1,color:#fff

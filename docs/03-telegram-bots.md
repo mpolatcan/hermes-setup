@@ -92,6 +92,9 @@ In each agent's `~/.hermes/profiles/<name>/config.yaml`, enable the Telegram gat
 ```yaml
 gateway:
   enabled: true
+  streaming:
+    enabled: true        # stream replies live — long answers render as they generate
+    transport: auto      # auto | draft | edit | off  (auto picks best per chat)
   platforms:
     telegram:
       enabled: true
@@ -100,6 +103,8 @@ gateway:
 ```
 
 The token and allowed-users values are read from `.env` automatically — they don't need to be repeated here.
+
+**Streaming responses (enabled fleet-wide).** `gateway.streaming.enabled: true` makes replies stream into Telegram as they generate instead of landing as one block at the end — a big UX win for long answers. `transport: auto` lets Hermes pick the delivery method (`edit` = progressively edits one message; `draft` = Telegram's draft channel; `off` = disable). Set on all nine profiles via `hermes -p <slug> config set gateway.streaming.enabled true`, then restart the gateway. (Verified v0.16.0.)
 
 ### 4.6 Token collision protection (Hermes-side)
 
