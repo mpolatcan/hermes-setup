@@ -85,7 +85,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
   ```
 - **Memory:** full built-in + **Honcho** — Derya builds the richest user model, since it's where you talk about everything. Its own AI peer. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config.
   ```json
-  // ~/.hermes/profiles/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "hermes"
+  // ~/.hermes/profiles/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "polatcan-gaming"  (studio tier; finance/health use their own workspaces — docs/07 §9.2)
   ```
 - **Profile / directory:** profile `general`, data dir `~/.hermes/profiles/general/`. Stand it up like any other (Section 6):
   ```bash

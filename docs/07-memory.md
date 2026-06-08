@@ -62,6 +62,16 @@ Concretely: all nine agents share a single understanding of who you are — your
 
 This solves a problem that built-in memory alone cannot: cross-agent continuity for the parts that should be shared, separation for the parts that should be distinct.
 
+**Workspace tiering (current layout, 2026-06-08).** The fleet no longer runs a single `hermes` workspace. It's split by sensitivity into **three** Honcho workspaces:
+
+| Workspace | Agents | Shared user peer? |
+|---|---|---|
+| `polatcan-gaming` | the **7 studio/general** agents (`general`, `researcher`, `assistant`, `marketing`, `writer`, `coder`, `producer`) | yes — shared among these seven |
+| `polatcan-finance` | `finance` only | isolated (own user model) |
+| `polatcan-health` | `health` only | isolated (own user model) |
+
+Reason: `finance` and `health` are the most sensitive domains, so their derived observations are deliberately kept *out* of the shared studio model — health/finance facts don't bleed into the crew's user peer, and vice versa. So "shared user peer" now means *shared across the seven studio agents*; the two personal agents are private by design. (The per-host keys in `honcho.json` stay `hermes_<slug>`; only the `workspace` *value* differs by tier. The earlier single `hermes` workspace is now orphaned — agents rebuild fresh models in the new workspaces on next session, which is cheap while the fleet is only days old. To preserve the old model instead, migrate the `hermes` workspace data before the agents repopulate.)
+
 Honcho also runs four background processes that do work the built-in layer cannot:
 
 - **Deriver** reads every message and extracts observations about you ("prefers Python", "deadline-driven on weekdays").
@@ -191,7 +201,7 @@ Create one per agent. Example for `coder`:
       "enabled": true,
       "aiPeer": "coder",
       "peerName": "your-name",
-      "workspace": "hermes",
+      "workspace": "polatcan-gaming",
       "recallMode": "hybrid",
       "writeFrequency": "turn",
       "dialecticReasoningLevel": "medium"
@@ -205,7 +215,7 @@ Key fields:
 - `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
 - `aiPeer` — **unique per agent** (`coder`, `writer`, `researcher`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
-- `workspace` — keep as `hermes` for all nine. The workspace is what binds them into one shared environment.
+- `workspace` — what binds agents into one shared user model. **Tiered (current, §9.2):** `polatcan-gaming` for the seven studio agents, `polatcan-finance` for `finance`, `polatcan-health` for `health`. Agents in the *same* workspace share the user peer; different workspaces are fully isolated.
 - `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only). **Token note:** `hybrid`/`context` inject memory into *every* turn's prompt — on specialist/low-continuity agents (`coder`, `producer`, `finance`, `health`) prefer `tools` so memory is fetched only when relevant, not paid on every message. Keep `hybrid` on the continuity agents (`general`, `assistant`).
 - `writeFrequency` — when messages are flushed to Honcho: `async` (background thread — the fleet default, non-blocking), `turn` (sync each turn), `session` (batch at session end — fewest deriver calls), or an integer `N` (every N turns). `every_turn` is **not** a valid value.
 - `dialecticReasoningLevel` — `minimal`/`low`/`medium`/`high`/`max`. Higher = better reasoning, more tokens, more cost. Doc default was `medium`; the fleet runs `low` (good token/quality balance). `dialecticMaxChars` (fleet: `600`) caps the injected context size.
