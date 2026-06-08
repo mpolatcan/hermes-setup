@@ -215,7 +215,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 7. [Memory — Honcho](docs/07-memory.md) — three layers, shared user model, backups
 8. [Web Search — TinyFish & SearXNG](docs/08-web-search.md) — TinyFish MCP (OAuth) primary + SearXNG fallback, all 9 agents
 9. [Security & Sandboxing](docs/09-security.md) — native guardrails; fencing the one code-running agent
-10. [Operations](docs/10-operations.md) — evaluation, native upgrade, watchdog, open questions
+10. [Operations](docs/10-operations.md) — evaluation, native upgrade, watchdog, startup ping, open questions
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
@@ -234,8 +234,7 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 # 3. install Hermes natively + bring up one profile, then the rest:
 #    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
 # 4. web stack — TinyFish (primary, OAuth) + SearXNG (fallback), all agents:
-hermes -p researcher mcp add tinyfish --url https://agent.tinyfish.ai/mcp   # one browser OAuth
-./scripts/wire-tinyfish.sh     # seeds OAuth to the other 8 + SearXNG fallback + restarts gateways
+./scripts/wire-tinyfish.sh     # per-profile OAuth (own browser consent each — tokens are NOT shared) + SearXNG fallback + restart
 ```
 
 `bot-tokens.env` is the **single entry point for all secrets** — the script fans them out per profile. It's gitignored; keep it `chmod 600` and don't edit it in a stale GUI buffer.
@@ -254,7 +253,7 @@ flowchart LR
 ```
 
 - **Phase A ✅** — native install, Derya + Doruk under launchd, per-profile state proven, watchdog live-tested, weekly game-scout cron delivering.
-- **Phase B ✅** — all nine agents live; self-hosted Honcho shared memory (cross-agent recall proven); **all 9 agents on TinyFish (OAuth) primary + SearXNG fallback** (`mcp test` → Connected, 17 tools each); OpenRouter fallback chains live-tested; `coder` fenced.
+- **Phase B ✅** — all nine agents live; self-hosted Honcho shared memory (cross-agent recall proven); **all 9 agents on TinyFish (OAuth) primary + SearXNG fallback** (`mcp test` → Connected, 17 tools each) — ⚠️ **OAuth tokens are per-profile, never copied**: each profile runs its own `mcp add` consent (shared tokens get revoked by refresh-token rotation, [docs/08 §10.2 Step 4](docs/08-web-search.md)); OpenRouter fallback chains live-tested; `coder` fenced.
 - **Phase C ⏳** — when you start a real game: a picked idea → lean PRD (Ozan) → Godot prototype (Naz) on the Mini's GPU → go-to-market (Nilay).
 
 **Pending follow-ups (all pull, none blocking):** Naz `approvals: manual`→`smart` after a week · Sarp weekly score-cron once digests accumulate.
@@ -270,14 +269,15 @@ flowchart TB
     root --> docs["docs/ · 01-13<br/>plan by concern + live runbook"]:::doc
     root --> scripts["scripts/"]:::svc
     scripts --> sb["setup-bots.sh<br/>configure 9 bots + fan secrets to .env"]:::svc
-    scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (OAuth) + SearXNG fallback · all 9"]:::svc
+    scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
+    scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
     scripts --> ex["bot-tokens.env.example<br/>(real bot-tokens.env is gitignored)"]:::svc
     classDef root fill:#303F9F,stroke:#1A237E,color:#fff
     classDef doc fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), `~/.hermes/honcho.json`, `~/.hermes/scripts/watchdog.sh`, `~/honcho-stack/` + `~/hermes-services/` (Docker), and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*`.
+State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`).
 
 ---
 

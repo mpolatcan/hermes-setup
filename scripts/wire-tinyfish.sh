@@ -5,9 +5,17 @@
 # Verified on the Mini (v0.16.0): TinyFish's MCP endpoint uses OAuth 2.1 PKCE,
 # NOT an X-API-Key header. Hermes stores the server as `mcp_servers.tinyfish`
 # (auth: oauth) in config.yaml and keeps the OAuth token triplet under
-# <profile>/mcp-tokens/. The browser OAuth flow can't be scripted, so this tool
-# *seeds* the tokens from one already-authed profile (default: researcher) into
-# the rest — single-user box, so sharing one TinyFish OAuth client is fine.
+# <profile>/mcp-tokens/.
+#
+# OAuth tokens are NOT shareable across profiles. The endpoint uses per-client
+# Dynamic Client Registration + refresh-token rotation: every profile gets its
+# own client_id and its own token family. COPYING a triplet between profiles
+# gives them one shared client_id + one shared refresh token; the first gateway
+# to refresh rotates that token and the others are left holding a revoked one,
+# and reuse-detection then invalidates the WHOLE family. A copy "works" for ~1h
+# (the access token is still alive) and then dies — that is the trap this script
+# used to fall into. So each profile authenticates ITSELF via its own browser
+# consent; there is no seeding.
 #
 # Per profile it:
 #   1. upserts SEARXNG_URL into .env
@@ -15,37 +23,32 @@
 #   3. writes the web: { backend: searxng } fallback block (if absent)
 #   4. removes `web` from disabled_toolsets so the SearXNG fallback can fire
 #      (handles inline `[...]` and multi-line `- web` forms; .bak saved)
-#   5. seeds the OAuth token triplet from $SEED_FROM (if the profile has none)
+#   5. runs `hermes -p <slug> mcp add tinyfish` if the profile has no token
+#      (opens a browser consent on the Mini — one per profile)
 #   6. kickstarts the gateway, then you verify with `hermes -p <p> mcp test tinyfish`
 #
-# Idempotent + non-destructive. First authenticate ONE profile by hand:
-#   hermes -p researcher mcp add tinyfish --url https://agent.tinyfish.ai/mcp
-# then run this to fan it out.
+# Config wiring is idempotent + non-destructive. OAuth is auto-launched for any
+# profile that lacks a token. To repair profiles that hold a BAD copied token,
+# pass FRESH=1 to wipe their mcp-tokens/ first so they re-auth clean.
 #
 # Usage:
-#   ./wire-tinyfish.sh                                   # seed from researcher
-#   SEED_FROM=marketing ./wire-tinyfish.sh               # seed from another authed profile
-#   SLUGS="general producer" ./wire-tinyfish.sh          # subset (default: all nine)
+#   ./wire-tinyfish.sh                                   # wire all nine; auth any missing
+#   FRESH=1 SLUGS="general researcher assistant coder writer producer" ./wire-tinyfish.sh
+#                                                        # ^ repair the 6 copied-token profiles
+#   AUTH=0 ./wire-tinyfish.sh                            # wire config only; just PRINT auth cmds
 #   SEARXNG_URL=http://127.0.0.1:8888 ./wire-tinyfish.sh # override fallback URL
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-SEED_FROM="${SEED_FROM:-researcher}"
 SEARXNG_URL="${SEARXNG_URL:-http://127.0.0.1:8888}"
 SLUGS="${SLUGS:-general researcher assistant marketing coder writer producer finance health}"
-SEED_DIR="$HOME/.hermes/profiles/$SEED_FROM/mcp-tokens"
+AUTH="${AUTH:-1}"     # 1 = launch the OAuth flow; 0 = just print the command
+FRESH="${FRESH:-0}"   # 1 = wipe each profile's mcp-tokens/ first (repair copied tokens)
 
 # Preflight: SearXNG must answer JSON or the fallback is dead weight.
 if ! curl -s --max-time 3 "$SEARXNG_URL/search?q=ping&format=json" 2>/dev/null | grep -q '"results"'; then
   echo "WARNING: SearXNG not returning JSON at $SEARXNG_URL — fallback won't fire (docs/08 §10.4)."
-  echo
-fi
-# Preflight: seed profile must be OAuth-authed, or there's nothing to fan out.
-if [ ! -f "$SEED_DIR/tinyfish.json" ]; then
-  echo "NOTE: seed profile '$SEED_FROM' has no TinyFish OAuth token yet."
-  echo "      Authenticate it first:  hermes -p $SEED_FROM mcp add tinyfish --url https://agent.tinyfish.ai/mcp"
-  echo "      (config + fallback will still be wired; tokens just won't be seeded.)"
   echo
 fi
 
@@ -119,17 +122,23 @@ for slug in $SLUGS; do
     echo "    + web removed from disabled_toolsets (multi-line; .bak saved)"
   fi
 
-  # 4) Seed OAuth tokens (skip the browser flow on every profile but the seed)
+  # 4) OAuth — each profile authenticates ITSELF (tokens are NOT shareable).
   tok="$dir/mcp-tokens"
-  if [ "$slug" = "$SEED_FROM" ]; then
-    echo "    = seed profile — OAuth tokens authoritative here"
-  elif [ -f "$tok/tinyfish.json" ]; then
-    echo "    = OAuth tokens already present"
-  elif [ -f "$SEED_DIR/tinyfish.json" ]; then
-    mkdir -p "$tok"; cp -R "$SEED_DIR/." "$tok/"
-    echo "    + OAuth tokens seeded from '$SEED_FROM'"
+  if [ "$FRESH" = "1" ] && [ -d "$tok" ]; then
+    rm -rf "$tok"
+    echo "    + wiped mcp-tokens/ (FRESH=1) — will re-auth clean"
+  fi
+  if [ -f "$tok/tinyfish.json" ]; then
+    echo "    = OAuth tokens already present (pass FRESH=1 to force re-auth)"
+  elif [ "$AUTH" = "1" ]; then
+    echo "    → launching OAuth flow (browser consent on the Mini)…"
+    if hermes -p "$slug" mcp add tinyfish --url https://agent.tinyfish.ai/mcp; then
+      echo "    + $slug authenticated"
+    else
+      echo "    ! OAuth failed for $slug — re-run: hermes -p $slug mcp add tinyfish --url https://agent.tinyfish.ai/mcp"
+    fi
   else
-    echo "    ! no OAuth tokens — run: hermes -p $slug mcp add tinyfish --url https://agent.tinyfish.ai/mcp"
+    echo "    ! no OAuth tokens (AUTH=0) — run: hermes -p $slug mcp add tinyfish --url https://agent.tinyfish.ai/mcp"
   fi
 
   restart+=("$slug")

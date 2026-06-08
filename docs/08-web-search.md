@@ -72,19 +72,30 @@ mcp_servers:                       # flat key — NOT `mcp:` → `servers:`
 
 …and stores the OAuth token triplet under `~/.hermes/profiles/<slug>/mcp-tokens/` (`tinyfish.json`, `tinyfish.client.json`, `tinyfish.meta.json`).
 
-#### Step 4: Seed the other eight profiles (skip 8 browser logins)
+#### Step 4: Authenticate each profile individually — do NOT copy tokens
 
-OAuth tokens are **account-scoped**, so once one profile is authed you can copy its full triplet to the rest instead of re-running the browser flow nine times (single-user box — all profiles then share one TinyFish OAuth client, which is fine):
+> **This is the one thing that bites.** OAuth tokens are **not shareable across profiles.** TinyFish's MCP endpoint uses **per-client Dynamic Client Registration + refresh-token rotation**: each profile that runs `mcp add` gets its *own* `client_id` and its *own* token family. If you copy one profile's triplet into the others, they all share a single `client_id` and a single refresh token — and OAuth 2.1 rotates refresh tokens on every use. The first gateway to refresh gets a new token; the others are left holding the now-revoked one, and the server's **reuse-detection then invalidates the entire token family** (a replayed refresh token reads as theft). A copied triplet *appears* to work for ~1 hour — the access token is still valid — then every profile but one starts failing `mcp test`. That window is exactly why this looked fine on first check and broke later.
+
+So authenticate every profile on its own. Each opens a browser consent once (single-user box — same TinyFish account, but a distinct OAuth client per profile, which is what the protocol wants):
 
 ```bash
-for p in general assistant marketing coder writer producer finance health; do
-  # write the mcp_servers block (or run `hermes -p $p mcp add tinyfish ...` once)
-  mkdir -p ~/.hermes/profiles/$p/mcp-tokens
-  cp -R ~/.hermes/profiles/researcher/mcp-tokens/. ~/.hermes/profiles/$p/mcp-tokens/
+for p in general researcher assistant marketing coder writer producer finance health; do
+  hermes -p "$p" mcp add tinyfish --url https://agent.tinyfish.ai/mcp   # → Y, browser consent
 done
 ```
 
-`scripts/wire-tinyfish.sh` automates this: it writes the `mcp_servers` block + the SearXNG `web:` fallback, seeds the OAuth tokens from a `--seed-from` profile, strips `web` from `disabled_toolsets`, and restarts every gateway.
+If a profile is currently broken because a token was copied into it, wipe the bad triplet first so it re-auths clean:
+
+```bash
+rm -rf ~/.hermes/profiles/<slug>/mcp-tokens
+hermes -p <slug> mcp add tinyfish --url https://agent.tinyfish.ai/mcp
+```
+
+`scripts/wire-tinyfish.sh` automates the rest: it writes the `mcp_servers` block + the SearXNG `web:` fallback, strips `web` from `disabled_toolsets`, **launches the per-profile OAuth flow for any profile missing a token** (`AUTH=1`, the default), and restarts every gateway. To repair the copied-token profiles, run it with `FRESH=1` over just those slugs:
+
+```bash
+FRESH=1 SLUGS="general researcher assistant coder writer producer" ./scripts/wire-tinyfish.sh
+```
 
 #### Step 5: Restart and verify
 

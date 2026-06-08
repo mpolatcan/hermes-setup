@@ -189,6 +189,44 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
 ---
 
+## 14.6 Startup "online" notification — per-bot greeting at boot
+
+The watchdog (14.5) is *anomaly* alerting — it speaks up on down/crash-loop. It does **not** announce a healthy startup. And Hermes' own restart message only reaches *recently-active* chats (it calls `notify_active_sessions` on SIGTERM; an idle bot has `active_at_start=0`, so e.g. Sarp gets nothing when you restart it cold). To get a deterministic "I'm up" line in **every** bot's own chat when the fleet starts, add a one-shot launchd job — same dumb-pipe pattern as the watchdog, no agent involved.
+
+`scripts/notify-online.sh` (in this repo — deploy to `~/.hermes/scripts/`, same as `wire-tinyfish.sh`) posts `🟢 <Display> online — gateway up` to each agent's own DM (Sarp's chat gets Sarp's ping), reading the per-profile `TELEGRAM_BOT_TOKEN` + first `TELEGRAM_ALLOWED_USERS` straight from `.env`. It waits up to ~60s per slug for the gateway's launchd PID to appear (so the ping means "gateway actually came up", 🟡 if it didn't), and sends `disable_notification=true` so a nine-bot boot doesn't buzz nine times.
+
+```bash
+notify-online.sh           # all nine (what the launchd job runs)
+notify-online.sh producer  # just Sarp — after a single-gateway kickstart
+```
+
+Fire it at boot/login with `~/Library/LaunchAgents/ai.hermes.fleet-online.plist` — one-shot (`RunAtLoad: true`, `KeepAlive: false`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>ai.hermes.fleet-online</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOU/.hermes/scripts/notify-online.sh</string>
+        <string>all</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>
+    <key>KeepAlive</key>        <false/>
+    <key>StandardOutPath</key>  <string>/Users/YOU/.hermes/scripts/fleet-online.log</string>
+    <key>StandardErrorPath</key><string>/Users/YOU/.hermes/scripts/fleet-online.log</string>
+</dict>
+</plist>
+```
+
+Load with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.fleet-online.plist`; that also runs it once, which is the live test (you should see nine pings, one per bot chat).
+
+**Scope / limit:** `RunAtLoad` covers machine boot and login. A manual `launchctl kickstart -k` of a *single* gateway does **not** re-trigger this job (separate launchd label) — run `notify-online.sh <slug>` by hand for that one, or re-kick the whole job with `launchctl kickstart gui/$(id -u)/ai.hermes.fleet-online`. Per-restart auto-fire would mean wrapping each Hermes-generated `gateway-<slug>.plist`, which an upgrade clobbers — not worth the fragility for a greeting.
+
+---
+
 
 ## 15. Open questions to revisit in week 2
 
