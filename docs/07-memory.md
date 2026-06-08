@@ -73,7 +73,7 @@ Honcho also runs four background processes that do work the built-in layer canno
 
 Honcho's open-source license is **AGPL-3.0** — fine for personal self-hosting. Honcho Cloud is the alternative, but for a system that learns about you over months, you want the data on your own hardware. The Mini is always on, has spare resources, and is already the natural always-on node in your topology.
 
-The Honcho stack is **five containers**: API, Postgres+pgvector, Redis, deriver worker, and summary/dream workers. The community-maintained quick-start at `elkimek/honcho-self-hosted` packages all of this into a single compose file with sensible defaults and Hermes integration. The upstream `plastic-labs/honcho` repo has a similar example compose.
+The Honcho stack is **four containers**: API, Postgres+pgvector, Redis, and the deriver worker (the **summary and dream jobs run inside the deriver** — there is no separate worker container for them). The community-maintained quick-start at `elkimek/honcho-self-hosted` packages all of this into a single compose file with sensible defaults and Hermes integration. The upstream `plastic-labs/honcho` repo has a similar example compose.
 
 #### Architecture
 
@@ -86,8 +86,7 @@ flowchart TB
                 api["api · FastAPI :8000"]:::svc
                 db[("database · Postgres + pgvector")]:::infra
                 redis[("redis · cache")]:::svc
-                deriver["deriver · worker"]:::infra
-                summary["summary · worker"]:::infra
+                deriver["deriver · worker<br/>(+ summary · dream)"]:::infra
             end
         end
     end
@@ -157,13 +156,12 @@ sudo lsof -iTCP -sTCP:LISTEN -P -n | grep 8000
 
 #### Resource impact on the Mini
 
-The Honcho stack adds roughly 1.5–2 GB to the Mini's memory footprint:
+The Honcho stack adds roughly 1.2–1.5 GB to the Mini's memory footprint:
 
 - API: ~300 MB
 - Postgres + pgvector: ~500 MB (grows with data)
 - Redis: ~100 MB
-- Deriver worker: ~300 MB
-- Summary worker: ~300 MB
+- Deriver worker: ~300–400 MB (also runs the summary + dream jobs)
 
 Combined with the native agents (~7–9 GB across the always-on set) + macOS (~2 GB), the Mini sits at ~11–13 GB out of 16 GB. Watch Activity Monitor during the first week; if pressure shows, run fewer on-demand agents concurrently.
 
@@ -181,7 +179,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
 | `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
 
-All nine use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>`, see Section 9.3), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
+All nine use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>` — auto-derived and verified working on v0.16.0; note the *official* documented form is dot-notation `hermes.<slug>`, so if a future upgrade ever breaks per-agent peer separation, switch the underscores to dots), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
 
 Create one per agent. Example for `coder`:
 
@@ -195,7 +193,7 @@ Create one per agent. Example for `coder`:
       "peerName": "your-name",
       "workspace": "hermes",
       "recallMode": "hybrid",
-      "writeFrequency": "every_turn",
+      "writeFrequency": "turn",
       "dialecticReasoningLevel": "medium"
     }
   }
@@ -208,8 +206,10 @@ Key fields:
 - `aiPeer` — **unique per agent** (`coder`, `writer`, `researcher`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
 - `workspace` — keep as `hermes` for all nine. The workspace is what binds them into one shared environment.
-- `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only).
-- `dialecticReasoningLevel` — `minimal`/`low`/`medium`/`high`/`max`. Higher = better reasoning, more tokens, more cost. Start at `medium` and adjust.
+- `recallMode` — `hybrid` is the sensible default: context is auto-injected into the system prompt *and* tools are available so the model can also query on demand. Other options: `context` (auto-inject only), `tools` (tools only). **Token note:** `hybrid`/`context` inject memory into *every* turn's prompt — on specialist/low-continuity agents (`coder`, `producer`, `finance`, `health`) prefer `tools` so memory is fetched only when relevant, not paid on every message. Keep `hybrid` on the continuity agents (`general`, `assistant`).
+- `writeFrequency` — when messages are flushed to Honcho: `async` (background thread — the fleet default, non-blocking), `turn` (sync each turn), `session` (batch at session end — fewest deriver calls), or an integer `N` (every N turns). `every_turn` is **not** a valid value.
+- `dialecticReasoningLevel` — `minimal`/`low`/`medium`/`high`/`max`. Higher = better reasoning, more tokens, more cost. Doc default was `medium`; the fleet runs `low` (good token/quality balance). `dialecticMaxChars` (fleet: `600`) caps the injected context size.
+- `dialecticCadence` — run the (expensive) dialectic reasoning every N turns instead of every turn (recommended 1–5). **Biggest single token lever:** dialectic is the dominant per-turn memory cost; setting `3` cuts it ~3× with no felt loss of continuity.
 
 Then in each agent's `config.yaml`:
 
@@ -320,7 +320,7 @@ Verify a backup is restorable at least once. Sometime in month 1, do a test rest
 
 - **Honcho server down.** Agents configured with `provider: honcho` will degrade — their built-in memory still works (MEMORY.md, USER.md, session search), but Honcho-injected context disappears and `honcho_*` tools fail. Not catastrophic; agents stay usable. Restart with `docker compose up -d` in the honcho-stack directory.
 - **Memory file corruption (rare).** If MEMORY.md or USER.md gets into a weird state, the agent might refuse to write to it. Solution: restore from yesterday's backup, or in the worst case, delete the file — the agent will create a fresh one on next session. You lose accumulated memory in that agent but nothing else.
-- **Honcho LLM provider quota exhausted.** Deriver/dialectic/summary/dream calls will fail. The Postgres data is intact; just background processing pauses. Top up the provider, restart the deriver/summary workers. No data loss, but observations from the queue-up period may need to be reprocessed.
+- **Honcho LLM provider quota exhausted.** Deriver/dialectic/summary/dream calls will fail. The Postgres data is intact; just background processing pauses. Top up the provider, restart the deriver worker (it runs summary + dream too). No data loss, but observations from the queue-up period may need to be reprocessed.
 - **Memory hit character limit and agent is dropping things.** Either raise the limit in `config.yaml`, or accept that the agent is keeping its memory focused on what's most recent and relevant — which is the design. The header tells you when memory is near full.
 
 ### 9.9 What this doesn't solve

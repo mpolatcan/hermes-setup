@@ -37,7 +37,7 @@ flowchart TB
         end
         wd["🐕 watchdog · launchd<br/>15-min health check"]:::wd
         subgraph svc["Docker · services only (loopback)"]
-            Honcho[("Honcho · :8000<br/>5-container shared memory")]:::infra
+            Honcho[("Honcho · :8000<br/>4-container shared memory")]:::infra
             SearXNG["SearXNG · :8888<br/>search fallback"]:::svc
         end
     end
