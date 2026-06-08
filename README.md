@@ -125,7 +125,7 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 |---|---|---|---|---|
 | **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | MiniMax M3 |
 | **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | Codex gpt-5.4 |
-| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the only agent that runs code**, native for Metal GPU + the editor; fenced | Codex gpt-5.4 |
+| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | Codex gpt-5.4 |
 | **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 |
 
 Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it.
@@ -139,7 +139,7 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 | **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | MiniMax M3 |
 | **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | MiniMax M3 |
 
-`finance` is the 2nd shell-capable agent (with `coder`), fenced identically (`code_execution` only, `approvals: manual`, blocklist) — see [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
+`finance` is a fenced shell-capable agent (`code_execution` only, `approvals: manual`, blocklist) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell). See [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
 
 **🔍 Web stack — all 9 agents:** every agent searches via **TinyFish** (MCP, OAuth 2.1 PKCE — *no API key*) with **SearXNG** as automatic fallback. None is walled off from the web and search never hard-fails; an outage on either side degrades to the other. Wired uniformly by `scripts/wire-tinyfish.sh` — [docs/08](docs/08-web-search.md).
 
@@ -198,7 +198,7 @@ Full routing + the per-agent fallback chains: [docs/04](docs/04-models.md).
 
 ## 5 · Why native single-install (not containers)
 
-The earlier draft ran one Docker container per agent across two Macs. Dropped — full reasoning in [docs/01](docs/01-architecture.md). In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (**only `coder` gets a shell**) and focused guardrails on `coder` ([docs/09](docs/09-security.md)).
+The earlier draft ran one Docker container per agent across two Macs. Dropped — full reasoning in [docs/01](docs/01-architecture.md). In short: this is **single-tenant, one person, one machine**, so the container isolation tax buys little; and **`coder` needs the Mac's Metal GPU + the Godot editor**, which a macOS container can't provide (no GPU passthrough). One native install also makes agent-to-agent coordination **local** (no HTTP/Tailscale) and the `kanban` board **natively available** if ever wanted. The trade — no kernel boundary between profiles — is managed by toolset hygiene (shells limited to `coder` (game dev), `finance` (fenced Python), and `general`/Derya (fleet admin)) and focused guardrails on each ([docs/09](docs/09-security.md)).
 
 ---
 
@@ -284,7 +284,7 @@ State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent'
 ## 10 · Security notes
 
 - **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local, `chmod 600`.
-- **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Only `coder` gets a shell** — the one arbitrary-code agent, fenced with `approvals: manual`→`smart`, credential redaction, and a website blocklist ([details](docs/09-security.md)).
+- **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Three agents can run code:** `coder` (game-dev shell), `general`/Derya (terminal + Python + `file` — the **fleet admin**, highest-privilege: always-on, web-facing, shell), and `finance` (fenced Python). Each is fenced with `approvals: manual`, credential stripping, Tirith ([details](docs/09-security.md)). ⚠️ Derya's approval on routine `hermes`/`launchctl` commands is **behavioral (her SOUL), not enforced** — see docs/09 §13.7a.
 - **Telegram is the front door** and needs no open ports (gateways connect outbound). Don't expose the optional HTTP API / dashboard publicly — put it behind Tailscale ([details](docs/06-networking.md)).
 - **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`; nothing off-box.
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).

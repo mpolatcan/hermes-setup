@@ -47,7 +47,7 @@ Started when you use them, idle otherwise — they don't hold RAM the rest of th
 
 | Slug | Display | Role | Personality | Working set |
 |---|---|---|---|---|
-| `coder` | **Naz** | Lead programmer, Godot-first; the only agent that runs code — native for Metal GPU + the Godot GUI | Blunt, opinionated, shows diffs, "works on my machine" | ~4 GB |
+| `coder` | **Naz** | Lead programmer, Godot-first; the studio's code-runner — native for Metal GPU + the Godot GUI | Blunt, opinionated, shows diffs, "works on my machine" | ~4 GB |
 | `writer` | **Ozan** | Narrative designer; drafts, edits, game PRDs | Pretentious artist — everything's "a metaphor" | ~2 GB |
 | `producer` | **Sarp** | Producer / product lead: idea backlog + scoring (**Phase B, deferred**) | Skeptical budget-killer, anti-hype, sighs internally | ~2 GB |
 
@@ -73,10 +73,15 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
     - provider: openai-codex
       model: gpt-5.3
   ```
-- **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob`.
+- **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob` — **plus `terminal` + `code_execution` + `file`.** Derya is the **fleet admin**: she configures/tunes the other agents (`hermes config set`, edits `honcho.json`/`SOUL.md`) and restarts gateways (`launchctl kickstart`). ⚠️ This makes her the **highest-privilege agent in the fleet** — always-on *and* web/vision-facing *and* holding a host shell. Gated by manual approvals + Tirith + a confirm-first SOUL (§6.7), but see the residual-risk note in [docs/09 §13.7a](09-security.md): approval on benign `hermes`/`launchctl` commands is *behavioral, not enforced*.
   ```yaml
   agent:
-    disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo]
+    disabled_toolsets: [browser, image_gen, delegation, messaging, todo, kanban]
+  approvals:
+    mode: manual          # gate dangerous commands (fail-closed, 120s)
+    cron_mode: deny
+  security:
+    tirith_enabled: true  # pre-exec command scanning
   ```
 - **Memory:** full built-in + **Honcho** — Derya builds the richest user model, since it's where you talk about everything. Its own AI peer. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config.
   ```json
@@ -108,7 +113,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 | `finance` | **Murat** | Markets & finance analyst — analyzes read-only data you share (published Google-Sheet CSVs via `web`, statements/charts via `vision`), scans news/Reddit/finance sites (BIST + global), **crunches numbers with `code_execution`**. Informational, *not* investment advice. | `web`+TinyFish, **`code_execution` (fenced)**, `file`, `vision`, `cronjob`, Honcho | MiniMax M3 |
 | `health` | **Defne** | Health & fitness coach — workout/nutrition logging, **calorie/macro estimate from food photos** (`vision`, ballpark), trend tracking, research. *Not* medical advice. | `web`+TinyFish, `file`, `vision`, `cronjob`, Honcho — **no shell** | MiniMax M3 |
 
-- **`finance` is the 2nd shell-capable agent** (with `coder`) — it has `code_execution` ON *because* spreadsheet/CSV analysis is the point, so it's **fenced** identically: `approvals: manual`, website blocklist, no `terminal` (Python exec only). The clean read-only data path is **publish the Google Sheet tab to web as CSV** → the agent fetches the URL (no OAuth, genuinely read-only) → `code_execution` crunches it. See [docs/09 §13.7](09-security.md).
+- **`finance` is a fenced shell-capable agent** (Python only) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell, §2.1). It has `code_execution` ON *because* spreadsheet/CSV analysis is the point, so it's **fenced** identically: `approvals: manual`, website blocklist, no `terminal` (Python exec only). The clean read-only data path is **publish the Google Sheet tab to web as CSV** → the agent fetches the URL (no OAuth, genuinely read-only) → `code_execution` crunches it. See [docs/09 §13.7](09-security.md).
 - **X/Twitter deferred** — Hermes's `x_search` needs an xAI/SuperGrok key (§ docs/04); `finance` covers Reddit + news + finance sites via TinyFish instead. Add the key later for native X sentiment.
 - **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (MiniMax/OpenRouter see what you send; Honcho stores derived facts locally) — same posture as the rest of the fleet ([docs/07](07-memory.md)). Zero-leak would require a local model.
 

@@ -62,10 +62,10 @@ Be honest about the trade. Profiles are **not filesystem sandboxes** — Hermes 
 So isolation is no longer *structural*. It comes from three things instead:
 
 1. **Single tenant.** Every agent, token, and file is yours. Cross-profile reads are you reading your own data — not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another.
-2. **Toolset hygiene.** Only **one** agent has a shell at all — `coder` (`terminal` + `code_execution`). The other six have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever.
-3. **`coder` guardrails.** `coder` is the one arbitrary-code agent sharing the install, so it carries the residual risk. It is fenced with `approvals: smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
+2. **Toolset hygiene.** Three agents can run code: `coder` (`terminal` + `code_execution`, game dev), `general`/Derya (same + `file` — the **fleet admin**), and `finance` (fenced Python). The other six have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever — and Derya, the always-on web-facing admin, is the highest-privilege agent ([docs/09 §13.7a](09-security.md)).
+3. **Code-runner guardrails.** `coder` is a primary arbitrary-code agent sharing the install (the always-on `general`/Derya admin shell is the other — §13.7a), so they carry the residual risk. Each is fenced with `approvals: manual`/`smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
 
-The payoff of the old container choice (a kernel boundary) is replaced by **a much smaller attack surface** (five no-shell agents) plus **focused guardrails on the one agent that can do damage**. For a solo operator that is the right altitude.
+The payoff of the old container choice (a kernel boundary) is replaced by **a much smaller attack surface** (six no-shell agents) plus **focused guardrails on the agents that can do damage** (`coder`, `finance`, and the Derya admin shell). For a solo operator that is the right altitude.
 
 ---
 

@@ -141,7 +141,7 @@ hermes -p general setup          # different bot token, different SOUL.md
 
 From a chat with `researcher`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `researcher`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
-> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why **only `coder` gets a shell**, and why `coder` is fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
+> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why shells are limited to `coder` (game dev), `finance` (fenced Python), and `general`/Derya (fleet admin), each fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
 
 **Step 2.4: Independent-lifecycle test**
 
@@ -166,7 +166,7 @@ For each new agent:
 
 **Special considerations per agent:**
 
-- **`coder`** — the only agent that runs code, and it runs **natively** for Metal GPU + the Godot GUI ([Section 16](11-game-dev.md)). Mount nothing; it already has your user's filesystem. Fence it: `approvals: smart`, credential redaction, website blocklist, optional `docker` code-exec backend ([Section 13](09-security.md)). Point it at your projects directory in config (e.g. `~/godot-projects`).
+- **`coder`** — a primary code-running agent, and it runs **natively** for Metal GPU + the Godot GUI ([Section 16](11-game-dev.md)). Mount nothing; it already has your user's filesystem. Fence it: `approvals: smart`, credential redaction, website blocklist, optional `docker` code-exec backend ([Section 13](09-security.md)). Point it at your projects directory in config (e.g. `~/godot-projects`).
 - **`marketing`** — no shell; `web` + TinyFish for market/competitor research, `cronjob` for the devlog/social cadence. Briefs `writer` when it needs finished copy.
 - **`writer`** — if you want finished drafts in a tidy spot, set its file output to `~/Documents/writer-output/` in config.
 
@@ -185,8 +185,8 @@ First, separate three things people conflate:
 **The high-value disables** (all default-on, rarely needed):
 
 - **`browser`** — heavy (≈10 tools, needs Chromium). We use **TinyFish via MCP** (Section 10) for web. Disable everywhere; re-enable only on an agent that genuinely needs interactive page automation (none do, at first).
-- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. **Only `coder` gets it.** Everyone else: off.
-- **`code_execution`** — runs Python on the host. Only `coder`.
+- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. Held by `coder` (game dev) and `general`/Derya (fleet admin — §13.7a). Everyone else: off.
+- **`code_execution`** — runs Python on the host. `coder`, `general` (admin), and `finance` (fenced). Others: off.
 - **`image_gen`** — requires a FAL.ai key you don't have; dead schema weight. Disable everywhere.
 - **`delegation`** — spawns in-process subagents = surprise token spend. Disable until you deliberately want fan-out.
 
@@ -213,9 +213,14 @@ The `kanban` row is **opt** on the studio pipeline (`researcher`, `writer`, plus
 **Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
 
 ```yaml
-# general (Derya)  — conversational; keeps web/vision/tts/cronjob
+# general (Derya)  — FLEET ADMIN: conversational + config management (terminal/code_execution/file ON)
 agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
+  disabled_toolsets: [browser, image_gen, delegation, messaging, todo, kanban]
+approvals:
+  mode: manual          # gates dangerous commands; benign hermes/launchctl run un-prompted (§13.7a)
+  cron_mode: deny
+security:
+  tirith_enabled: true
 
 # researcher
 agent:
@@ -229,7 +234,7 @@ agent:
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
 
-# coder  (the only agent with shell + code execution; web kept on for SearXNG fallback)
+# coder  (game-dev shell + code execution; web kept on for SearXNG fallback)
 agent:
   disabled_toolsets: [browser, image_gen, tts, cronjob, messaging, delegation]
 
@@ -246,7 +251,7 @@ hermes -p <name> tools list   # active vs available-but-disabled
 
 **`producer` (Phase B):** disable `[terminal, code_execution, browser, image_gen, vision, tts, delegation, messaging]`. Keeps `web` (SearXNG fallback — every agent is Layer 2, [docs/08 §10.6](08-web-search.md)), `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
 
-**One flag worth remembering:** native, **`terminal` is the real host.** `coder`'s shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason **only `coder` gets a shell** and it is fenced in [Section 13](09-security.md).
+**One flag worth remembering:** native, **`terminal` is the real host.** `coder`'s shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason shells are limited to `coder`, `general` (admin), and `finance` (fenced) — each fenced in [Section 13](09-security.md).
 
 **Phase A relevance:** only `researcher` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
 
