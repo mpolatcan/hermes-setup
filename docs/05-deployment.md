@@ -197,7 +197,7 @@ First, separate three things people conflate:
 | `terminal` | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `code_execution` | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `browser` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `web` (built-in) | ✓ fallback | ✓ fallback | ✓ fallback | ✗ | ✗ |
+| `web` (built-in) | ✓ fallback | ✓ fallback | ✓ fallback | ✓ fallback | ✓ fallback |
 | `file` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `vision` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `image_gen` | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -229,13 +229,13 @@ agent:
 agent:
   disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
 
-# coder  (the only agent with shell + code execution)
+# coder  (the only agent with shell + code execution; web kept on for SearXNG fallback)
 agent:
-  disabled_toolsets: [browser, web, image_gen, tts, cronjob, messaging, delegation]
+  disabled_toolsets: [browser, image_gen, tts, cronjob, messaging, delegation]
 
-# writer
+# writer  (web kept on for SearXNG fallback)
 agent:
-  disabled_toolsets: [terminal, code_execution, browser, web, image_gen, cronjob, messaging, delegation, todo]
+  disabled_toolsets: [terminal, code_execution, browser, image_gen, cronjob, messaging, delegation, todo]
 ```
 
 Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off** — do not list them. Verify the live result per agent:
@@ -244,7 +244,7 @@ Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_u
 hermes -p <name> tools list   # active vs available-but-disabled
 ```
 
-**`producer` (Phase B):** disable `[terminal, code_execution, browser, web, image_gen, vision, tts, delegation, messaging]`. Keeps `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
+**`producer` (Phase B):** disable `[terminal, code_execution, browser, image_gen, vision, tts, delegation, messaging]`. Keeps `web` (SearXNG fallback — every agent is Layer 2, [docs/08 §10.6](08-web-search.md)), `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
 
 **One flag worth remembering:** native, **`terminal` is the real host.** `coder`'s shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason **only `coder` gets a shell** and it is fenced in [Section 13](09-security.md).
 

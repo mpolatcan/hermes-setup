@@ -96,7 +96,7 @@ setup health    "Defne" "Defne — health & fitness coach." \
 # 3) Fan out model-provider keys (docs/04 §5.8). Empty key = skip; existing
 #    values in profile .env files are preserved either way.
 ALL_SLUGS=(general researcher assistant coder writer producer marketing finance health)
-TINYFISH_SLUGS=(researcher assistant coder writer marketing finance health)   # docs/08
+TINYFISH_SLUGS=("${ALL_SLUGS[@]}")   # all nine — every agent may need web anytime (docs/08)
 
 fanout_key() { # key value slugs…
   local key="$1" val="$2"; shift 2

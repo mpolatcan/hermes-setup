@@ -50,42 +50,50 @@ Two reasonable patterns:
 
 Start with single shared key. Upgrade only if you observe rate-limit errors in agent logs.
 
-#### Step 3: Store the key in each agent's `.env`
+#### Step 3: Add the TinyFish MCP server to each agent
 
-Edit each agent's env file. On the Mini:
+> **Verified on the Mini (v0.16.0):** TinyFish's MCP endpoint authenticates with **OAuth 2.1 PKCE**, *not* an `X-API-Key` header. You do **not** hand-write the MCP block and you do **not** need `TINYFISH_API_KEY` for the MCP (the key only matters if you also call TinyFish's REST API directly; the MCP path ignores it). Use the CLI — it runs the OAuth flow and writes the config for you:
 
 ```bash
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/researcher/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/assistant/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/coder/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/writer/.env
-echo "TINYFISH_API_KEY=tf_..." >> ~/.hermes/profiles/marketing/.env   # market/competitor research
+hermes -p researcher mcp add tinyfish --url https://agent.tinyfish.ai/mcp
+#   → "Does this server require authentication? [Y/n]"  → Y
+#   → opens a browser for the TinyFish OAuth consent (once per profile)
 ```
 
-#### Step 4: Configure the MCP server in each agent's `config.yaml`
-
-The agent reads its config from `~/.hermes/profiles/<name>/config.yaml`. Add:
+This writes the real schema to `~/.hermes/profiles/<slug>/config.yaml`:
 
 ```yaml
-mcp:
-  servers:
-    tinyfish:
-      url: "https://agent.tinyfish.ai/mcp"
-      headers:
-        X-API-Key: "${TINYFISH_API_KEY}"
-      enabled: true
+mcp_servers:                       # flat key — NOT `mcp:` → `servers:`
+  tinyfish:
+    url: https://agent.tinyfish.ai/mcp
+    auth: oauth
+    enabled: true
 ```
 
-Hermes's environment substitution syntax (`${TINYFISH_API_KEY}`) reads from the `.env` file in the profile's data dir (`~/.hermes/profiles/<name>/.env`), which is the file we wrote in Step 3.
+…and stores the OAuth token triplet under `~/.hermes/profiles/<slug>/mcp-tokens/` (`tinyfish.json`, `tinyfish.client.json`, `tinyfish.meta.json`).
 
-#### Step 5: Restart the agent and verify
+#### Step 4: Seed the other eight profiles (skip 8 browser logins)
+
+OAuth tokens are **account-scoped**, so once one profile is authed you can copy its full triplet to the rest instead of re-running the browser flow nine times (single-user box — all profiles then share one TinyFish OAuth client, which is fine):
+
+```bash
+for p in general assistant marketing coder writer producer finance health; do
+  # write the mcp_servers block (or run `hermes -p $p mcp add tinyfish ...` once)
+  mkdir -p ~/.hermes/profiles/$p/mcp-tokens
+  cp -R ~/.hermes/profiles/researcher/mcp-tokens/. ~/.hermes/profiles/$p/mcp-tokens/
+done
+```
+
+`scripts/wire-tinyfish.sh` automates this: it writes the `mcp_servers` block + the SearXNG `web:` fallback, seeds the OAuth tokens from a `--seed-from` profile, strips `web` from `disabled_toolsets`, and restarts every gateway.
+
+#### Step 5: Restart and verify
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-researcher
-tail -n 50 ~/.hermes/profiles/researcher/logs/gateway.log | grep -i "mcp\|tinyfish"
+hermes -p researcher mcp test tinyfish      # → ✓ Connected, Tools discovered: 17
 ```
 
-You should see TinyFish MCP server registered and the agent picking up `tinyfish_search` and `tinyfish_fetch` tools. From a chat with the agent, ask "what tools do you have for web search?" — `tinyfish_search` and `tinyfish_fetch` should appear in the list.
+`mcp test` is the real check (not log-grepping). On success it lists the 17 TinyFish tools — the relevant ones are **`search`** and **`fetch_content`** (free, token-efficient); the rest are metered browser-automation tools. Note the actual tool names are `search` / `fetch_content`, not `tinyfish_search` / `tinyfish_fetch`.
 
 ### 10.3 Tell each agent when to reach for TinyFish
 
@@ -107,17 +115,14 @@ This forces the agent to use the MCP-provided TinyFish tools. Cleanest approach.
 
 ```
 For web search and page fetches, prefer the TinyFish MCP tools
-(tinyfish_search, tinyfish_fetch). They return cleaner, lower-noise
+(`search`, `fetch_content`). They return cleaner, lower-noise
 results. Use the built-in web tools only if TinyFish is unavailable
 or returns no useful results.
 ```
 
 The agent will reach for TinyFish first and fall back to built-in tools if needed. Less deterministic but more resilient.
 
-**Recommendation for our setup:**
-
-- `researcher`, `assistant`, `marketing`: **Layer 2** (prefer TinyFish, fall back to SearXNG). These agents need web access to function — `marketing` for competitor/ASO/trend research; outages should degrade, not break.
-- `coder`, `writer`: **Layer 1** (TinyFish only). Their web use is opportunistic; if TinyFish is down, asking the user to try again is fine.
+**Recommendation for our setup: every agent is Layer 2** — TinyFish primary, SearXNG fallback. There is no TinyFish-only tier anymore. The whole fleet should *prefer* TinyFish (cleaner, structured, live) and *degrade* to self-hosted SearXNG when TinyFish is rate-limited or down — search should never hard-fail on any agent, including the ones whose web use is only occasional (`coder`, `writer`, `producer`). Cost of uniformity: the built-in `web` toolset's schemas now sit in those three agents' prompts too (the reason they were Layer 1) — accepted in exchange for a fallback that always fires. `producer` is the one judgment call: it's mostly offline rubric scoring, but it still gets the same stack so a candidate check never dead-ends.
 
 ### 10.4 Fallback: SearXNG on the Mini
 
@@ -165,14 +170,17 @@ web:
   # extract_backend left unset — agent will use TinyFish via MCP for fetch
 ```
 
-And the env var:
+And the env var — **on all nine**, since every agent is Layer 2:
 
 ```bash
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/researcher/.env
-echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/assistant/.env
+for p in general researcher assistant marketing coder writer producer finance health; do
+  echo "SEARXNG_URL=http://127.0.0.1:8888" >> ~/.hermes/profiles/$p/.env
+done
 ```
 
-Now the agent has TinyFish as primary (via MCP), SearXNG as fallback (via built-in `web_search`). If TinyFish rate-limits or goes down, the agent still has working search.
+**The fallback only fires if the built-in `web` toolset is enabled.** `coder`, `writer`, and `producer` previously disabled `web` (TinyFish-only) — remove it from their `disabled_toolsets` ([docs/05 §6.6](05-deployment.md)) or SearXNG can never kick in. `scripts/wire-tinyfish.sh` does all of this — keys, the `web: backend: searxng` block, *and* stripping `web` from `disabled_toolsets` — across all nine, then restarts the gateways. The snippets here are what it automates.
+
+Now every agent has TinyFish as primary (via MCP), SearXNG as fallback (via built-in `web_search`). If TinyFish rate-limits or goes down, the agent still has working search.
 
 Resource impact: SearXNG adds ~500 MB to the Mini. With Honcho (~1.5 GB) and SearXNG (~500 MB) in Docker plus the native agents, the Mini sits at ~11–13 GB out of 16 GB. Tight but still within budget.
 
@@ -183,10 +191,10 @@ Two checks to run after first setup, and periodically afterward.
 **Check 1: Tool usage in agent logs.**
 
 ```bash
-tail -n 200 ~/.hermes/profiles/researcher/logs/gateway.log | grep -i "tool_use\|tinyfish_search\|web_search"
+tail -n 200 ~/.hermes/profiles/researcher/logs/gateway.log | grep -iE "tool_use|tinyfish|search|web_search"
 ```
 
-You want to see `tinyfish_search` and `tinyfish_fetch` calls dominating, with `web_search` (the built-in fallback) only firing rarely or never.
+You want to see TinyFish's `search` / `fetch_content` calls dominating, with the built-in `web_search` (SearXNG fallback) only firing rarely or never.
 
 **Check 2: TinyFish dashboard.**
 
@@ -210,9 +218,13 @@ For reference when wiring up each agent:
 | `researcher` (Doruk) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — needs resilience |
 | `assistant` (Tuna) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — for occasional lookups |
 | `marketing` (Nilay) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — competitor/ASO/trend research |
-| `coder` (Naz) | Yes (medium use) | Disabled | None | Layer 1 — docs/Stack Overflow lookups |
-| `writer` (Ozan) | Yes (light use) | Disabled | None | Layer 1 — research while drafting |
-| `producer` (Sarp) | No | Disabled | None | Offline rubric scoring |
+| `coder` (Naz) | Yes (medium use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — docs/Stack Overflow lookups |
+| `writer` (Ozan) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — research while drafting |
+| `producer` (Sarp) | Yes (light use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — offline rubric scoring, but web never dead-ends |
+| `finance` (Murat) | Yes (heavy use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — markets/news/Reddit research (docs/02 §2.2) |
+| `health` (Defne) | Yes (medium use) | Enabled (SearXNG) | SearXNG on Mini | Layer 2 — nutrition/training research (docs/02 §2.2) |
+
+**Every agent is Layer 2** — TinyFish primary via MCP, SearXNG fallback via the built-in `web` toolset. None is walled off from search and none can hard-fail on it. The earlier TinyFish-only tier (`coder`/`writer`) is retired: they now keep `web` enabled (with `backend: searxng`) so an outage degrades instead of breaking.
 
 ### 10.7 Per-agent skill for TinyFish (optional but recommended)
 
