@@ -288,31 +288,21 @@ Memory is the asset that compounds. Plan backups now, not after six months.
 - `~/.hermes/profiles/*/memories/` on the Mini — agent-curated MEMORY.md and USER.md.
 - `~/.hermes/profiles/*/skills/` on the Mini — agent-created skills.
 - `~/.hermes/profiles/*/sessions/` on the Mini — conversation history (FTS5 index lives in `state.db`).
-- `~/.hermes/profiles/*/honcho.json` configs — provider settings per agent.
+- `~/.hermes/honcho.json` — the shared Honcho config (per-agent peers, recall modes, cadence).
 - The Honcho Postgres database on the Mini — this holds Honcho's accumulated observations, conclusions, user peer card, AI peer cards.
 
-**Hermes side (on the Mini):**
+**Implemented (2026-06-08) — `scripts/backup-state.sh` + `scripts/backup-honcho.sh`, scheduled via launchd.**
 
-Trivial — these are just directories. Add them to whatever you already use (Time Machine, Restic, rsync to external). Daily for `memories/`, weekly for `sessions/`.
+**Hermes text-state → a local git repo.** `scripts/backup-state.sh` (deployed to `~/.hermes/scripts/`) snapshots the *safe* text state of **all profiles** into a local git repo at `~/hermes-state-backup/`: per-profile `config.yaml`, `SOUL.md`, `AGENTS.md`, `memories/`, `skills/`, plus the shared `~/.hermes/honcho.json`. **Secrets are never copied** — three layers: an allowlist `rsync` (only those paths enter the repo), a `.gitignore` backstop, and a pre-commit secret scan that *aborts* the commit if anything token-shaped (telegram / `sk-` / `mn_` / JWT / `*_secret`) appears. The repo is **local-only by design** — don't add a hosted remote without re-verifying the scan first, since pushing offsite is the one path that could leak fleet credentials. Large/binary state (`sessions/`, `state.db`, `logs/`) is left to Time Machine.
 
-**Honcho side (Mini only):**
+**Honcho Postgres → a logical dump.** `scripts/backup-honcho.sh` (deployed to `~/honcho-stack/`) runs `docker exec server-database-1 pg_dump -U honcho honcho | gzip` into `~/backups/honcho-*.sql.gz`, keeping the newest 8. One dump captures all AI peers + the shared user peer.
 
-Postgres needs a logical dump, not just a file copy. Weekly cron:
+**Schedule (launchd, not `cron` — consistent with the rest of the fleet):**
 
-```bash
-# ~/honcho-stack/backup.sh
-cd ~/honcho-stack/server
-docker compose exec -T database pg_dump -U honcho honcho \
-  > ~/backups/honcho-$(date +%Y%m%d).sql
-# Keep last 8 weekly backups
-ls -t ~/backups/honcho-*.sql | tail -n +9 | xargs -r rm
-```
-
-Schedule it via `crontab -e`:
-
-```cron
-0 3 * * 0  /Users/<you>/honcho-stack/backup.sh >> /tmp/honcho-backup.log 2>&1
-```
+| Job | launchd label | Cadence |
+|---|---|---|
+| state snapshot | `ai.hermes.backup-state` | daily 03:30 |
+| Honcho dump | `ai.hermes.backup-honcho` | weekly Sun 03:00 |
 
 Verify a backup is restorable at least once. Sometime in month 1, do a test restore into a throwaway container and confirm the dump produces a usable database. A backup you've never restored is not a backup.
 
