@@ -72,20 +72,33 @@ flowchart TB
 
 Nine native profiles in one Hermes install. **Slug** = the functional name (constant, ASCII, what the directory/peer/bot-username use). **Display** = the persona shown in Telegram (flavor only — titles don't fence capability). Profile art is pixel-art, one cohesive crew.
 
+**🌐 General-use** — your whole life, not just games
+
 <table>
   <tr>
     <td align="center"><img src="img/derya.png" width="120"><br><b>Derya</b><br><sub><code>general</code></sub></td>
     <td align="center"><img src="img/tuna.png" width="120"><br><b>Tuna</b><br><sub><code>assistant</code></sub></td>
     <td align="center"><img src="img/doruk.png" width="120"><br><b>Doruk</b><br><sub><code>researcher</code></sub></td>
+  </tr>
+</table>
+
+**🎮 Game-studio pipeline** — specialists
+
+<table>
+  <tr>
     <td align="center"><img src="img/nilay.png" width="120"><br><b>Nilay</b><br><sub><code>marketing</code></sub></td>
     <td align="center"><img src="img/sarp.png" width="120"><br><b>Sarp</b><br><sub><code>producer</code></sub></td>
-  </tr>
-  <tr>
     <td align="center"><img src="img/ozan.png" width="120"><br><b>Ozan</b><br><sub><code>writer</code></sub></td>
     <td align="center"><img src="img/naz.png" width="120"><br><b>Naz</b><br><sub><code>coder</code></sub></td>
+  </tr>
+</table>
+
+**🧑 Personal tier** — separate life domains
+
+<table>
+  <tr>
     <td align="center"><img src="img/murat.png" width="120"><br><b>Murat</b><br><sub><code>finance</code></sub></td>
     <td align="center"><img src="img/defne.png" width="120"><br><b>Defne</b><br><sub><code>health</code></sub></td>
-    <td align="center"><sub>🌐 general-use<br>🎮 studio<br>🧑 personal</sub></td>
   </tr>
 </table>
 
