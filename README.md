@@ -113,9 +113,9 @@ Nine native profiles in one Hermes install. **Slug** = the functional name (cons
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | DeepSeek V4 Flash |
-| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | DeepSeek V4 Flash |
-| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | DeepSeek V4 Flash |
+| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | GPT-5.5 (Codex) → ds-flash fb |
+| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | GPT-5.5 (Codex) → ds-flash fb |
+| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | GPT-5.5 (Codex) → ds-flash fb |
 
 These three you'd want even with no game studio. Start here for day-to-day use.
 
@@ -123,10 +123,10 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | DeepSeek V4 Flash |
-| **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | Codex gpt-5.4 |
-| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | Codex gpt-5.4 |
-| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | DeepSeek V4 Flash |
+| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | GPT-5.5 (Codex) → ds-flash fb |
+| **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | GPT-5.5 (Codex) → ds-flash fb |
+| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | GPT-5.5 (Codex) → ds-flash fb |
+| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | GPT-5.5 (Codex) → ds-flash fb |
 
 Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it. ("On-demand" = usage pattern; all 9 gateways run 24/7 under launchd.)
 
@@ -136,8 +136,8 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 | Display | Slug | Does | Model |
 |---|---|---|---|
-| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | DeepSeek V4 Flash |
-| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | DeepSeek V4 Flash |
+| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | GPT-5.5 (Codex) → ds-flash fb |
+| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | GPT-5.5 (Codex) → ds-flash fb |
 
 `finance` is a fenced shell-capable agent (`code_execution` only, `approvals: manual`, blocklist) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell). See [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
 
@@ -219,7 +219,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
-14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene
+14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
 
 ---
 

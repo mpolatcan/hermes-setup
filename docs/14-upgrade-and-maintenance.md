@@ -75,7 +75,7 @@ The Honcho API binds `127.0.0.1:8000`. Root `~/.hermes/honcho.json` once pointed
 
 ## 24. Session-store hygiene
 
-Cron-agent runs create sessions like any other conversation. Eight hourly "downtime-recovery" jobs (paused 2026-07-05 — they referenced a nonexistent skill) had quietly grown `profiles/general/state.db` to **3.1 GB** (4726 of 4778 sessions were cron transcripts; the FTS trigram index alone was 1.2 GB). Cleanup that reclaimed ~2.3 GB across the fleet:
+Cron-agent runs create sessions like any other conversation. Eight hourly "downtime-recovery" jobs had quietly grown `profiles/general/state.db` to **3.1 GB** (4726 of 4778 sessions were cron transcripts; the FTS trigram index alone was 1.2 GB). Cleanup that reclaimed ~2.3 GB across the fleet:
 
 ```bash
 hermes -p <profile> sessions prune --source cron --older-than 7 --yes
@@ -83,3 +83,29 @@ hermes -p <profile> sessions optimize     # FTS merge + VACUUM
 ```
 
 Worth running monthly, or whenever `hermes sessions stats` shows cron sessions dominating.
+
+## 25. Fleet config versioning — git at ~/.hermes (2026-07-05)
+
+The hand-tuned config surface is a git repo inside `~/.hermes` (whitelist `.gitignore`: 9× config.yaml/SOUL.md/honcho.json/cron-jobs.json, 16 canonical skills, ops scripts, root config — never `.env`/`auth.json`/state.db/sessions/memories). Meaningful edits get manual commits; a daily 02:30 launchd job (`ai.hermes.config-snapshot`, plain script — never an agent) auto-commits drift from agent edits and hermes migrations, and **refuses to commit if secret-shaped content appears in tracked files** (Telegram alert instead).
+
+Rollback of a persona/skill/cron change:
+```bash
+cd ~/.hermes
+git log --oneline -- profiles/coder/SOUL.md   # what changed when
+git checkout <sha> -- profiles/coder/SOUL.md  # targeted restore
+launchctl kickstart -k gui/501/ai.hermes.gateway-coder
+```
+Sync direction is always **live → this docs repo** (scripts copied at doc-update time); the ~/.hermes repo is the machine-state journal, this repo the curated record.
+
+## 26. Skill consolidations — cron refs are the blast radius
+
+June 2026 skill-curation merges renamed skills without updating cron job `skills:` lists, so jobs ran for weeks with `skill not found` warnings while agents improvised the procedure (same failure family as the fabricating backup agent). The absorption map recovered from the successors' own SKILL.md notes:
+
+| dead name | absorbed into |
+|---|---|
+| `cron-message-format` | `agent-message-formats` |
+| `memory-eviction` | `hermes-memory-hygiene` |
+| `knowledge-maintenance` | `notion-knowledge-ops` |
+| `honcho-to-notion` | `notion-knowledge-ops` |
+
+All 23 affected job definitions repointed 2026-07-05. Also found and fixed a **double eviction**: general's jobs.json held central `mem-eviction-<profile>` copies for all 9 profiles while each profile also had a local twin — both ran nightly, 30–45 min apart (central copies now paused, locals canonical). After any future skill merge: sweep every profile's `cron/jobs.json` for the old name AND check profile-local `skills/` dirs before declaring a reference dead — health's medication skills live in `profiles/health/skills/`, not canonical.

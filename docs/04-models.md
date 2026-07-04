@@ -21,6 +21,26 @@ flowchart LR
     class aux neutral
 ```
 
+## ⚡ LIVE since 2026-07-05 — fleet on GPT-5.5, policy override
+
+**Patron decision (2026-07-05): the whole fleet — all 9 agents AND cron jobs — runs `gpt-5.5` via `openai-codex` OAuth as primary, `deepseek-v4-flash` as fallback.** This deliberately overrides §5.0's rule ("no automated cron on Codex, sub-OAuth only on human-paced agents"): quality > risk, accepted with eyes open. §5.0 remains below as the risk analysis that was overridden, not as current policy.
+
+```mermaid
+flowchart LR
+    all9["all 9 agents + crons"] --> codex55["Codex OAuth · gpt-5.5<br/>ChatGPT sub · accepted-risk"]
+    codex55 -. "fallback (quota/outage)" .-> ds2["DeepSeek · V4 Flash<br/>API key · pay-per-token"]
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
+    class all9,codex55 codex
+    class ds2 ds
+```
+
+- **Reasoning efforts tiered** (`agent.reasoning_effort`): `xhigh` coder/researcher/writer · `medium` general/assistant · `low` marketing/producer/finance/health.
+- **Codex OAuth is centralized** in the root `~/.hermes/auth.json` — hermes's global-store fallback (`_global_auth_file_path`) serves all profiles, and token refreshes write back to the root store (`_save_provider_state_to_source`), so ONE credential serves the fleet with no per-profile drift. Per-profile `auth.json` must stay free of `openai-codex` entries (local shadows root).
+- **Root re-auth recipe** (the naive `HERMES_HOME=~/.hermes hermes auth add` gets redirected to the sticky active profile — issue #22502): `echo default > ~/.hermes/active_profile` → `HERMES_HOME=~/.hermes hermes auth add openai-codex --type oauth` → `echo researcher > ~/.hermes/active_profile`. Never remove pool credentials by display label (labels regenerate by index) — use the raw entry id and verify `last_refresh`.
+- **Watch items:** shared 5h/weekly quota window across 9 agents (fallback engages silently — check `billing_provider` in `hermes sessions stats`); open bug [#47781](https://github.com/NousResearch/hermes-agent/issues/47781) (cron fallback may send primary model name); token rotation (persistent fallback on one profile → strip its local codex entries, re-auth root).
+- **Rollback:** the fleet config surface is a git repo at `~/.hermes` — `git revert 63e7f60` + gateway kickstart returns to DeepSeek-primary in one move.
+
 ## 5. Model providers per agent
 
 The credentials actually on hand: a **DeepSeek platform API key** (primary), **Codex** (ChatGPT sub), **OpenRouter**, and a dormant **MiniMax** key. Not every subscription is *safe* to wire into a third-party agent like Hermes — "works technically" and "won't get your account flagged" are different questions. The stack:
