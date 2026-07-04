@@ -71,7 +71,7 @@ flowchart TB
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-**Colours:** green = DeepSeek agent · orange = Codex agent · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
+**Colours:** green/orange = agents (all nine run **GPT-5.5 via Codex** primary, DeepSeek Flash fallback since 2026-07-05) · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
 
 ---
 
@@ -173,14 +173,8 @@ Two paid providers do the work; OpenRouter is the cheap aux + the resilience val
 
 ```mermaid
 flowchart LR
-    subgraph agents["agents"]
-        cx["Naz · Ozan<br/>(quality-critical creative)"]:::codex
-        mm["Derya · Doruk · Tuna<br/>Nilay · Sarp · Murat · Defne"]:::mini
-    end
-    cx -->|primary| Codex["Codex · gpt-5.4<br/>ChatGPT sub"]:::codex
-    mm -->|primary| DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::mini
-    Codex -. fallback .-> DeepSeek
-    DeepSeek -. fallback / overflow .-> OR["OpenRouter<br/>pay-per-token"]:::ext
+    all9["all 9 agents + cron jobs"]:::codex -->|primary| Codex["Codex OAuth · gpt-5.5<br/>ChatGPT sub · centralized root auth"]:::codex
+    Codex -. "fallback (quota window / outage)" .-> DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::mini
     Honcho["Honcho memory workers"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
@@ -188,9 +182,9 @@ flowchart LR
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
-- **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — the seven conversational/analyst agents.
-- **Codex gpt-5.4** (your ChatGPT sub, OAuth — accepted gray-area) — only Naz + Ozan, the quality-critical creative pair; neither runs an automated cron.
-- **OpenRouter** (~$10 credit) — aux tasks, every agent's fallback chain (so one outage can't take an agent down), and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo). Live-tested: break the primary key → replies still arrive via OpenRouter.
+- **GPT-5.5 via Codex OAuth** (ChatGPT sub — accepted gray-area, patron decision 2026-07-05) — **primary for all nine agents and their crons**. One credential, centralized in the root `~/.hermes/auth.json`, serves the whole fleet. Reasoning efforts tiered per agent: `xhigh` coder/researcher/writer · `medium` general/assistant · `low` the rest.
+- **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — **the fallback on every profile**: quota-window exhaustion or a Codex outage degrades the fleet to Flash instead of stalling it.
+- **OpenRouter** (~$10 credit) — aux tasks and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo).
 
 Full routing + the per-agent fallback chains: [docs/04](docs/04-models.md).
 

@@ -4,23 +4,6 @@
 
 ---
 
-```mermaid
-flowchart LR
-    Naz & Ozan --> codex["Codex · gpt-5.4<br/>ChatGPT sub · accepted-risk"]
-    Derya & Doruk & Tuna & Sarp & Nilay & Murat & Defne --> ds["DeepSeek · V4 Flash<br/>direct API key · pay-per-token"]
-    aux["all agents · aux tasks<br/>vision / summarize / compress"] --> or["OpenRouter · Gemini 2.5 Flash<br/>API key · pay-per-token · overflow valve"]
-    codex -. fallback .-> ds
-    ds -. fallback/overflow .-> or
-    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
-    classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
-    classDef ext fill:#00796B,stroke:#004D40,color:#fff
-    classDef neutral fill:#455A64,stroke:#263238,color:#fff
-    class Naz,Ozan,codex codex
-    class Derya,Doruk,Tuna,Sarp,Nilay,Murat,Defne,ds ds
-    class or ext
-    class aux neutral
-```
-
 ## ⚡ LIVE since 2026-07-05 — fleet on GPT-5.5, policy override
 
 **Patron decision (2026-07-05): the whole fleet — all 9 agents AND cron jobs — runs `gpt-5.5` via `openai-codex` OAuth as primary, `deepseek-v4-flash` as fallback.** This deliberately overrides §5.0's rule ("no automated cron on Codex, sub-OAuth only on human-paced agents"): quality > risk, accepted with eyes open. §5.0 remains below as the risk analysis that was overridden, not as current policy.
@@ -45,8 +28,8 @@ flowchart LR
 
 The credentials actually on hand: a **DeepSeek platform API key** (primary), **Codex** (ChatGPT sub), **OpenRouter**, and a dormant **MiniMax** key. Not every subscription is *safe* to wire into a third-party agent like Hermes — "works technically" and "won't get your account flagged" are different questions. The stack:
 
-- **DeepSeek V4 Flash = primary** (7 of 9 agents). Direct API key, pay-per-token, zero ToS risk.
-- **Codex = accepted-risk extra** on the two **quality-critical** agents (`writer`, `coder`) — gpt-5.4 for prose + code. ⚠️ `coder` is high-volume; see the risk note in 5.0.
+- **Codex GPT-5.5 = primary, fleet-wide** (all 9 agents + crons, since 2026-07-05 — see the LIVE banner above; §5.0's caution stands as the analysis that was overridden).
+- **DeepSeek V4 Flash = the fallback** on every profile. Direct API key, pay-per-token, zero ToS risk.
 - **OpenRouter API key** for cheap aux + cross-provider fallback. Safe.
 - **MiniMax** — spare API key kept in the `.env`s as an extra fallback option (5.2).
 - **Claude** via a plain Anthropic API key *only if you want it* — not the Claude Code subscription.
@@ -58,39 +41,41 @@ The distinction that governs everything below: **an API key (you pay per token) 
 
 | Subscription | Hermes provider | Works? | Safe? |
 |---|---|---|---|
-| **DeepSeek** (primary) | `deepseek` (API key) | ✅ | ✅ **Safe** — plain platform API key, pay-per-token |
+| **DeepSeek** (fallback) | `deepseek` (API key) | ✅ | ✅ **Safe** — plain platform API key, pay-per-token |
 | **MiniMax** (spare) | `minimax` (API key) / `minimax-oauth` | ✅ | ✅ **Safe** — built for programmatic use |
-| **Codex** (ChatGPT) | `openai-codex` (OAuth) | ✅ | ⚠️ **Against consumer ToS** — sub-OAuth in a non-OpenAI app; *unenforced today*, but Anthropic + Google killed the equivalent Apr 2026 |
+| **Codex** (ChatGPT) — **current primary** | `openai-codex` (OAuth) | ✅ | ⚠️ **Against consumer ToS** — sub-OAuth in a non-OpenAI app; *unenforced today*, but Anthropic + Google killed the equivalent Apr 2026 |
 | **Claude Code** | `anthropic` (OAuth, reads Claude Code's cred store) | ✅ | ⚠️ **Gray + high-stakes** — risks the sub you code with |
 | **Gemini Antigravity** | — (no API) | ❌ | 🚫 **Banned pattern** — use an AI Studio API key instead |
 
-- **DeepSeek** — plain API key from platform.deepseek.com (`DEEPSEEK_API_KEY`), pay-per-token, zero ToS ambiguity. The primary for 7 of 9 agents.
+- **DeepSeek** — plain API key from platform.deepseek.com (`DEEPSEEK_API_KEY`), pay-per-token, zero ToS ambiguity. Fleet-wide fallback (was primary for 7 of 9 until 2026-07-05).
 - **MiniMax** — API key or its own browser OAuth. Also safe; the key stays in every `.env` as a spare fallback provider.
 - **Codex** — works via device-code OAuth, but it reuses your ChatGPT subscription **outside OpenAI's own clients.** Be clear-eyed: this is **against OpenAI's consumer terms** — they prohibit automated/programmatic access and "using ChatGPT to power third-party services," and OpenAI has **declined to bless** sub-OAuth in third-party apps (the feature ships in official Codex tooling only). It is *not currently enforced* at personal scale — which is exactly why the OpenClaw/OpenCode community moved **to** Codex after **Anthropic and Google clamped down on theirs in April 2026.** That also makes OpenAI the **likely next** to follow. No-warning account bans of Codex+sub users are documented though rare. **So: accepted-risk, not permitted.** Run it on the two **quality-critical** agents — `writer` (occasional, low-volume) and `coder` (higher-volume, but **interactive/human-paced** — you drive it on-demand, *not* a 24/7 cron, and automated cadence is what the flag targets). Keep **no automated cron on Codex** (the weekly scout lives on DeepSeek), isolate it, and keep the API-key escape hatch ready (5.3). **`coder`'s volume makes it the one to watch** — A/B it against DeepSeek V4 Pro first (5.12). The tail risk is your ChatGPT account.
 - **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
 - **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
 
-**The rule:** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). So the only **cron** agent (`researcher`'s weekly scout) runs on the safe API-key primary (**DeepSeek**), and Codex carries only the two **human-paced** quality agents (`writer` occasional; `coder` interactive/on-demand — you're at the keyboard). Everything else rides **DeepSeek V4 Flash pay-per-token** (no quota window, no flag surface — see 5.2), with **OpenRouter as the aux route and overflow valve.** The residual exposure is `coder`'s volume on Codex — accepted for gpt-5.4 coding quality, watched via the shared-quota note (5.3).
+**The rule (as originally designed):** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). Under that rule, crons stayed on DeepSeek and Codex carried only the two human-paced quality agents. **⚠️ Overridden 2026-07-05 by patron decision** (see the LIVE banner at top): the entire fleet including crons now rides Codex GPT-5.5, quality over risk, with DeepSeek as the escape hatch already wired. This paragraph stays as the argument that was consciously outvoted — and as the playbook to return to (`git revert`) if OpenAI starts enforcing.
 
-### 5.1 Per-agent model assignment
+### 5.1 Per-agent model assignment (live since 2026-07-05)
 
-| Slug | Bot | Main model | Provider | Safety | Why |
+All nine: **`gpt-5.5` primary via `openai-codex` OAuth (⚠️ accepted-risk), `deepseek-v4-flash` fallback via `deepseek` API key (✅).** Only the reasoning effort differs:
+
+| Slug | Bot | Main model | Effort | Fallback | Why this effort |
 |---|---|---|---|---|---|
-| `general` | Derya | `deepseek-v4-flash` | `deepseek` | ✅ | Highest-volume daily driver → cheap pay-per-token ($0.14/$0.28 per M), no quota window |
-| `researcher` | Doruk | `deepseek-v4-flash` | `deepseek` | ✅ | Web-tool-driven; keeps the weekly cron off the gray-area sub |
-| `assistant` | Tuna | `deepseek-v4-flash` | `deepseek` | ✅ | Daily logistics |
-| `marketing` | Nilay | `deepseek-v4-flash` | `deepseek` | ✅ | Market research + copy planning |
-| `coder` | Naz | `gpt-5.4` | `openai-codex` | ⚠️ | gpt-5.4 coding quality; interactive/human-paced (lower flag risk than a cron). **Heaviest agent → watch the ChatGPT quota** |
-| `writer` | Ozan | `gpt-5.4` | `openai-codex` | ⚠️ | Voice, long-form; *occasional* |
-| `producer` | Sarp | `deepseek-v4-flash` | `deepseek` | ✅ | Idea scoring |
-| `finance` | Murat | `deepseek-v4-flash` | `deepseek` | ✅ | Personal markets analyst (personal tier, docs/02 §2.2) |
-| `health` | Defne | `deepseek-v4-flash` | `deepseek` | ✅ | Fitness/nutrition coach (personal tier) |
+| `coder` | Naz | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Code quality ceiling; **heaviest agent → first to feel the shared quota window** |
+| `researcher` | Doruk | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Deep multi-source research + weekly scout cron |
+| `writer` | Ozan | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Voice, long-form drafting |
+| `general` | Derya | `gpt-5.5` | `medium` | `deepseek-v4-flash` | Highest-volume daily driver — medium balances quality vs window |
+| `assistant` | Tuna | `gpt-5.5` | `medium` | `deepseek-v4-flash` | Daily logistics |
+| `marketing` | Nilay | `gpt-5.5` | `low` | `deepseek-v4-flash` | Frequent light tasks |
+| `producer` | Sarp | `gpt-5.5` | `low` | `deepseek-v4-flash` | Idea scoring — light reasoning |
+| `finance` | Murat | `gpt-5.5` | `low` | `deepseek-v4-flash` | Personal markets analyst (personal tier, docs/02 §2.2) |
+| `health` | Defne | `gpt-5.5` | `low` | `deepseek-v4-flash` | Fitness/nutrition coach (personal tier) |
 
 For all nine, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
 
 Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `researcher`'s weekly scout — lives on **DeepSeek**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and A/B `coder` against **DeepSeek V4 Pro** (the strongest clean coder — 5.12). If gpt-5.4 isn't clearly better for GDScript, move `coder` there (`/model` per session, or the config) — zero ToS risk.
 
-### 5.2 DeepSeek setup — your primary (all seven non-Codex agents)
+### 5.2 DeepSeek setup — the fleet-wide fallback (was primary until 2026-07-05)
 
 Get an API key at platform.deepseek.com. One key serves the whole fleet — `setup-bots.sh` fans `DEEPSEEK_API_KEY` from `bot-tokens.env` into every profile's `.env`:
 
@@ -226,21 +211,17 @@ Pay-per-token means the bill tracks usage — watch the DeepSeek dashboard the f
 
 Hermes retries a failed primary (rate limit, 5xx, auth) against the next provider in the chain without losing the conversation.
 
-Live config — DeepSeek-primary agents (`general`, `researcher`, `assistant`, `marketing`, `producer`, `finance`, `health`):
+Live config — identical on all nine profiles since 2026-07-05 (Codex-primary, DeepSeek fallback; `DEEPSEEK_API_KEY` is in every `.env`):
 ```yaml
+model:
+  provider: openai-codex
+  default: gpt-5.5
 fallback_providers:
   - provider: deepseek
     model: deepseek-v4-flash
 ```
 
-Codex-primary agents (`coder`, `writer`) fall back to DeepSeek (`DEEPSEEK_API_KEY` is in their `.env` too):
-```yaml
-fallback_providers:
-  - provider: deepseek
-    model: deepseek-v4-flash
-```
-
-So a Codex 503/rate-limit silently continues on DeepSeek. Note the DeepSeek-primary agents' fallback is currently **same-provider** (a retry, not an outage hedge) — if DeepSeek itself goes down they have no second provider in the chain. The cross-provider hedge to add if that ever bites: an OpenRouter entry (`provider: openrouter`, `model: google/gemini-2.5-flash`) after the DeepSeek one; the key is already in every `.env` (5.5). The spare MiniMax key is a third option (5.2).
+So a Codex 503/rate-limit/**quota-window exhaustion** silently continues on DeepSeek — the fleet degrades to Flash instead of stalling. This is now cross-provider by construction (sub-OAuth primary, API-key fallback), so a Codex outage can't take an agent down. Residual gap: if **DeepSeek** is also down there's no third entry — the hedge to add if that ever bites is an OpenRouter entry (`provider: openrouter`, `model: google/gemini-2.5-flash`) after the DeepSeek one; the key is already in every `.env` (5.5). The spare MiniMax key is a fourth option (5.2). ⚠️ Known bug for **cron** runs: [#47781](https://github.com/NousResearch/hermes-agent/issues/47781) — the cron fallback path may send the primary's model name to the fallback provider.
 
 ### 5.8 Putting it together: per-agent `.env` summary
 
@@ -250,7 +231,7 @@ So a Codex 503/rate-limit silently continues on DeepSeek. Note the DeepSeek-prim
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USERS=...
-DEEPSEEK_API_KEY=sk-...       # primary
+DEEPSEEK_API_KEY=sk-...       # fallback
 OPENROUTER_API_KEY=sk-or-...  # aux
 MINIMAX_API_KEY=...           # dormant spare (5.2)
 TINYFISH_API_KEY=...          # REST-only; MCP uses OAuth (docs/08)
@@ -348,8 +329,8 @@ The DeepSeek key is already in every `.env` (5.2), so flipping it on is a config
 
 | Option | Coding | ToS | Cost |
 |---|---|---|---|
-| **gpt-5.4 (Codex)** — *current default* | strong | ⚠️ gray-area | $0 (sub) |
-| DeepSeek V4 Flash — *fleet default* | good | ✅ safe | ~$0.14/$0.28 per M |
+| **gpt-5.5 (Codex)** — *current default* | ★ strong | ⚠️ gray-area | $0 (sub, shared quota window) |
+| DeepSeek V4 Flash — *fleet fallback* | good | ✅ safe | ~$0.14/$0.28 per M |
 | **DeepSeek V4 Pro** | ★ strongest | ✅ safe | ~$1.74/$3.48 per M |
 
 **Flip it on when:** the Codex tail-risk on `coder` starts to bother you, *or* OpenAI clamps down (5.3), *or* you want stronger pure coding than gpt-5.x. Until then, leave `coder` on Codex.

@@ -124,7 +124,7 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 | Credential | Rotate where | Then |
 |---|---|---|
 | Telegram bot tokens (×9) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
-| DeepSeek API key | platform.deepseek.com | update all `.env`s (`DEEPSEEK_API_KEY` fans to the seven DeepSeek-primary profiles) |
+| DeepSeek API key | platform.deepseek.com | update all `.env`s (`DEEPSEEK_API_KEY` fans to all nine profiles — fleet-wide fallback since 2026-07-05; was primary profiles) |
 | MiniMax API key (dormant) | platform.minimax.io | still present in every `.env` though no profile uses `provider: minimax` — rotate or remove |
 | OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
 | Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |

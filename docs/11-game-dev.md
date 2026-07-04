@@ -71,37 +71,30 @@ hermes -p producer setup          # Sarp bot token, DeepSeek model, keys
 
 No container, no port, no compose — just a profile under `~/.hermes/profiles/producer/`.
 
-### 16.4 Model assignment (DeepSeek + Codex)
+### 16.4 Model assignment (GPT-5.5 fleet-wide since 2026-07-05)
 
-Current routing: `coder` + `writer` = **Codex gpt-5.4**; every other agent = **DeepSeek V4 Flash** (direct API, pay-per-token). Full reasoning + fallback chains in [docs/04](04-models.md).
+Current routing: **every agent — and every cron — runs `gpt-5.5` via Codex OAuth primary, `deepseek-v4-flash` fallback** (patron decision 2026-07-05, overriding the old cron-stays-on-DeepSeek rule; accepted risk). Reasoning efforts are tiered per role. Full reasoning + the override record in [docs/04](04-models.md).
 
-Balanced so the only **automated cron** (`researcher`'s weekly scout) stays on **DeepSeek** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `researcher` row** — the rest activate as their agents come online in Phase B/C.
-
-| Agent | Role | Model | Provider | Rationale |
+| Agent | Role | Model | Effort | Rationale |
 |---|---|---|---|---|
-| `researcher` | opportunity scout | `deepseek-v4-flash` | `deepseek` | Cheap pay-per-token web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
-| `producer` | backlog + scoring | `deepseek-v4-flash` | `deepseek` | Reasoning over candidates is cheap and frequent. |
-| `writer` | PRD / store copy | `gpt-5.4` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
-| `coder` | Godot prototyping | `gpt-5.4` (Codex) | `openai-codex` | gpt-5.4 for GDScript quality; interactive/human-paced (you drive it) so lower flag risk than a cron — but it's the **heaviest** agent, so watch the shared ChatGPT cap (§5.3). DeepSeek fallback; A/B vs V4 Pro (strongest clean coder — §5.12). |
+| `researcher` | opportunity scout | `gpt-5.5` (Codex) | `xhigh` | Deep multi-source research quality; weekly scout cron now also on GPT (quota watch applies). |
+| `producer` | backlog + scoring | `gpt-5.5` (Codex) | `low` | Frequent light reasoning — low effort keeps quota draw down. |
+| `writer` | PRD / store copy | `gpt-5.5` (Codex) | `xhigh` | Voice and long-form drafting. |
+| `coder` | Godot prototyping | `gpt-5.5` (Codex) | `xhigh` | Strongest GDScript quality; the **heaviest** agent — first to feel the shared ChatGPT quota window (§5.3). |
 
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5) — V4 Flash has no vision, and keeping aux cross-provider means an aux outage and a chat outage can't share a cause.
 - **Fallback chains:** Codex-primary agents fall back to DeepSeek (docs/04 §5.7).
 
-  `coder` (`~/.hermes/profiles/coder/config.yaml`) — **Codex-primary, DeepSeek fallback**:
+  Every profile now carries the same shape (`~/.hermes/profiles/<slug>/config.yaml`) — only `reasoning_effort` differs:
   ```yaml
   model:
     provider: openai-codex
-    default: gpt-5.4
+    default: gpt-5.5
   fallback_providers:
     - provider: deepseek
       model: deepseek-v4-flash
-  ```
-
-  `producer` (`~/.hermes/profiles/producer/config.yaml`):
-  ```yaml
-  model:
-    provider: deepseek
-    default: deepseek-v4-flash
+  agent:
+    reasoning_effort: xhigh   # coder/researcher/writer · medium general/assistant · low the rest
   ```
 
 - **Wallet simplification:** the main models need only **two providers** — DeepSeek (pay-per-token) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route and the cross-provider hedge (5.5–5.7). A few dollars a month — don't cut it.
