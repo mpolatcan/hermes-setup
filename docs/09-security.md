@@ -12,10 +12,15 @@ Nine agents touching the network and filesystem need explicit guardrails. **Thre
 
 ```yaml
 approvals:
-  mode: smart    # auxiliary LLM judges risk; escalates genuinely dangerous commands
+  mode: 'off'    # current fleet-wide setting — no approval gate on any profile
 ```
 
-Start with `manual` for the first week to see what gets flagged. Switch to `smart` once you trust the patterns. Never use `off` on the always-on agents.
+**Current posture: all nine profiles run `approvals.mode: 'off'`**, including the three shell-capable agents (`coder`, `general`, `finance`); Tirith pre-exec scanning is enabled on `general` only. This trades the approval gate for zero-friction operation. What that means concretely: on the shell-capable agents, the layers between LLM output and your Mac are credential redaction, the website blocklist, Tirith (on `general`), and the SOUL's behavioral rules — there is no per-command human gate. §13.7's analysis of that trade still applies in full; the graduated alternative if the risk calculus ever changes is `manual` on the shell agents (`coder`/`general`/`finance`) and `smart` elsewhere:
+
+```yaml
+approvals:
+  mode: smart    # auxiliary LLM judges risk; escalates genuinely dangerous commands
+```
 
 **Iteration budget.** Default is 90 turns per conversation. For a chat-only agent that should answer in a couple of steps (e.g. `producer` scoring, or a quick `assistant` lookup), lower it:
 
@@ -119,7 +124,8 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 | Credential | Rotate where | Then |
 |---|---|---|
 | Telegram bot tokens (×9) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
-| MiniMax API key | platform.minimax.io | update the five MiniMax profiles' config/`.env` |
+| DeepSeek API key | platform.deepseek.com | update all `.env`s (`DEEPSEEK_API_KEY` fans to the seven DeepSeek-primary profiles) |
+| MiniMax API key (dormant) | platform.minimax.io | still present in every `.env` though no profile uses `provider: minimax` — rotate or remove |
 | OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
 | Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |
 | TinyFish key | TinyFish dashboard | update the MCP config ([docs/08](08-web-search.md)) |

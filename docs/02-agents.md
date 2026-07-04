@@ -8,15 +8,15 @@
 flowchart TB
     subgraph Mini["🖥️ Mac Mini M4 · 16 GB · native Hermes · one install"]
         subgraph always["always-on"]
-            general["Derya · general<br/>creative director · MiniMax"]:::mini
-            researcher["Doruk · researcher<br/>market scout · MiniMax"]:::mini
-            assistant["Tuna · assistant<br/>studio manager · MiniMax"]:::mini
-            marketing["Nilay · marketing<br/>community & go-to-market · MiniMax"]:::mini
+            general["Derya · general<br/>creative director · DeepSeek"]:::mini
+            researcher["Doruk · researcher<br/>market scout · DeepSeek"]:::mini
+            assistant["Tuna · assistant<br/>studio manager · DeepSeek"]:::mini
+            marketing["Nilay · marketing<br/>community & go-to-market · DeepSeek"]:::mini
         end
         subgraph demand["on-demand"]
-            coder["Naz · coder<br/>lead programmer · Godot/Metal · Codex"]:::codex
-            writer["Ozan · writer<br/>narrative designer · Codex"]:::codex
-            producer["Sarp · producer<br/>product lead · MiniMax · Phase B"]:::mini
+            coder["Naz · coder<br/>lead programmer · Godot/Metal · Codex gpt-5.4"]:::codex
+            writer["Ozan · writer<br/>narrative designer · Codex gpt-5.4"]:::codex
+            producer["Sarp · producer<br/>product lead · DeepSeek"]:::mini
         end
     end
     classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
@@ -28,7 +28,7 @@ flowchart TB
 
 ## 2. Agent roster
 
-Nine agents, all native **profiles** in one Hermes install on the **Mac Mini M4**, split by workload pattern (always-on vs. on-demand) — the **seven** below form the game-studio crew; a **two-agent personal tier** (`finance`, `health`) joins them in §2.2. Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
+Nine agents, all native **profiles** in one Hermes install on the **Mac Mini M4** — all nine gateways run 24/7 under launchd (idle gateways are cheap since inference is remote; the watchdog watches all nine). The always-on / on-demand grouping below describes each agent's **usage pattern**, not whether its gateway is running. Models: DeepSeek V4 Flash ×7 + Codex gpt-5.4 on `coder`/`writer` ([docs/04](04-models.md)). The **seven** below form the game-studio crew; a **two-agent personal tier** (`finance`, `health`) joins them in §2.2. Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
 
 ### Always-on agents (4)
 
@@ -43,18 +43,18 @@ Run 24/7 under launchd; answer from your phone via Telegram whenever.
 
 ### On-demand agents (3)
 
-Started when you use them, idle otherwise — they don't hold RAM the rest of the time.
+Used in bursts (a coding session, a draft, a scoring pass) rather than all day. Their gateways run 24/7 like the rest — resident but idle (~0.3–0.5 GB each) between sessions.
 
 | Slug | Display | Role | Personality | Working set |
 |---|---|---|---|---|
 | `coder` | **Naz** | Lead programmer, Godot-first; the studio's code-runner — native for Metal GPU + the Godot GUI | Blunt, opinionated, shows diffs, "works on my machine" | ~4 GB |
 | `writer` | **Ozan** | Narrative designer; drafts, edits, game PRDs | Pretentious artist — everything's "a metaphor" | ~2 GB |
-| `producer` | **Sarp** | Producer / product lead: idea backlog + scoring (**Phase B, deferred**) | Skeptical budget-killer, anti-hype, sighs internally | ~2 GB |
+| `producer` | **Sarp** | Producer / product lead: idea backlog + scoring | Skeptical budget-killer, anti-hype, sighs internally | ~2 GB |
 
 Names are short (first-name only) for the chat list; the comic SOULs are in Section 6.7. **Slugs are functional and constant; the display name is the persona** — e.g. the `assistant` profile presents as **Tuna**, the studio manager. The personas are sarcastic-but-functional: each comic trait encodes the role (a skeptical producer kills hype; a blunt programmer defends its diffs), never fights it.
 
 **Resource math (one 16 GB Mini, native — no per-agent cap, so think in concurrent working sets):**
-- **Always-on baseline:** Derya 2 + researcher 3 + assistant 2 + Nilay 2 = **9 GB**, plus Honcho (~2 GB, Docker) + SearXNG (~0.5 GB, Docker) + macOS (~2 GB) ≈ **~13.5 / 16 GB**. Comfortable.
+- **Always-on baseline:** Derya 2 + researcher 3 + assistant 2 + Nilay 2 = **9 GB**, plus the OrbStack VM (4 GB cap — Honcho + SearXNG) + macOS (~2 GB) ≈ **~13.5 / 16 GB**. Comfortable.
 - **+ a coding session:** + coder ~4 GB pushes it tight — on-demand agents (coder, writer, producer) spike **one at a time** (you're one person), and if RAM bites, drop an always-on draft agent for the session.
 - **Phase A (researcher + Derya only, no Honcho)** ≈ **7 GB** — huge headroom; start here.
 - **No hard caps.** Native gives no `--memory` ceiling (Section 1.1). A runaway profile can swap the box; `max_turns` budgets and not holding every on-demand agent resident keep it safe.
@@ -63,25 +63,24 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **MiniMax primary, Codex fallback.** Derya is your highest-volume conversational agent → it rides the flat **$20 MiniMax Token Plan** (standard M3) so its volume never touches the gray-area ChatGPT/Codex sub, with gpt-5.x as the quality fallback. (The only Codex-*primary* agents are `coder` + `writer` — the quality-critical creative pair; everything conversational/high-volume stays on MiniMax — [docs/04](04-models.md).)
+- **Model:** **DeepSeek V4 Flash primary** (direct API, pay-per-token) — Derya is your highest-volume conversational agent and V4 Flash keeps that volume cheap and off the gray-area ChatGPT/Codex sub. (The only Codex-*primary* agents are `coder` + `writer` — the quality-critical creative pair — [docs/04](04-models.md).)
   ```yaml
-  # ~/.hermes/profiles/general/config.yaml
+  # ~/.hermes/profiles/general/config.yaml (live)
   model:
-    provider: minimax
-    default: MiniMax-M3
+    provider: deepseek
+    default: deepseek-v4-flash
   fallback_providers:
-    - provider: openai-codex
-      model: gpt-5.3
+    - provider: deepseek
+      model: deepseek-v4-flash
   ```
-- **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob` — **plus `terminal` + `code_execution` + `file`.** Derya is the **fleet admin**: she configures/tunes the other agents (`hermes config set`, edits `honcho.json`/`SOUL.md`) and restarts gateways (`launchctl kickstart`). ⚠️ This makes her the **highest-privilege agent in the fleet** — always-on *and* web/vision-facing *and* holding a host shell. Gated by manual approvals + Tirith + a confirm-first SOUL (§6.7), but see the residual-risk note in [docs/09 §13.7a](09-security.md): approval on benign `hermes`/`launchctl` commands is *behavioral, not enforced*.
+- **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob` — **plus `terminal` + `code_execution` + `file`.** Derya is the **fleet admin**: she configures/tunes the other agents (`hermes config set`, edits `honcho.json`/`SOUL.md`) and restarts gateways (`launchctl kickstart`). ⚠️ This makes her the **highest-privilege agent in the fleet** — always-on *and* web/vision-facing *and* holding a host shell. Gated by Tirith pre-exec scanning + a confirm-first SOUL (§6.7) — approvals run `off` fleet-wide ([docs/09 §13](09-security.md)), so the confirm-first rule is *behavioral, not enforced*.
   ```yaml
   agent:
     disabled_toolsets: [browser, image_gen, delegation, messaging, todo, kanban]
   approvals:
-    mode: manual          # gate dangerous commands (fail-closed, 120s)
-    cron_mode: deny
+    mode: 'off'           # no approval gate — see docs/09 §13 for what this trades away
   security:
-    tirith_enabled: true  # pre-exec command scanning
+    tirith_enabled: true  # pre-exec command scanning (the remaining gate on her shell)
   ```
 - **Memory:** full built-in + **Honcho** — Derya builds the richest user model, since it's where you talk about everything. Its own AI peer. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config.
   ```json
@@ -90,7 +89,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 - **Profile / directory:** profile `general`, data dir `~/.hermes/profiles/general/`. Stand it up like any other (Section 6):
   ```bash
   hermes profile create general
-  hermes -p general setup        # Derya bot token, MiniMax model, keys
+  hermes -p general setup        # Derya bot token, DeepSeek model, keys
   # write SOUL.md (6.7), prune toolsets (6.6), then: hermes -p general gateway install (Section 7)
   ```
   No container, no port, no compose — Telegram is outbound, so Derya needs no inbound port.
@@ -98,7 +97,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 ### 2.2 Beyond the studio — scaling + a personal tier
 
-**How many profiles fit?** The agents are lightweight orchestrators — inference is **remote** (MiniMax/Codex/OpenRouter APIs), so an *idle* gateway holds ~0.3–0.5 GB, not a model. After macOS + Honcho + SearXNG (~4.5 GB fixed), the ~11 GB headroom holds **~15–25 idle profiles** on the 16 GB Mini. The real ceiling isn't profile *count* — it's **concurrent active turns** (each spikes 1–3 GB; you're one person → 3–5 at once) and **API spend / the MiniMax 5-hour quota**. Practical rule: add as many *narrow* profiles as you'll actually use — RAM won't be the wall first. (If you ever ran a **local** model instead of remote APIs, this collapses — a local model is GBs each.)
+**How many profiles fit?** The agents are lightweight orchestrators — inference is **remote** (DeepSeek/Codex/OpenRouter APIs), so an *idle* gateway holds ~0.3–0.5 GB, not a model. After macOS + the OrbStack VM (4 GB cap: Honcho + SearXNG), the headroom holds **~15–25 idle profiles** on the 16 GB Mini — all 9 current gateways already run 24/7. The real ceiling isn't profile *count* — it's **concurrent active turns** (each spikes 1–3 GB; you're one person → 3–5 at once) and **API spend**. Practical rule: add as many *narrow* profiles as you'll actually use — RAM won't be the wall first. (If you ever ran a **local** model instead of remote APIs, this collapses — a local model is GBs each.)
 
 **A personal (non-studio) tier.** Profiles aren't only the game studio — each is an independent identity (own SOUL, memory, bot, toolsets). Spare-time domains get their own profile: a finance/budget agent, fitness coach, language tutor, home-automation, journaling. Guidance:
 - **One domain per profile.** Don't cram finance + fitness onto one agent — focus is the whole point, and an idle profile costs ~nothing.
@@ -110,12 +109,12 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 | Slug | Display | Does | Toolsets | Model |
 |---|---|---|---|---|
-| `finance` | **Murat** | Markets & finance analyst — analyzes read-only data you share (published Google-Sheet CSVs via `web`, statements/charts via `vision`), scans news/Reddit/finance sites (BIST + global), **crunches numbers with `code_execution`**. Informational, *not* investment advice. | `web`+TinyFish, **`code_execution` (fenced)**, `file`, `vision`, `cronjob`, Honcho | MiniMax M3 |
-| `health` | **Defne** | Health & fitness coach — workout/nutrition logging, **calorie/macro estimate from food photos** (`vision`, ballpark), trend tracking, research. *Not* medical advice. | `web`+TinyFish, `file`, `vision`, `cronjob`, Honcho — **no shell** | MiniMax M3 |
+| `finance` | **Murat** | Markets & finance analyst — analyzes read-only data you share (published Google-Sheet CSVs via `web`, statements/charts via `vision`), scans news/Reddit/finance sites (BIST + global), **crunches numbers with `code_execution`**. Informational, *not* investment advice. | `web`+TinyFish, **`code_execution` (fenced)**, `file`, `vision`, `cronjob`, Honcho | DeepSeek V4 Flash |
+| `health` | **Defne** | Health & fitness coach — workout/nutrition logging, **calorie/macro estimate from food photos** (`vision`, ballpark), trend tracking, research. *Not* medical advice. | `web`+TinyFish, `file`, `vision`, `cronjob`, Honcho — **no shell** | DeepSeek V4 Flash |
 
 - **`finance` is a fenced shell-capable agent** (Python only) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell, §2.1). It has `code_execution` ON *because* spreadsheet/CSV analysis is the point, so it's **fenced** identically: `approvals: manual`, website blocklist, no `terminal` (Python exec only). The clean read-only data path is **publish the Google Sheet tab to web as CSV** → the agent fetches the URL (no OAuth, genuinely read-only) → `code_execution` crunches it. See [docs/09 §13.7](09-security.md).
 - **X/Twitter deferred** — Hermes's `x_search` needs an xAI/SuperGrok key (§ docs/04); `finance` covers Reddit + news + finance sites via TinyFish instead. Add the key later for native X sentiment.
-- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (MiniMax/OpenRouter see what you send; Honcho stores derived facts locally) — same posture as the rest of the fleet ([docs/07](07-memory.md)). Zero-leak would require a local model.
+- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (DeepSeek/OpenRouter see what you send; Honcho stores derived facts locally) — same posture as the rest of the fleet ([docs/07](07-memory.md)). Zero-leak would require a local model.
 
 ---
 

@@ -15,6 +15,8 @@ flowchart TB
             c["Naz · coder<br/>Metal GPU · Godot GUI"]:::codex
             o["Nilay · marketing"]:::mini
             p["Sarp · producer"]:::mini
+            f["Murat · finance"]:::mini
+            h["Defne · health"]:::mini
         end
         subgraph svc["Docker · services only"]
             Honcho[("Honcho<br/>shared memory")]:::infra
@@ -46,7 +48,7 @@ What dropping containers buys us:
 - **`coder` gets a real game engine.** Containers on macOS get **no GPU** — Hypervisor.framework exposes no virtual GPU, and there is no Metal passthrough. So a containerized Godot has no GPU-accelerated editor or rendered play-test; you're limited to headless use. Native, `coder` runs on the Mini's Metal GPU with the full Godot GUI. This alone settles the container question for a game-dev fleet.
 - **One machine, no cross-host plumbing.** The MacBook Pro M2 is shelved for now. All agents share one host, so agent-to-agent work is **local** — no HTTP-over-Tailscale, no per-gateway API keys, no "the laptop is asleep" dead ends (see [Section 17](12-agent-comms.md)).
 - **Native `kanban`.** Hermes' multi-agent board is deliberately single-host: a dispatcher claims tasks from `~/.hermes/kanban.db` and spawns the assigned profile as a **local child process**. A native single install is exactly that environment — the whole pipeline (`researcher → producer → writer → coder`) is now reachable by one board. We keep it **off** at first (a flat `backlog.md` is the right altitude for a solo, weekly-cadence pipeline), but the option is free and clean. See [Section 16](11-game-dev.md) and [Section 17](12-agent-comms.md).
-- **Less overhead.** No OrbStack VM (~1.5 GB reclaimed), no image pull/upgrade machinery, no bind-mount and port-binding juggling.
+- **Less overhead.** No per-agent containers — the one OrbStack VM that remains is for support services only and is capped at **4 GB** (`orb config set memory_mib 4096`). No image machinery or port juggling for the agents themselves.
 
 ## 1.1 What isolation we keep, and what we give up
 
@@ -74,7 +76,7 @@ The payoff of the old container choice (a kernel boundary) is replaced by **a mu
 - **Install path.** Native Hermes via the official installer / Homebrew formula (see [Section 14](10-operations.md) for the exact upgrade story). All state lives under `~/.hermes/`.
 - **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, Hermes' **built-in installer** wires one launchd LaunchAgent per profile — `hermes -p <profile> gateway install` writes + bootstraps `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist` (verified v0.16.0) — so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
 - **Start-at-login.** LaunchAgents load at user login. The Mini must therefore **auto-login** after a reboot (System Settings → Users & Groups → Automatic login) or the agents won't come back unattended.
-- **Docker stays — for services only.** Honcho (Postgres) and SearXNG are infrastructure, not agents, and are far easier to run as containers. Keep a minimal Docker/OrbStack install for **those two only**; no agent runs in a container.
-- **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, on-demand agents (`coder`, `writer`, `producer`) are started only when used, and the **watchdog** ([Section 14.5](10-operations.md)) catches a down or crash-looping gateway within 15 minutes.
+- **Docker stays — for services only.** Honcho (4 containers: api, deriver, pgvector Postgres, Redis) and SearXNG are infrastructure, not agents. Keep a minimal Docker/OrbStack install for **those five containers only** (VM capped at 4 GB); no agent runs in a container. Resist adding heavy service stacks to the VM — a self-hosted Firecrawl proved the point by OOM-ing it ([docs/08 §10.6a](08-web-search.md)).
+- **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, the on-demand agents (`coder`, `writer`, `producer`) are light while idle (in practice all 9 gateways run 24/7 — an idle gateway is ~0.3–0.5 GB since inference is remote), and the **watchdog** ([Section 14.5](10-operations.md)) catches a down or crash-looping gateway within 15 minutes.
 
 ---

@@ -19,7 +19,7 @@ flowchart LR
 
 This is the concrete answer to "I want to start PC and mobile game development but have no time for research, PRDs, market research." You are **exploring**, not committed to a specific game. So this workstream is built as a **discovery engine** — agents surface and score opportunities, you pick one, *then* prototype. It is not a "build-this-game" machine, because you don't yet know the game.
 
-Engine direction: **Godot now, Unity later** (16.7). Provider reality: the main models run on the **two providers you actually have — your $20 MiniMax token plan (M3) and OpenAI Codex** — plus a little **OpenRouter** for cheap aux + quota overflow (5.5). No Anthropic key needed.
+Engine direction: **Godot now, Unity later** (16.7). Provider reality: the main models run on **two providers — DeepSeek (direct API key) and OpenAI Codex** — plus a little **OpenRouter** for cheap aux (5.5). No Anthropic key needed.
 
 ### 16.0 Rollout order — research first, build later
 
@@ -65,47 +65,46 @@ Stand it up like any other profile (Section 6, Phase 3):
 
 ```bash
 hermes profile create producer
-hermes -p producer setup          # Sarp bot token, MiniMax model, keys
+hermes -p producer setup          # Sarp bot token, DeepSeek model, keys
 # write SOUL.md (16.8), prune toolsets (Section 6.6), then: hermes -p producer gateway install
 ```
 
 No container, no port, no compose — just a profile under `~/.hermes/profiles/producer/`.
 
-### 16.4 Model assignment (MiniMax + Codex only)
+### 16.4 Model assignment (DeepSeek + Codex)
 
-Balanced so the only **automated cron** (`researcher`'s weekly scout) stays on **MiniMax** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `researcher` row** — the rest activate as their agents come online in Phase B/C.
+Current routing: `coder` + `writer` = **Codex gpt-5.4**; every other agent = **DeepSeek V4 Flash** (direct API, pay-per-token). Full reasoning + fallback chains in [docs/04](04-models.md).
+
+Balanced so the only **automated cron** (`researcher`'s weekly scout) stays on **DeepSeek** — automated volume is the ToS flag trigger (docs/04 §5.0). The two **Codex** agents are the quality-critical creative pair (`coder` code, `writer` prose), both human-paced. **Phase A uses only the `researcher` row** — the rest activate as their agents come online in Phase B/C.
 
 | Agent | Role | Model | Provider | Rationale |
 |---|---|---|---|---|
-| `researcher` | opportunity scout | `MiniMax-M3` | `minimax` | M3's browsing + 1M context fit web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
-| `producer` | backlog + scoring | `MiniMax-M3` | `minimax` | Reasoning over candidates is cheap and frequent; flat $20 plan. |
-| `writer` | PRD / store copy | `gpt-5.x` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
-| `coder` | Godot prototyping | `gpt-5.x` (Codex) | `openai-codex` | gpt-5.x for GDScript quality; interactive/human-paced (you drive it) so lower flag risk than a cron — but it's the **heaviest** agent, so watch the shared ChatGPT cap (§5.3). MiniMax-M3 fallback; A/B vs M3 (a strong coder, $0). |
+| `researcher` | opportunity scout | `deepseek-v4-flash` | `deepseek` | Cheap pay-per-token web research; keeps the weekly **cron** off the gray-area sub (automated cadence is the flag trigger). |
+| `producer` | backlog + scoring | `deepseek-v4-flash` | `deepseek` | Reasoning over candidates is cheap and frequent. |
+| `writer` | PRD / store copy | `gpt-5.4` (Codex) | `openai-codex` | Voice and long-form drafting; occasional use = low quota draw. |
+| `coder` | Godot prototyping | `gpt-5.4` (Codex) | `openai-codex` | gpt-5.4 for GDScript quality; interactive/human-paced (you drive it) so lower flag risk than a cron — but it's the **heaviest** agent, so watch the shared ChatGPT cap (§5.3). DeepSeek fallback; A/B vs V4 Pro (strongest clean coder — §5.12). |
 
-- **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5). Keep aux *off* the MiniMax token-plan quota — constant small calls would drain the shared 5-hour budget; cheap pay-per-token OpenRouter protects it.
-- **Fallback chains** cross the two providers: Codex-primary agents fall back to MiniMax, MiniMax-primary agents fall back to Codex. Two providers, mutual safety net, no third credential.
+- **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5) — V4 Flash has no vision, and keeping aux cross-provider means an aux outage and a chat outage can't share a cause.
+- **Fallback chains:** Codex-primary agents fall back to DeepSeek (docs/04 §5.7).
 
-  `coder` (`~/.hermes/profiles/coder/config.yaml`) — **Codex-primary, MiniMax fallback**:
+  `coder` (`~/.hermes/profiles/coder/config.yaml`) — **Codex-primary, DeepSeek fallback**:
   ```yaml
   model:
     provider: openai-codex
-    default: gpt-5.3
+    default: gpt-5.4
   fallback_providers:
-    - provider: minimax
-      model: MiniMax-M3
+    - provider: deepseek
+      model: deepseek-v4-flash
   ```
 
   `producer` (`~/.hermes/profiles/producer/config.yaml`):
   ```yaml
   model:
-    provider: minimax
-    default: MiniMax-M3
-  fallback_providers:
-    - provider: openai-codex
-      model: gpt-5.3
+    provider: deepseek
+    default: deepseek-v4-flash
   ```
 
-- **Wallet simplification:** the main models need only **two providers** — MiniMax ($20 token plan) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route *and* the overflow valve when the shared MiniMax 5-hour quota gets tight (5.5–5.7). It's a few dollars a month and protects the token-plan quota — don't cut it.
+- **Wallet simplification:** the main models need only **two providers** — DeepSeek (pay-per-token) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route and the cross-provider hedge (5.5–5.7). A few dollars a month — don't cut it.
 
 ### 16.5 `researcher` as opportunity scout (the cron)
 

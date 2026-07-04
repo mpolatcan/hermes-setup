@@ -11,7 +11,7 @@
 #   2. cp bot-tokens.env.example bot-tokens.env  &&  chmod 600 bot-tokens.env
 #      Fill in your numeric Telegram user ID (ALLOWED_USERS, from @userinfobot)
 #      and the nine tokens (slug=token per line).
-#   3. Optionally fill MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY
+#   3. Optionally fill DEEPSEEK_API_KEY / MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY
 #      in bot-tokens.env too — single entry point for all fleet secrets.
 #   4. ./setup-bots.sh
 #      → sets each bot's profile (name/about/description/commands) AND writes
@@ -108,6 +108,7 @@ fanout_key() { # key value slugs…
 }
 
 echo
+fanout_key DEEPSEEK_API_KEY   "${DEEPSEEK_API_KEY:-}"   "${ALL_SLUGS[@]}"
 fanout_key MINIMAX_API_KEY    "${MINIMAX_API_KEY:-}"    "${ALL_SLUGS[@]}"
 fanout_key OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}" "${ALL_SLUGS[@]}"
 fanout_key TINYFISH_API_KEY   "${TINYFISH_API_KEY:-}"   "${TINYFISH_SLUGS[@]}"

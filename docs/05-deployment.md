@@ -59,7 +59,7 @@ If you do expose any port, bind it to the Tailscale interface only and key it �
 
 Do not stand up all agents at once. Build in three phases so problems get isolated as they arise.
 
-**Prerequisites:** Section 4 done (bots exist, tokens saved, your Telegram user ID in hand) and Section 5 done (API keys from MiniMax, OpenRouter, and Codex credentials available). Keys and tokens get pasted during per-profile setup.
+**Prerequisites:** Section 4 done (bots exist, tokens saved, your Telegram user ID in hand) and Section 5 done (API keys from DeepSeek, OpenRouter, and Codex credentials available). Keys and tokens get pasted during per-profile setup.
 
 ### Phase 1 — native install + first profile (day 1)
 
@@ -83,7 +83,7 @@ hermes -p researcher setup        # verified v0.16.0: global -p/--profile flag, 
                                 # (or use the wrapper: `researcher setup`)
 ```
 
-Configure: the model provider (`researcher` uses MiniMax M3 per Section 5.2), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/researcher/.env`.
+Configure: the model provider (`researcher` uses DeepSeek V4 Flash — docs/04 live-stack note), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/researcher/.env`.
 
 **Step 1.3: Edit the SOUL.md**
 

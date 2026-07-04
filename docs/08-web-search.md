@@ -237,6 +237,19 @@ For reference when wiring up each agent:
 
 **Every agent is Layer 2** — TinyFish primary via MCP, SearXNG fallback via the built-in `web` toolset. None is walled off from search and none can hard-fail on it. The earlier TinyFish-only tier (`coder`/`writer`) is retired: they now keep `web` enabled (with `backend: searxng`) so an outage degrades instead of breaking.
 
+### 10.6a URL extraction — TinyFish carries it; no built-in extract backend
+
+Search and extraction are separate capabilities in Hermes. SearXNG is **search-only**: the built-in `web_extract` tool needs an extract-capable backend — v0.16.0's provider registry supports `firecrawl`, `tavily`, `exa`, and `parallel` (`searxng`/`ddgs`/`brave-free` return a typed "search-only" error, no silent fallback).
+
+**Current config: no `extract_backend` is set.** Page extraction runs through **TinyFish MCP** (its fetch/agent endpoints), which every profile already has — consistent with TinyFish-primary above. `web_extract` itself returns a clean "no extract provider configured" error, which is fine: the agents route around it.
+
+If a built-in extract backend is ever wanted, in order of preference:
+
+1. **Tavily** — free tier (~1,000 credits/mo), one `TAVILY_API_KEY`, zero containers.
+2. **Nous managed tool gateway** — Hermes can proxy Firecrawl through a Nous subscription token (no API key, no self-host). Requires a Nous sub (none held today).
+3. **Firecrawl cloud** — `extract_backend: firecrawl` + `FIRECRAWL_API_KEY`.
+4. **Self-hosted Firecrawl — only with a hard memory cap.** This was tried: a 5-container stack (`~/firecrawl`, compose dir kept) wired as `extract_backend: firecrawl` on all 9 profiles. `firecrawl-api` leaks (2+ GiB within minutes) and its compose `mem_limit: 8G` exceeded the whole VM, so the kernel OOM killer shot Honcho/postgres at random. Removed 2026-07-04; the VM is now capped at 4 GB and holds only Honcho + SearXNG. If reviving: `mem_limit: 2G` on `api`, `1G` on `playwright-service`, or it will repeat.
+
 ### 10.7 Per-agent skill for TinyFish (optional but recommended)
 
 TinyFish ships an "Agent Skill" — a `SKILL.md` file that teaches the agent when to reach for search vs. fetch vs. agent vs. browser. For Hermes, the skills system is the natural home for this.

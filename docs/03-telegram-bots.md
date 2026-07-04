@@ -260,11 +260,11 @@ Bot *creation* (4.3) is the only manual part; Telegram has no API for it. Once t
 # from the repo root
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
 # edit scripts/bot-tokens.env: paste ALLOWED_USERS (your @userinfobot ID) + the 9 tokens
-# + optionally MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY (docs/04 §5.8)
+# + optionally DEEPSEEK_API_KEY / MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY (docs/04 §5.8)
 ./scripts/setup-bots.sh
 ```
 
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all nine profiles; `TINYFISH_API_KEY` → all nine, though TinyFish authenticates via OAuth so the key is optional — docs/08), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
+For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`DEEPSEEK_API_KEY`/`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all nine profiles; `TINYFISH_API_KEY` → all nine, though TinyFish authenticates via OAuth so the key is optional — docs/08), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
 
 Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
 

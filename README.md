@@ -51,7 +51,7 @@ flowchart TB
     personal -. "search fallback" .-> SearXNG
     wd -. "down/crash alert<br/>(bypasses agents)" .-> tg
 
-    ext["☁️ TinyFish · MiniMax · Codex · OpenRouter"]:::ext
+    ext["☁️ TinyFish · DeepSeek · Codex · OpenRouter"]:::ext
     hermes --> ext
     Honcho --> ext
 
@@ -71,7 +71,7 @@ flowchart TB
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-**Colours:** green = MiniMax agent · orange = Codex agent · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
+**Colours:** green = DeepSeek agent · orange = Codex agent · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
 
 ---
 
@@ -113,9 +113,9 @@ Nine native profiles in one Hermes install. **Slug** = the functional name (cons
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | MiniMax M3 |
-| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | MiniMax M3 |
-| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | MiniMax M3 |
+| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | DeepSeek V4 Flash |
+| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | DeepSeek V4 Flash |
+| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | DeepSeek V4 Flash |
 
 These three you'd want even with no game studio. Start here for day-to-day use.
 
@@ -123,12 +123,12 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | MiniMax M3 |
+| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | DeepSeek V4 Flash |
 | **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | Codex gpt-5.4 |
 | **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | Codex gpt-5.4 |
-| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | MiniMax M3 |
+| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | DeepSeek V4 Flash |
 
-Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it.
+Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it. ("On-demand" = usage pattern; all 9 gateways run 24/7 under launchd.)
 
 ### 🧑 Personal tier — separate life domains
 
@@ -136,8 +136,8 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 | Display | Slug | Does | Model |
 |---|---|---|---|
-| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | MiniMax M3 |
-| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | MiniMax M3 |
+| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | DeepSeek V4 Flash |
+| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | DeepSeek V4 Flash |
 
 `finance` is a fenced shell-capable agent (`code_execution` only, `approvals: manual`, blocklist) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell). See [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
 
@@ -175,12 +175,12 @@ Two paid providers do the work; OpenRouter is the cheap aux + the resilience val
 flowchart LR
     subgraph agents["agents"]
         cx["Naz · Ozan<br/>(quality-critical creative)"]:::codex
-        mm["Derya · Doruk · Tuna<br/>Nilay · Sarp"]:::mini
+        mm["Derya · Doruk · Tuna<br/>Nilay · Sarp · Murat · Defne"]:::mini
     end
     cx -->|primary| Codex["Codex · gpt-5.4<br/>ChatGPT sub"]:::codex
-    mm -->|primary| MiniMax["MiniMax · M3<br/>$20 token plan · ~4.5k req/5h"]:::mini
-    Codex -. fallback .-> MiniMax
-    MiniMax -. fallback / overflow .-> OR["OpenRouter<br/>pay-per-token"]:::ext
+    mm -->|primary| DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::mini
+    Codex -. fallback .-> DeepSeek
+    DeepSeek -. fallback / overflow .-> OR["OpenRouter<br/>pay-per-token"]:::ext
     Honcho["Honcho memory workers"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
@@ -188,9 +188,9 @@ flowchart LR
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
-- **MiniMax M3** ($20 flat token plan, ~4,500 req/5h shared) — the five conversational agents.
+- **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — the seven conversational/analyst agents.
 - **Codex gpt-5.4** (your ChatGPT sub, OAuth — accepted gray-area) — only Naz + Ozan, the quality-critical creative pair; neither runs an automated cron.
-- **OpenRouter** (~$10 credit) — aux tasks, every agent's fallback chain (so one outage can't take an agent down), and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo). Live-tested: break the MiniMax key → replies still arrive via OpenRouter.
+- **OpenRouter** (~$10 credit) — aux tasks, every agent's fallback chain (so one outage can't take an agent down), and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo). Live-tested: break the primary key → replies still arrive via OpenRouter.
 
 Full routing + the per-agent fallback chains: [docs/04](docs/04-models.md).
 
@@ -209,7 +209,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 1. [Architecture & Isolation](docs/01-architecture.md) — native single-install multi-profile; what isolation we keep and give up
 2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the nine agents, dual-use vs studio + personal tier, comic SOULs
 3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, the `setup-bots.sh` shortcut
-4. [Model Providers](docs/04-models.md) — MiniMax + Codex routing, fallback chains
+4. [Model Providers](docs/04-models.md) — DeepSeek + Codex routing, fallback chains
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
 6. [Networking](docs/06-networking.md) — Telegram needs no ports; Tailscale optional for the dashboard
 7. [Memory — Honcho](docs/07-memory.md) — three layers, shared user model, backups
@@ -228,7 +228,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 # 1. Telegram: @BotFather → /newbot ×9   (general_<you>_bot … health_<you>_bot; slug-based, rename-safe)
 # 2. wire the bots + keys (creation is the only manual Telegram step):
 cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-#    fill ALLOWED_USERS (from @userinfobot) + the 9 tokens + MINIMAX/OPENROUTER keys, then:
+#    fill ALLOWED_USERS (from @userinfobot) + the 9 tokens + DEEPSEEK/OPENROUTER keys, then:
 #    (TinyFish needs no key — it authenticates via OAuth in step 4)
 ./scripts/setup-bots.sh        # sets bot profiles + fans tokens & keys into ~/.hermes/profiles/<slug>/.env
 # 3. install Hermes natively + bring up one profile, then the rest:

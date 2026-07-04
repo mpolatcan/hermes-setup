@@ -6,6 +6,8 @@
 
 The concern docs (01–12) explain *why*; this is the *what, in order*. Follow top-to-bottom.
 
+> **Current stack (2026-07):** primary model = **DeepSeek V4 Flash direct** on all non-Codex agents, Codex gpt-5.4 on `coder`/`writer` ([docs/04](04-models.md)); web = TinyFish MCP + SearXNG, no extract backend ([docs/08 §10.6a](08-web-search.md)); OrbStack VM capped 4 GB (Honcho ×4 + SearXNG); all 9 gateways 24/7 under launchd; approvals off fleet-wide ([docs/09 §13](09-security.md)). Dated checklist entries below are the build log as it happened.
+
 > ⚠️ = a **verify-gate**: the plan makes an assumption about native Hermes that hasn't been tested against a live install. Confirm it before trusting it, and adjust the runbook if reality differs.
 
 ```mermaid

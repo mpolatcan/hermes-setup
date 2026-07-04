@@ -257,7 +257,7 @@ Per-agent additions:
 - **`assistant` USER.md:** schedule patterns, reminder preferences, what's worth pinging you about vs. queuing for digest.
 - **`marketing` USER.md:** target audience and platforms, brand voice, which channels you actually post to, what messaging has landed vs. flopped before.
 
-**MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `researcher` agent's might note "default web search backend is Firecrawl, prefer primary sources over aggregators."
+**MEMORY.md** is for facts about the world and your environment rather than about you. Things that are stable, agent-useful, and don't change daily. The `coder` agent's MEMORY.md might note "primary repo is ~/projects/foo, uses pnpm, deploys via Vercel." The `researcher` agent's might note "default web search is TinyFish with SearXNG fallback, prefer primary sources over aggregators."
 
 Write these by hand once. The agent will refine and consolidate them over time, and you should review them periodically (see hygiene below).
 
