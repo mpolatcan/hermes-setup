@@ -219,6 +219,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
+14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene
 
 ---
 
