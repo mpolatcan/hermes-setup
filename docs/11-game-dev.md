@@ -71,25 +71,25 @@ hermes -p producer setup          # Sarp bot token, DeepSeek model, keys
 
 No container, no port, no compose — just a profile under `~/.hermes/profiles/producer/`.
 
-### 16.4 Model assignment (GPT-5.5 fleet-wide since 2026-07-05)
+### 16.4 Model assignment (GPT-5.6 sol/terra/luna fleet-wide since 2026-07-12)
 
-Current routing: **every agent — and every cron — runs `gpt-5.5` via Codex OAuth primary, `deepseek-v4-flash` fallback** (patron decision 2026-07-05, overriding the old cron-stays-on-DeepSeek rule; accepted risk). Reasoning efforts are tiered per role. Full reasoning + the override record in [docs/04](04-models.md).
+Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAuth primary (capability tier per role: `gpt-5.6-sol` xhigh, `-terra` medium, `-luna` low), `deepseek-v4-flash` fallback** (patron decision 2026-07-05, overriding the old cron-stays-on-DeepSeek rule; accepted risk). Reasoning efforts are tiered per role. Full reasoning + the override record in [docs/04](04-models.md).
 
 | Agent | Role | Model | Effort | Rationale |
 |---|---|---|---|---|
-| `researcher` | opportunity scout | `gpt-5.5` (Codex) | `xhigh` | Deep multi-source research quality; weekly scout cron now also on GPT (quota watch applies). |
-| `producer` | backlog + scoring | `gpt-5.5` (Codex) | `low` | Frequent light reasoning — low effort keeps quota draw down. |
-| `writer` | PRD / store copy | `gpt-5.5` (Codex) | `xhigh` | Voice and long-form drafting. |
-| `coder` | Godot prototyping | `gpt-5.5` (Codex) | `xhigh` | Strongest GDScript quality; the **heaviest** agent — first to feel the shared ChatGPT quota window (§5.3). |
+| `researcher` | opportunity scout | `gpt-5.6-sol` (Codex) | `xhigh` | Deep multi-source research quality; weekly scout cron now also on GPT (quota watch applies). |
+| `producer` | backlog + scoring | `gpt-5.6-luna` (Codex) | `low` | Frequent light reasoning — low effort keeps quota draw down. |
+| `writer` | PRD / store copy | `gpt-5.6-sol` (Codex) | `xhigh` | Voice and long-form drafting. |
+| `coder` | Godot prototyping | `gpt-5.6-sol` (Codex) | `xhigh` | Strongest GDScript quality; the **heaviest** agent — first to feel the shared ChatGPT quota window (§5.3). |
 
 - **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5) — V4 Flash has no vision, and keeping aux cross-provider means an aux outage and a chat outage can't share a cause.
 - **Fallback chains:** Codex-primary agents fall back to DeepSeek (docs/04 §5.7).
 
-  Every profile now carries the same shape (`~/.hermes/profiles/<slug>/config.yaml`) — only `reasoning_effort` differs:
+  Every profile now carries the same shape (`~/.hermes/profiles/<slug>/config.yaml`) — only `default` (5.6 tier) and `reasoning_effort` differ:
   ```yaml
   model:
     provider: openai-codex
-    default: gpt-5.5
+    default: gpt-5.6-sol   # terra/luna on lighter profiles
   fallback_providers:
     - provider: deepseek
       model: deepseek-v4-flash

@@ -4,21 +4,21 @@
 
 ---
 
-## ⚡ LIVE since 2026-07-05 — fleet on GPT-5.5, policy override
+## ⚡ LIVE since 2026-07-12 — fleet on GPT-5.6 (Sol/Terra/Luna), policy override
 
-**Patron decision (2026-07-05): the whole fleet — all 9 agents AND cron jobs — runs `gpt-5.5` via `openai-codex` OAuth as primary, `deepseek-v4-flash` as fallback.** This deliberately overrides §5.0's rule ("no automated cron on Codex, sub-OAuth only on human-paced agents"): quality > risk, accepted with eyes open. §5.0 remains below as the risk analysis that was overridden, not as current policy.
+**Fleet migrated to the GPT-5.6 family on 2026-07-12** (released 2026-07-09; the old flat `gpt-5.5` default is retired). GPT-5.6 splits into three capability tiers — **Sol** (flagship, deepest reasoning), **Terra** (mid, ≈5.5 quality at ~half the API price), **Luna** (fast/light) — and the fleet maps its existing effort tiers onto them: `gpt-5.6-sol` for coder/researcher/writer, `gpt-5.6-terra` for general/assistant/finance/health, `gpt-5.6-luna` for marketing/producer. The `-pro` variants are **not** available through Codex ChatGPT OAuth (HTTP 400), only the base three. The underlying patron decision of 2026-07-05 stands: **all 9 agents AND cron jobs run Codex OAuth as primary, `deepseek-v4-flash` as fallback**, deliberately overriding §5.0's rule ("no automated cron on Codex") — quality > risk, accepted with eyes open. §5.0 remains below as the risk analysis that was overridden, not as current policy.
 
 ```mermaid
 flowchart LR
-    all9["all 9 agents + crons"] --> codex55["Codex OAuth · gpt-5.5<br/>ChatGPT sub · accepted-risk"]
-    codex55 -. "fallback (quota/outage)" .-> ds2["DeepSeek · V4 Flash<br/>API key · pay-per-token"]
+    all9["all 9 agents + crons"] --> codex56["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · accepted-risk"]
+    codex56 -. "fallback (quota/outage)" .-> ds2["DeepSeek · V4 Flash<br/>API key · pay-per-token"]
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
-    class all9,codex55 codex
+    class all9,codex56 codex
     class ds2 ds
 ```
 
-- **Reasoning efforts tiered** (`agent.reasoning_effort`): `xhigh` coder/researcher/writer · `medium` general/assistant · `low` marketing/producer/finance/health.
+- **Reasoning efforts tiered** (`agent.reasoning_effort`): `xhigh` coder/researcher/writer · `medium` general/assistant/finance/health · `low` marketing/producer. (Docs previously listed finance/health as `low`; live configs have been `medium` — synced 2026-07-12.)
 - **Codex OAuth is centralized** in the root `~/.hermes/auth.json` — hermes's global-store fallback (`_global_auth_file_path`) serves all profiles, and token refreshes write back to the root store (`_save_provider_state_to_source`), so ONE credential serves the fleet with no per-profile drift. Per-profile `auth.json` must stay free of `openai-codex` entries (local shadows root).
 - **Root re-auth recipe** (the naive `HERMES_HOME=~/.hermes hermes auth add` gets redirected to the sticky active profile — issue #22502): `echo default > ~/.hermes/active_profile` → `HERMES_HOME=~/.hermes hermes auth add openai-codex --type oauth` → `echo researcher > ~/.hermes/active_profile`. Never remove pool credentials by display label (labels regenerate by index) — use the raw entry id and verify `last_refresh`.
 - **Watch items:** shared 5h/weekly quota window across 9 agents (fallback engages silently — check `billing_provider` in `hermes sessions stats`); open bug [#47781](https://github.com/NousResearch/hermes-agent/issues/47781) (cron fallback may send primary model name); token rotation (persistent fallback on one profile → strip its local codex entries, re-auth root).
@@ -28,7 +28,7 @@ flowchart LR
 
 The credentials actually on hand: a **DeepSeek platform API key** (primary), **Codex** (ChatGPT sub), **OpenRouter**, and a dormant **MiniMax** key. Not every subscription is *safe* to wire into a third-party agent like Hermes — "works technically" and "won't get your account flagged" are different questions. The stack:
 
-- **Codex GPT-5.5 = primary, fleet-wide** (all 9 agents + crons, since 2026-07-05 — see the LIVE banner above; §5.0's caution stands as the analysis that was overridden).
+- **Codex GPT-5.6 (sol/terra/luna) = primary, fleet-wide** (all 9 agents + crons; Codex-primary since 2026-07-05, 5.6 tiers since 2026-07-12 — see the LIVE banner above; §5.0's caution stands as the analysis that was overridden).
 - **DeepSeek V4 Flash = the fallback** on every profile. Direct API key, pay-per-token, zero ToS risk.
 - **OpenRouter API key** for cheap aux + cross-provider fallback. Safe.
 - **MiniMax** — spare API key kept in the `.env`s as an extra fallback option (5.2).
@@ -53,25 +53,25 @@ The distinction that governs everything below: **an API key (you pay per token) 
 - **Claude Code subscription** — Hermes can read Claude Code's credential store (`anthropic` OAuth), but that points your *coding* subscription at a different agent. If flagged, you risk the tool you actually develop with. **Keep Claude Code for Claude Code.** Want Claude inside Hermes? Use a separate **Anthropic API key** (pay-per-token, unambiguously fine) — see 5.4.
 - **Gemini Antigravity** — **do not attempt.** Antigravity is an IDE with no API to extract auth from. The closest pattern, `google-gemini-cli` OAuth, is exactly what Google **enforced against in early 2026** — paid subscribers using Gemini-CLI-style OAuth in third-party apps lost access during the crackdown. The only safe way to use Gemini in Hermes is an **AI Studio API key** (free tier or pay-per-token) or **Gemini via OpenRouter** — both separate from your Antigravity subscription. The OpenRouter→Gemini-Flash aux route in 5.5 is safe precisely because it's an API key, not subscription OAuth.
 
-**The rule (as originally designed):** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). Under that rule, crons stayed on DeepSeek and Codex carried only the two human-paced quality agents. **⚠️ Overridden 2026-07-05 by patron decision** (see the LIVE banner at top): the entire fleet including crons now rides Codex GPT-5.5, quality over risk, with DeepSeek as the escape hatch already wired. This paragraph stays as the argument that was consciously outvoted — and as the playbook to return to (`git revert`) if OpenAI starts enforcing.
+**The rule (as originally designed):** never put gray-area subscription-OAuth on an **always-on, automated** agent that hammers it — automated cadence is the enforcement trigger (that's what the Google/Anthropic clampdowns targeted). Under that rule, crons stayed on DeepSeek and Codex carried only the two human-paced quality agents. **⚠️ Overridden 2026-07-05 by patron decision** (see the LIVE banner at top): the entire fleet including crons now rides Codex GPT-5.x (5.5 from 07-05, the 5.6 tiers from 07-12), quality over risk, with DeepSeek as the escape hatch already wired. This paragraph stays as the argument that was consciously outvoted — and as the playbook to return to (`git revert`) if OpenAI starts enforcing.
 
-### 5.1 Per-agent model assignment (live since 2026-07-05)
+### 5.1 Per-agent model assignment (live since 2026-07-12)
 
-All nine: **`gpt-5.5` primary via `openai-codex` OAuth (⚠️ accepted-risk), `deepseek-v4-flash` fallback via `deepseek` API key (✅).** Only the reasoning effort differs:
+All nine: **GPT-5.6 primary via `openai-codex` OAuth (⚠️ accepted-risk), `deepseek-v4-flash` fallback via `deepseek` API key (✅).** The 5.6 capability tier follows the reasoning-effort tier:
 
-| Slug | Bot | Main model | Effort | Fallback | Why this effort |
+| Slug | Bot | Main model | Effort | Fallback | Why this tier |
 |---|---|---|---|---|---|
-| `coder` | Naz | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Code quality ceiling; **heaviest agent → first to feel the shared quota window** |
-| `researcher` | Doruk | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Deep multi-source research + weekly scout cron |
-| `writer` | Ozan | `gpt-5.5` | `xhigh` | `deepseek-v4-flash` | Voice, long-form drafting |
-| `general` | Derya | `gpt-5.5` | `medium` | `deepseek-v4-flash` | Highest-volume daily driver — medium balances quality vs window |
-| `assistant` | Tuna | `gpt-5.5` | `medium` | `deepseek-v4-flash` | Daily logistics |
-| `marketing` | Nilay | `gpt-5.5` | `low` | `deepseek-v4-flash` | Frequent light tasks |
-| `producer` | Sarp | `gpt-5.5` | `low` | `deepseek-v4-flash` | Idea scoring — light reasoning |
-| `finance` | Murat | `gpt-5.5` | `low` | `deepseek-v4-flash` | Personal markets analyst (personal tier, docs/02 §2.2) |
-| `health` | Defne | `gpt-5.5` | `low` | `deepseek-v4-flash` | Fitness/nutrition coach (personal tier) |
+| `coder` | Naz | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Code quality ceiling; **heaviest agent → first to feel the shared quota window** |
+| `researcher` | Doruk | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Deep multi-source research + weekly scout cron |
+| `writer` | Ozan | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Voice, long-form drafting |
+| `general` | Derya | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Highest-volume daily driver — Terra ≈ 5.5 quality, lighter on the window |
+| `assistant` | Tuna | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Daily logistics |
+| `finance` | Murat | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Personal markets analyst (personal tier, docs/02 §2.2) |
+| `health` | Defne | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Fitness/nutrition coach (personal tier) |
+| `marketing` | Nilay | `gpt-5.6-luna` | `low` | `deepseek-v4-flash` | Frequent light tasks — Luna built for fast high-volume work |
+| `producer` | Sarp | `gpt-5.6-luna` | `low` | `deepseek-v4-flash` | Idea scoring — light reasoning |
 
-For all nine, the **auxiliary model** (vision, web summarization, context compression, session search) is `google/gemini-2.5-flash` via OpenRouter (5.5) — short, frequent calls routed to the cheapest fast model.
+For all nine, the **vision auxiliary** rides the same Codex model as the profile's primary (`auxiliary.vision.model` = the profile's 5.6 tier) with `google/gemini-2.5-flash` via OpenRouter as its fallback chain; the other aux calls (web summarization, context compression, session search) stay on the cheap OpenRouter Gemini route (5.5).
 
 Why Codex lands on `coder` + `writer`: those are the two **quality-critical creative** agents — gpt-5.x is strong at code and long-form prose, and that's where you most want the frontier model. The safety guard is that **neither runs as an automated cron**: `writer` is occasional, `coder` is interactive (you drive it at the keyboard). The one cron — `researcher`'s weekly scout — lives on **DeepSeek**, so no *automated* volume ever hits Codex. The honest caveat: `coder` is the **heaviest** agent, so it's the real ToS/quota exposure here — watch the shared ChatGPT quota (it's shared with `writer`), and A/B `coder` against **DeepSeek V4 Pro** (the strongest clean coder — 5.12). If gpt-5.4 isn't clearly better for GDScript, move `coder` there (`/model` per session, or the config) — zero ToS risk.
 
@@ -211,11 +211,11 @@ Pay-per-token means the bill tracks usage — watch the DeepSeek dashboard the f
 
 Hermes retries a failed primary (rate limit, 5xx, auth) against the next provider in the chain without losing the conversation.
 
-Live config — identical on all nine profiles since 2026-07-05 (Codex-primary, DeepSeek fallback; `DEEPSEEK_API_KEY` is in every `.env`):
+Live config — same shape on all nine profiles (Codex-primary since 2026-07-05, DeepSeek fallback; `DEEPSEEK_API_KEY` is in every `.env`). `default` is the profile's 5.6 tier — `gpt-5.6-sol` / `-terra` / `-luna` per the 5.1 table:
 ```yaml
 model:
   provider: openai-codex
-  default: gpt-5.5
+  default: gpt-5.6-sol   # or gpt-5.6-terra / gpt-5.6-luna per profile
 fallback_providers:
   - provider: deepseek
     model: deepseek-v4-flash
@@ -329,7 +329,7 @@ The DeepSeek key is already in every `.env` (5.2), so flipping it on is a config
 
 | Option | Coding | ToS | Cost |
 |---|---|---|---|
-| **gpt-5.5 (Codex)** — *current default* | ★ strong | ⚠️ gray-area | $0 (sub, shared quota window) |
+| **gpt-5.6-sol (Codex)** — *current default* | ★ strong | ⚠️ gray-area | $0 (sub, shared quota window) |
 | DeepSeek V4 Flash — *fleet fallback* | good | ✅ safe | ~$0.14/$0.28 per M |
 | **DeepSeek V4 Pro** | ★ strongest | ✅ safe | ~$1.74/$3.48 per M |
 

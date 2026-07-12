@@ -71,7 +71,7 @@ flowchart TB
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-**Colours:** green/orange = agents (all nine run **GPT-5.5 via Codex** primary, DeepSeek Flash fallback since 2026-07-05) · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
+**Colours:** green/orange = agents (all nine run **GPT-5.6 via Codex** primary — sol/terra/luna tiers since 2026-07-12 — DeepSeek Flash fallback) · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs.
 
 ---
 
@@ -113,9 +113,9 @@ Nine native profiles in one Hermes install. **Slug** = the functional name (cons
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | GPT-5.5 (Codex) → ds-flash fb |
-| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | GPT-5.5 (Codex) → ds-flash fb |
-| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | GPT-5.5 (Codex) → ds-flash fb |
+| **Derya** | `general` | always-on | Your **main line for anything** — work *and* life: questions, planning, brainstorming, hand-offs. (Themed as founder/creative director.) | GPT-5.6-terra (Codex) → ds-flash fb |
+| **Tuna** | `assistant` | always-on | **Studio + personal** day: calendar, reminders, errands, morning digest covering both | GPT-5.6-terra (Codex) → ds-flash fb |
+| **Doruk** | `researcher` | always-on | Research **any** domain, cites sources; also runs the weekly game-scout cron | GPT-5.6-sol (Codex) → ds-flash fb |
 
 These three you'd want even with no game studio. Start here for day-to-day use.
 
@@ -123,10 +123,10 @@ These three you'd want even with no game studio. Start here for day-to-day use.
 
 | Display | Slug | Mode | What it actually does | Model |
 |---|---|---|---|---|
-| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | GPT-5.5 (Codex) → ds-flash fb |
-| **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | GPT-5.5 (Codex) → ds-flash fb |
-| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | GPT-5.5 (Codex) → ds-flash fb |
-| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | GPT-5.5 (Codex) → ds-flash fb |
+| **Sarp** | `producer` | on-demand | Scores raw game ideas on a rubric (buildable / loop / discovery / monetization); kills hype | GPT-5.6-luna (Codex) → ds-flash fb |
+| **Ozan** | `writer` | on-demand | Drafts & edits — game PRDs, store copy, prose (general writing too) | GPT-5.6-sol (Codex) → ds-flash fb |
+| **Naz** | `coder` | on-demand | Godot/GDScript game code — **the studio's code-runner** (native for Metal GPU + the editor; fenced) | GPT-5.6-sol (Codex) → ds-flash fb |
+| **Nilay** | `marketing` | always-on | Go-to-market: Steam page, wishlists, devlog/social cadence, ASO, outreach (briefs Ozan for copy) | GPT-5.6-luna (Codex) → ds-flash fb |
 
 Names are a (mildly sarcastic) Turkish game-studio crew; each comic persona reinforces its role rather than fighting it. ("On-demand" = usage pattern; all 9 gateways run 24/7 under launchd.)
 
@@ -136,8 +136,8 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 | Display | Slug | Does | Model |
 |---|---|---|---|
-| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | GPT-5.5 (Codex) → ds-flash fb |
-| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | GPT-5.5 (Codex) → ds-flash fb |
+| **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | GPT-5.6-terra (Codex) → ds-flash fb |
+| **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | GPT-5.6-terra (Codex) → ds-flash fb |
 
 `finance` is a fenced shell-capable agent (`code_execution` only, `approvals: manual`, blocklist) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell). See [docs/02 §2.2](docs/02-agents.md). Add more domains (language tutor, home-automation, …) the same way.
 
@@ -173,7 +173,7 @@ Two paid providers do the work; OpenRouter is the cheap aux + the resilience val
 
 ```mermaid
 flowchart LR
-    all9["all 9 agents + cron jobs"]:::codex -->|primary| Codex["Codex OAuth · gpt-5.5<br/>ChatGPT sub · centralized root auth"]:::codex
+    all9["all 9 agents + cron jobs"]:::codex -->|primary| Codex["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · centralized root auth"]:::codex
     Codex -. "fallback (quota window / outage)" .-> DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::mini
     Honcho["Honcho memory workers"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
@@ -182,7 +182,7 @@ flowchart LR
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
-- **GPT-5.5 via Codex OAuth** (ChatGPT sub — accepted gray-area, patron decision 2026-07-05) — **primary for all nine agents and their crons**. One credential, centralized in the root `~/.hermes/auth.json`, serves the whole fleet. Reasoning efforts tiered per agent: `xhigh` coder/researcher/writer · `medium` general/assistant · `low` the rest.
+- **GPT-5.6 via Codex OAuth** (ChatGPT sub — accepted gray-area, patron decision 2026-07-05; 5.6 tiers since 2026-07-12) — **primary for all nine agents and their crons**. Capability tier follows effort tier: `gpt-5.6-sol` + `xhigh` coder/researcher/writer · `gpt-5.6-terra` + `medium` general/assistant/finance/health · `gpt-5.6-luna` + `low` marketing/producer. One credential, centralized in the root `~/.hermes/auth.json`, serves the whole fleet.
 - **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — **the fallback on every profile**: quota-window exhaustion or a Codex outage degrades the fleet to Flash instead of stalling it.
 - **OpenRouter** (~$10 credit) — aux tasks and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo).
 

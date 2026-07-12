@@ -11,12 +11,12 @@ flowchart TB
             general["Derya · general<br/>creative director · DeepSeek"]:::mini
             researcher["Doruk · researcher<br/>market scout · DeepSeek"]:::mini
             assistant["Tuna · assistant<br/>studio manager · DeepSeek"]:::mini
-            marketing["Nilay · marketing<br/>community & go-to-market · GPT-5.5"]:::mini
+            marketing["Nilay · marketing<br/>community & go-to-market · GPT-5.6-luna"]:::mini
         end
         subgraph demand["on-demand"]
-            coder["Naz · coder<br/>lead programmer · Godot/Metal · GPT-5.5 xhigh"]:::codex
-            writer["Ozan · writer<br/>narrative designer · GPT-5.5 xhigh"]:::codex
-            producer["Sarp · producer<br/>product lead · GPT-5.5"]:::mini
+            coder["Naz · coder<br/>lead programmer · Godot/Metal · GPT-5.6-sol xhigh"]:::codex
+            writer["Ozan · writer<br/>narrative designer · GPT-5.6-sol xhigh"]:::codex
+            producer["Sarp · producer<br/>product lead · GPT-5.6-luna"]:::mini
         end
     end
     classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
@@ -28,7 +28,7 @@ flowchart TB
 
 ## 2. Agent roster
 
-Nine agents, all native **profiles** in one Hermes install on the **Mac Mini M4** — all nine gateways run 24/7 under launchd (idle gateways are cheap since inference is remote; the watchdog watches all nine). The always-on / on-demand grouping below describes each agent's **usage pattern**, not whether its gateway is running. Models: **GPT-5.5 via Codex ×9** (fleet-wide since 2026-07-05, DeepSeek V4 Flash fallback, efforts tiered per role — [docs/04](04-models.md)). The **seven** below form the game-studio crew; a **two-agent personal tier** (`finance`, `health`) joins them in §2.2. Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
+Nine agents, all native **profiles** in one Hermes install on the **Mac Mini M4** — all nine gateways run 24/7 under launchd (idle gateways are cheap since inference is remote; the watchdog watches all nine). The always-on / on-demand grouping below describes each agent's **usage pattern**, not whether its gateway is running. Models: **GPT-5.6 via Codex ×9** (sol/terra/luna tiers since 2026-07-12, DeepSeek V4 Flash fallback, efforts tiered per role — [docs/04](04-models.md)). The **seven** below form the game-studio crew; a **two-agent personal tier** (`finance`, `health`) joins them in §2.2. Each has a functional **slug** (its profile name and `~/.hermes/profiles/<slug>/` directory) and a **display name** — a member of the studio crew, what shows in Telegram. Slugs stay constant and machine-readable; the names + personas are cosmetic and reinforce each role. The crew is a (mildly sarcastic) game studio: a founder, an analyst, a producer, a writer, a programmer, an office manager, and a sysadmin.
 
 ### Always-on agents (4)
 
@@ -63,12 +63,12 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **GPT-5.5 via Codex OAuth primary** (fleet-wide since 2026-07-05, effort `medium` for Derya), **DeepSeek V4 Flash fallback** — quota exhaustion degrades to Flash instead of stalling ([docs/04](04-models.md)).
+- **Model:** **GPT-5.6-terra via Codex OAuth primary** (fleet-wide since 2026-07-05, effort `medium` for Derya), **DeepSeek V4 Flash fallback** — quota exhaustion degrades to Flash instead of stalling ([docs/04](04-models.md)).
   ```yaml
   # ~/.hermes/profiles/general/config.yaml (live)
   model:
     provider: openai-codex
-    default: gpt-5.5
+    default: gpt-5.6-terra
   fallback_providers:
     - provider: deepseek
       model: deepseek-v4-flash
