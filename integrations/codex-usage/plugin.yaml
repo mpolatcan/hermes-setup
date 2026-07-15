@@ -1,0 +1,4 @@
+name: codex-usage
+version: "1.1.0"
+description: "Telegram /codex_usage command backed by the official Codex rate-limit RPC"
+kind: standalone

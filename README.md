@@ -224,6 +224,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
 15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
+16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
 
 ---
 
@@ -240,6 +241,9 @@ cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bo
 #    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
 # 4. web stack — TinyFish (primary, OAuth) + SearXNG (fallback), all agents:
 ./scripts/wire-tinyfish.sh     # per-profile OAuth (own browser consent each — tokens are NOT shared) + SearXNG fallback + restart
+# 5. fleet-wide Telegram /codex_usage command (dry-run, then apply; no restart performed):
+python3 integrations/codex-usage/install.py
+python3 integrations/codex-usage/install.py --apply
 ```
 
 `bot-tokens.env` is the **single entry point for all secrets** — the script fans them out per profile. It's gitignored; keep it `chmod 600` and don't edit it in a stale GUI buffer.
@@ -273,7 +277,9 @@ flowchart TB
     root --> readme["README.md · this file"]:::doc
     root --> docs["docs/ · 01-13<br/>plan by concern + live runbook"]:::doc
     root --> scripts["scripts/"]:::svc
-    root --> integrations["integrations/<br/>native Linear platform adapter"]:::svc
+    root --> integrations["integrations/<br/>Linear adapter + Codex usage command"]:::svc
+    integrations --> lin["linear-hermes-platform/<br/>native Linear platform adapter"]:::svc
+    integrations --> cu["codex-usage/<br/>fleet-wide /codex_usage plugin + installer"]:::svc
     scripts --> sb["setup-bots.sh<br/>configure 9 bots + fan secrets to .env"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
@@ -285,7 +291,7 @@ flowchart TB
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), Derya's deployed Linear plugin + OAuth/signing credentials + SQLite ledger, `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh` + `backup-state.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`, `ai.hermes.backup-state`, `ai.hermes.backup-honcho`).
+State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), Derya's deployed Linear plugin + OAuth/signing credentials + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh` + `backup-state.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`, `ai.hermes.backup-state`, `ai.hermes.backup-honcho`).
 
 ---
 
