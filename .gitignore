@@ -5,5 +5,9 @@
 # Local Hermes data dirs, if ever created inside the repo
 .hermes-*/
 
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+
 # macOS
 .DS_Store

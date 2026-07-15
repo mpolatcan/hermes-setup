@@ -12,8 +12,9 @@ The fleet is **not** game-studio-only. It's a **general-purpose personal assista
 
 ```mermaid
 flowchart TB
-    you["📱 You · Telegram (9 bots)"]:::user
+    you["📱 You · Telegram (9 bots)<br/>+ Linear (Derya)"]:::user
     you <--> tg(["Telegram cloud"]):::net
+    you <--> linear(["Linear Agent Sessions"]):::net
 
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on · auto-login"]
         direction TB
@@ -43,6 +44,8 @@ flowchart TB
     end
 
     tg <--> hermes
+    linear <--> funnel["Tailscale Funnel<br/>HMAC webhook"]:::net
+    funnel <--> Derya
     gen -. shared memory .-> Honcho
     studio -. shared memory .-> Honcho
     personal -. shared memory .-> Honcho
@@ -143,6 +146,12 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 **🔍 Web stack — all 9 agents:** every agent searches via **TinyFish** (MCP, OAuth 2.1 PKCE — *no API key*) with **SearXNG** as automatic fallback. None is walled off from the web and search never hard-fails; an outage on either side degrades to the other. Wired uniformly by `scripts/wire-tinyfish.sh` — [docs/08](docs/08-web-search.md).
 
+### Linear control plane — Derya
+
+Linear is the human-visible command and discussion surface for Derya; Hermes remains the conversation and execution engine. A profile-local native platform plugin receives signed Agent Session webhooks on `127.0.0.1:8787`, converts them to Hermes `MessageEvent`s, and writes thought/response/error activities back through Linear GraphQL. Tailscale Funnel is the only public transport and proxies to loopback through an isolated userspace sidecar, leaving the App Store Tailscale session used by Remote Desktop untouched.
+
+The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`. Delegation, typed follow-up prompts, responses, and Stop hard-cancel are live-tested. Source, deployment, security, rollback, and test instructions: [`integrations/linear-hermes-platform/README.md`](integrations/linear-hermes-platform/README.md).
+
 ---
 
 ## 3 · How the studio agents chain — the game-dev pipeline
@@ -214,6 +223,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
+15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
 
 ---
 
@@ -251,7 +261,7 @@ flowchart LR
 - **Phase B ✅** — all nine agents live; self-hosted Honcho shared memory (cross-agent recall proven); **all 9 agents on TinyFish (OAuth) primary + SearXNG fallback** (`mcp test` → Connected, 17 tools each) — ⚠️ **OAuth tokens are per-profile, never copied**: each profile runs its own `mcp add` consent (shared tokens get revoked by refresh-token rotation, [docs/08 §10.2 Step 4](docs/08-web-search.md)); OpenRouter fallback chains live-tested; `coder` fenced.
 - **Phase C ⏳** — when you start a real game: a picked idea → lean PRD (Ozan) → Godot prototype (Naz) on the Mini's GPU → go-to-market (Nilay).
 
-**Pending follow-ups (all pull, none blocking):** Naz `approvals: manual`→`smart` after a week · Sarp weekly score-cron once digests accumulate.
+**Pending follow-ups (all pull, none blocking):** Sarp weekly score-cron once digests accumulate.
 
 ---
 
@@ -263,6 +273,7 @@ flowchart TB
     root --> readme["README.md · this file"]:::doc
     root --> docs["docs/ · 01-13<br/>plan by concern + live runbook"]:::doc
     root --> scripts["scripts/"]:::svc
+    root --> integrations["integrations/<br/>native Linear platform adapter"]:::svc
     scripts --> sb["setup-bots.sh<br/>configure 9 bots + fan secrets to .env"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
@@ -274,7 +285,7 @@ flowchart TB
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh` + `backup-state.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`, `ai.hermes.backup-state`, `ai.hermes.backup-honcho`).
+State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), Derya's deployed Linear plugin + OAuth/signing credentials + SQLite ledger, `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh` + `backup-state.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`, `ai.hermes.backup-state`, `ai.hermes.backup-honcho`).
 
 ---
 
@@ -282,6 +293,6 @@ State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent'
 
 - **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local, `chmod 600`.
 - **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Three agents can run code:** `coder` (game-dev shell), `general`/Derya (terminal + Python + `file` — the **fleet admin**, highest-privilege: always-on, web-facing, shell), and `finance` (fenced Python). Each is fenced with `approvals: manual`, credential stripping, Tirith ([details](docs/09-security.md)). ⚠️ Derya's approval on routine `hermes`/`launchctl` commands is **behavioral (her SOUL), not enforced** — see docs/09 §13.7a.
-- **Telegram is the front door** and needs no open ports (gateways connect outbound). Don't expose the optional HTTP API / dashboard publicly — put it behind Tailscale ([details](docs/06-networking.md)).
-- **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`; nothing off-box.
+- **Telegram is the default front door** and needs no open ports (gateways connect outbound). Derya additionally accepts Linear Agent Session webhooks through a dedicated Tailscale Funnel route; the native adapter still binds only `127.0.0.1:8787` and validates HMAC, replay age, organization identity and rate limits. Don't expose the optional Hermes HTTP API/dashboard publicly ([details](docs/06-networking.md)).
+- **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`, Linear adapter `127.0.0.1:8787`; Funnel is the narrow authenticated exception, not a LAN listener.
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).
