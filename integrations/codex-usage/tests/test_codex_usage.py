@@ -36,7 +36,7 @@ class UsageTests(unittest.TestCase):
         rendered = usage.render_usage(data)
         self.assertIn("## Codex Usage — Official", rendered)
         self.assertIn("| Plan | `prolite` |", rendered)
-        self.assertIn("| 7 günlük kullanım | %13 |", rendered)
+        self.assertIn("| 7-day usage | %13 |", rendered)
         self.assertNotIn("must-not-appear", rendered)
 
     def test_binary_override(self):

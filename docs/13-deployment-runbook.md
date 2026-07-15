@@ -63,7 +63,7 @@ flowchart LR
 
 - [x] Same pattern, profile `general` — Derya SOUL, MiniMax M3 (Codex fallback deferred to Phase B with Codex creds). Gateway under launchd, answered in 10.5s.
 - [x] `general` in the watchdog's `EXPECTED` list from day one.
-- [x] **Per-profile state test** (docs/05 Phase 2) — PASSED 2026-06-07: memory note given to Doruk; Derya asked → "Söylemedin bana — bilmiyorum" (doesn't know it). State isolation confirmed.
+- [x] **Per-profile state test** (docs/05 Phase 2) — PASSED 2026-06-07: memory note given to Doruk; Derya asked → "You did not tell me, so I do not know." State isolation confirmed.
 - [x] **Independent-lifecycle test**: passed implicitly during the watchdog test — Derya answered while researcher was booted out.
 
 ## Step 5 — Game-scout cron

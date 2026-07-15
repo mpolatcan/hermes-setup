@@ -1,78 +1,82 @@
 # Linear–Hermes Native Platform Adapter
 
-Hermes Gateway için native Linear Agent Session platform plugin’i. Linear, Derya’nın görev/tartışma yüzeyi; Hermes ise konuşma ve execution katmanıdır. Ayrı bridge daemon veya Hermes built-in webhook route’u kullanılmaz.
+A native Linear Agent Session platform plugin for Hermes Gateway. Linear is Derya's task and discussion surface; Hermes remains the conversation and execution layer. No separate bridge daemon or Hermes built-in webhook route is used.
 
-## Mimari
+## Architecture
 
 ```mermaid
 flowchart LR
-    L["Linear Agent Session"] -->|"HTTPS webhook + HMAC"| F["Tailscale Funnel"]
-    F -->|"loopback proxy"| A["Hermes native Linear adapter\n127.0.0.1:8787"]
-    A -->|"MessageEvent"| G["Hermes Gateway / Derya"]
+    L["Linear Agent Session"]:::net -->|"HTTPS webhook + HMAC"| F["Tailscale Funnel"]:::net
+    F -->|"loopback proxy"| A["Hermes native Linear adapter<br/>127.0.0.1:8787"]:::svc
+    A -->|"MessageEvent"| G["Hermes Gateway · Derya"]:::mini
     G -->|"AgentActivity GraphQL"| L
+
+    classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
 ```
 
-- Plugin kaydı: Hermes `ctx.register_platform()` API’si.
-- Public transport: izole userspace `tailscaled` üzerinden Tailscale Funnel.
-- Listener: yalnız `127.0.0.1:8787`.
+- Plugin registration: Hermes `ctx.register_platform()` API.
+- Public transport: Tailscale Funnel through an isolated userspace `tailscaled` sidecar.
+- Listener: `127.0.0.1:8787` only.
 - Endpoint: `POST /linear/webhook`.
-- Health: `GET /health`.
-- Hermes core/Homebrew dosyaları değiştirilmez.
+- Health check: `GET /health`.
+- Hermes core and Homebrew-managed files are never modified.
 
-## Güvenlik ve teslimat garantileri
+## Security and delivery guarantees
 
-- `Linear-Signature`: exact raw body üzerinde HMAC-SHA256.
-- Replay koruması: `webhookTimestamp`, varsayılan ±60 saniye.
-- Tenant pinning: OAuth kimliğinden alınan organization ID ile webhook organization ID eşleşir.
-- İmza rotasyonu: `LINEAR_WEBHOOK_SECRET` ve isteğe bağlı `LINEAR_WEBHOOK_SECRET_PREVIOUS`.
-- Pre-auth invalid-signature rate limit ve Hermes platform rate limit birbirinden ayrıdır.
-- Body boyut sınırı varsayılan 256 KiB.
-- SQLite claim/done ledger; crash sonrası stale processing claim yeniden alınabilir.
-- Semantic event anahtarı:
+- `Linear-Signature`: HMAC-SHA256 over the exact raw request body.
+- Replay protection: `webhookTimestamp`, ±60 seconds by default.
+- Tenant pinning: the webhook organization ID must match the organization ID obtained from the OAuth identity.
+- Signature rotation: `LINEAR_WEBHOOK_SECRET` plus optional `LINEAR_WEBHOOK_SECRET_PREVIOUS`.
+- The pre-auth invalid-signature rate limiter is separate from the authenticated Hermes platform rate limiter.
+- Default request-body limit: 256 KiB.
+- SQLite claim/done ledger; stale processing claims can be reclaimed after a crash.
+- Semantic event keys:
   - `created`: action + Agent Session ID
   - `prompted`: action + Agent Session ID + Agent Activity ID
-  - fallback: raw body hash
-- Linear `webhookId` subscription metadata’sıdır; event kimliği olarak kullanılmaz.
-- Linear issue/comment/prompt içeriği güvenilir talimat değil, kullanıcı girdisi olarak etiketlenir.
+  - fallback: raw-body hash
+- Linear `webhookId` is subscription metadata and is not used as event identity.
+- Linear issue, comment, and prompt content is labeled as untrusted user input, never as trusted instructions.
 
-## Dosyalar
+## Files
 
-| Yol | Görev |
+| Path | Purpose |
 |---|---|
-| `adapter.py` | Native platform lifecycle, webhook doğrulama, prompt/stop routing |
-| `linear_client.py` | OAuth refresh ve Linear GraphQL Agent Activity yazımı |
-| `ledger.py` | Kalıcı semantic dedup ledger |
-| `plugin.yaml` | Hermes plugin manifesti |
-| `scripts/install_linear_oauth.py` | PKCE S256 app-user OAuth kurulumu |
-| `tests/test_native_platform.py` | Güvenlik, OAuth, prompt, stop ve dedup testleri |
+| `adapter.py` | Native platform lifecycle, webhook validation, and prompt/stop routing |
+| `linear_client.py` | OAuth refresh and Linear GraphQL Agent Activity writes |
+| `ledger.py` | Persistent semantic-dedup ledger |
+| `plugin.yaml` | Hermes plugin manifest |
+| `scripts/install_linear_oauth.py` | PKCE S256 app-user OAuth installer |
+| `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 
-## Credential dosyaları
+## Credential files
 
-Gerçek credential’lar repo dışında tutulur ve `0600` olmalıdır:
+Real credentials stay outside the repository and must use mode `0600`:
 
 ```text
 /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-bridge.env
 /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-oauth.json
 ```
 
-Signing-secret dosyası:
+Signing-secret file:
 
 ```dotenv
 LINEAR_WEBHOOK_SECRET=<current-secret>
 LINEAR_WEBHOOK_SECRET_PREVIOUS=<previous-secret-during-rotation-only>
 ```
 
-OAuth dosyası installer tarafından atomik olarak yazılır. Access/refresh token’ları loglama veya repoya kopyalama.
+The installer writes the OAuth file atomically. Never log access or refresh tokens, and never copy them into the repository.
 
-## OAuth kurulumu
+## OAuth setup
 
-Linear app ayarlarında redirect URI:
+Configure this redirect URI in the Linear application:
 
 ```text
 http://localhost:3000/oauth/callback
 ```
 
-Client ID’yi clipboard’a kopyaladıktan sonra:
+Copy the Client ID to the clipboard, then run:
 
 ```bash
 /opt/homebrew/Cellar/hermes-agent/2026.7.1/libexec/bin/python \
@@ -80,11 +84,11 @@ Client ID’yi clipboard’a kopyaladıktan sonra:
   --client-id-from-clipboard
 ```
 
-Installer PKCE S256 kullanır, browser consent açar, clipboard’ı temizler, app-user kimliğini doğrular ve OAuth JSON’unu `0600` yazar.
+The installer uses PKCE S256, opens browser consent, clears the clipboard, verifies the app-user identity, and writes the OAuth JSON file with mode `0600`.
 
-## Hermes config
+## Hermes configuration
 
-`~/.hermes/profiles/general/config.yaml` içindeki platform bölümü:
+Platform section in `~/.hermes/profiles/general/config.yaml`:
 
 ```yaml
 gateway:
@@ -105,17 +109,17 @@ gateway:
         preauth_rate_limit_per_minute: 120
 ```
 
-Plugin source runtime’da profile-local plugin dizinine deploy edilir:
+The plugin source is deployed to the profile-local runtime directory:
 
 ```text
 /Users/mutlupolatcan/.hermes/profiles/general/plugins/linear-hermes-platform/
 ```
 
-Config/plugin değişikliğinden sonra gateway restart gerekir. Derya/General için varsayılan güvenli operasyon Mutlu’nun Telegram’dan `/restart` komutudur.
+A gateway restart is required after configuration or plugin changes. For Derya/general, the default safe operation is Mutlu issuing `/restart` from Telegram.
 
 ## Funnel
 
-Funnel, App Store Tailscale oturumundan izole userspace sidecar’da çalışır; Remote Desktop bağlantısı etkilenmez.
+Funnel runs in a userspace sidecar isolated from the App Store Tailscale session, so Remote Desktop remains unaffected.
 
 Public endpoint:
 
@@ -123,16 +127,16 @@ Public endpoint:
 https://hermes-funnel.tail7c4d1d.ts.net/linear/webhook
 ```
 
-Health:
+Health checks:
 
 ```bash
 curl -fsS http://127.0.0.1:8787/health
 curl -fsS https://hermes-funnel.tail7c4d1d.ts.net/health
 ```
 
-## Test
+## Tests
 
-Hermes bundled Python kullanılır; sistem Python’unda gateway modülleri bulunmayabilir:
+Use the Hermes-bundled Python; the system Python may not include gateway modules:
 
 ```bash
 cd /Users/mutlupolatcan/Desktop/hermes-setup
@@ -141,25 +145,25 @@ cd /Users/mutlupolatcan/Desktop/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Beklenen: `15/15 OK`.
+Expected result: `15/15 OK`.
 
-Test kapsamı: invalid signature, replay, organization mismatch, semantic dedup, legacy ledger compatibility, OAuth token refresh/rotation, typed `agentActivity.content.body`, delegation, follow-up prompt, Stop hard-cancel ve session lock release.
+Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, and session-lock release.
 
-## Canlı kabul kriterleri
+## Live acceptance criteria
 
-1. Delegation `created` webhook’u `accepted` döner.
-2. Linear’da thought ve Hermes response activity görünür.
-3. Follow-up prompt Derya’ya ulaşır ve response Linear’a döner.
-4. Stop sinyali aktif Hermes task’ını `/stop` ile keser.
-5. Session `complete` olur; ek error activity ve process kalıntısı oluşmaz.
-6. Aynı semantic event retry edildiğinde duplicate execution oluşmaz.
+1. A delegation `created` webhook returns `accepted`.
+2. Thought and Hermes response activities appear in Linear.
+3. A follow-up prompt reaches Derya and the response returns to Linear.
+4. A Stop signal interrupts the active Hermes task through `/stop`.
+5. The session becomes `complete`, with no extra error activity or residual process.
+6. Retrying the same semantic event does not create duplicate execution.
 
 ## Rollback
 
-1. Linear app webhook’unu devre dışı bırak.
-2. Funnel route’unu kapat.
-3. `gateway.platforms.linear.enabled: false` yap.
-4. Mutlu Telegram’dan `/restart` çalıştırır.
-5. Rollback kopyasını profile-local runtime backup dizininden geri yükle.
+1. Disable the Linear application webhook.
+2. Disable the Funnel route.
+3. Set `gateway.platforms.linear.enabled: false`.
+4. Mutlu issues `/restart` from Telegram.
+5. Restore the rollback copy from the profile-local runtime backup directory.
 
-Rollbackte App Store Tailscale/Remote Desktop sürecine dokunulmaz. Eski ayrı bridge daemon ve `127.0.0.1:8644` built-in webhook route’u geri açılmaz; yalnız açık bir mimari kararla geri getirilebilir.
+Rollback never touches the App Store Tailscale or Remote Desktop process. The former bridge daemon and the built-in webhook route on `127.0.0.1:8644` remain disabled unless a separate architectural decision explicitly restores them.

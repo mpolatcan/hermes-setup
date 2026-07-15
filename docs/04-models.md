@@ -10,12 +10,11 @@
 
 ```mermaid
 flowchart LR
-    all9["all 9 agents + crons"] --> codex56["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · accepted-risk"]
-    codex56 -. "fallback (quota/outage)" .-> ds2["DeepSeek · V4 Flash<br/>API key · pay-per-token"]
+    all9["all 9 agents + crons"]:::codex --> codex56["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · accepted-risk"]:::codex
+    codex56 -. "fallback (quota/outage)" .-> ds2["DeepSeek · V4 Flash<br/>API key · pay-per-token"]:::ds
+
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
-    class all9,codex56 codex
-    class ds2 ds
 ```
 
 - **Reasoning efforts tiered** (`agent.reasoning_effort`): `xhigh` coder/researcher/writer · `medium` general/assistant/finance/health · `low` marketing/producer. (Docs previously listed finance/health as `low`; live configs have been `medium` — synced 2026-07-12.)

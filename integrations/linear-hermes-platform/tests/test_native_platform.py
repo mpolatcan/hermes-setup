@@ -318,7 +318,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
         self.assertEqual(
             self.adapter._linear.calls,
-            [("session-failure", "error", "Hermes görevi işlerken hata oluştu.")],
+            [("session-failure", "error", "Hermes encountered an error while processing the task.")],
         )
 
 

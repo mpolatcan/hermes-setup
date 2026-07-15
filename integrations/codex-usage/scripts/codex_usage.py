@@ -39,7 +39,7 @@ def _codex_binary() -> str:
     for candidate in (real_home / ".local/bin/codex", Path("/opt/homebrew/bin/codex")):
         if candidate.exists():
             return str(candidate)
-    raise FileNotFoundError("Codex CLI bulunamadı; CODEX_BIN ayarla veya codex'i PATH'e ekle")
+    raise FileNotFoundError("Codex CLI not found; set CODEX_BIN or add codex to PATH")
 
 
 def _codex_home() -> str:
@@ -61,26 +61,26 @@ def _fmt_until(ts: int | float | None) -> str:
     minutes, seconds = divmod(rem, 60)
     parts: list[str] = []
     if days:
-        parts.append(f"{days} gün")
+        parts.append(f"{days}d")
     if hours:
-        parts.append(f"{hours} saat")
+        parts.append(f"{hours}h")
     if minutes:
-        parts.append(f"{minutes} dk")
+        parts.append(f"{minutes}m")
     if not parts:
-        parts.append(f"{seconds} sn")
+        parts.append(f"{seconds}s")
     return " ".join(parts)
 
 
 def _window_label(limit: dict) -> str:
     minutes = (limit or {}).get("windowDurationMins")
     if not isinstance(minutes, (int, float)) or minutes <= 0:
-        return "Kullanım"
+        return "Usage"
     minutes = int(minutes)
     if minutes % 1440 == 0:
-        return f"{minutes // 1440} günlük"
+        return f"{minutes // 1440}-day"
     if minutes % 60 == 0:
-        return f"{minutes // 60} saatlik"
-    return f"{minutes} dakikalık"
+        return f"{minutes // 60}-hour"
+    return f"{minutes}-minute"
 
 
 def _fmt_percent(limit: dict) -> str:
@@ -167,24 +167,24 @@ def render_usage(data: dict) -> str:
     lines = [
         "## Codex Usage — Official",
         "",
-        "| Alan | Değer |",
+        "| Field | Value |",
         "|---|---:|",
         f"| Plan | `{rate.get('planType') or '?'}` |",
-        f"| Limit durumu | {'doldu' if rate.get('rateLimitReachedType') else 'uygun'} |",
-        f"| {_window_label(primary)} kullanım | {_fmt_percent(primary)} |",
+        f"| Limit status | {'reached' if rate.get('rateLimitReachedType') else 'available'} |",
+        f"| {_window_label(primary)} usage | {_fmt_percent(primary)} |",
         f"| {_window_label(primary)} reset | {_fmt_until(primary.get('resetsAt'))} |",
     ]
     if secondary:
         lines.extend([
-            f"| {_window_label(secondary)} kullanım | {_fmt_percent(secondary)} |",
+            f"| {_window_label(secondary)} usage | {_fmt_percent(secondary)} |",
             f"| {_window_label(secondary)} reset | {_fmt_until(secondary.get('resetsAt'))} |",
         ])
-    lines.append(f"| Reset hakkı | {reset_credits.get('availableCount', 0)} |")
+    lines.append(f"| Reset credits | {reset_credits.get('availableCount', 0)} |")
 
     by_id = data.get("rateLimitsByLimitId") or {}
     extras = [(key, item) for key, item in by_id.items() if key != "codex"]
     if extras:
-        lines.extend(["", "## Ek limitler", "", "| Limit | Pencere | Kullanım | Reset |", "|---|---|---:|---|"])
+        lines.extend(["", "## Additional limits", "", "| Limit | Window | Usage | Reset |", "|---|---|---:|---|"])
         for key, item in extras:
             name = item.get("limitName") or key
             for limit in (item.get("primary") or {}, item.get("secondary") or {}):
@@ -200,8 +200,8 @@ def main() -> int:
         print(render_usage(_codex_rpc_rate_limits()))
         return 0
     except Exception as exc:
-        print(f"❌ Codex usage alınamadı: {type(exc).__name__}: {exc}")
-        print(f"Yeniden giriş: `{_codex_binary()} login`")
+        print(f"❌ Codex usage could not be retrieved: {type(exc).__name__}: {exc}")
+        print(f"Sign in again: `{_codex_binary()} login`")
         print(f"Dashboard: {DASHBOARD}")
         return 1
 

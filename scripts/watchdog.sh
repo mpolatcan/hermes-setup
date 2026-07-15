@@ -1,6 +1,6 @@
 #!/bin/bash
-# Watchdog — 5 dk'da bir gateway sağlığını kontrol eder
-# PID değişimlerini takip eder, sadece state değişiminde Telegram'a bildirim
+# Watchdog — checks gateway health every five minutes.
+# Tracks PID changes and notifies Telegram only when state changes.
 
 STATUS_FILE="/tmp/hermes-watchdog-last"
 PREV_FILE="/tmp/hermes-watchdog-prev"

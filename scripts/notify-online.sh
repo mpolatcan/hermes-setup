@@ -23,7 +23,7 @@ TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 echo "[$TIMESTAMP] Online:$ONLINE | Offline:$OFFLINE" >> "$LOG_FILE"
 
 if [ -z "$OFFLINE" ]; then
-    $HERMES -p general send --to telegram "🚀 **Fleet ready:** Tüm 9 profil gateway çalışıyor ✅"
+    $HERMES -p general send --to telegram "🚀 **Fleet ready:** all 9 profile gateways are running ✅"
 else
-    $HERMES -p general send --to telegram "⚠️ **Fleet boot:** Offline:$OFFLINE — kontrol ediliyor..."
+    $HERMES -p general send --to telegram "⚠️ **Fleet boot:** Offline:$OFFLINE — check required"
 fi

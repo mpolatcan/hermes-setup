@@ -49,11 +49,11 @@ class CallbackHandler(BaseHTTPRequestHandler):
         callback_server = cast(CallbackServer, self.server)
         callback_server.result = result
         ok = bool(result.get("code")) and not result.get("error")
-        title = "Linear OAuth tamamlandı" if ok else "Linear OAuth tamamlanamadı"
+        title = "Linear OAuth complete" if ok else "Linear OAuth failed"
         detail = (
-            "Bu pencereyi kapatıp Telegram'a dönebilirsin."
+            "You can close this window and return to Telegram."
             if ok
-            else "Linear consent reddedildi veya OAuth hatası oluştu. Telegram'a dön."
+            else "Linear consent was denied or OAuth failed. Return to Telegram."
         )
         body = (
             "<!doctype html><html><head><meta charset='utf-8'>"

@@ -448,7 +448,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             await self._linear.create_activity(
                 agent_session_id,
                 "thought",
-                "Derya görevi aldı; Hermes işliyor.",
+                "Derya accepted the task; Hermes is processing it.",
             )
         except Exception as exc:
             logger.warning("[linear] Initial thought delivery failed for %s: %s", agent_session_id, exc)
@@ -490,7 +490,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         ):
             return
         await self._wait_for_thought(event.source.chat_id)
-        body = "Hermes görevi işlerken hata oluştu."
+        body = "Hermes encountered an error while processing the task."
         try:
             await self._linear.create_activity(event.source.chat_id, "error", body)
         except Exception as exc:
