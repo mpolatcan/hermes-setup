@@ -430,21 +430,30 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
 
-    async def test_normal_comment_and_project_update_are_context_only(self):
-        comment = self.make_data_payload(
-            event_type="Comment",
-            webhookId="webhook-comment-1",
-            data={"id": "comment-1", "updatedAt": "2026-07-16T10:01:00.000Z", "body": "FYI"},
+    async def test_selected_linear_data_types_are_context_only(self):
+        event_types = (
+            "Comment",
+            "IssueLabel",
+            "Project",
+            "ProjectUpdate",
+            "ProjectLabel",
+            "Attachment",
+            "IssueAttachment",
+            "Reaction",
+            "CommentReaction",
+            "EmojiReaction",
         )
-        project_update = self.make_data_payload(
-            event_type="ProjectUpdate",
-            webhookId="webhook-project-update-1",
-            data={"id": "update-1", "updatedAt": "2026-07-16T10:02:00.000Z", "body": "On track"},
-        )
-        first = await self.adapter._handle_webhook(self.request_for(comment))
-        second = await self.adapter._handle_webhook(self.request_for(project_update))
-        self.assertEqual(json.loads(first.text)["status"], "observed")
-        self.assertEqual(json.loads(second.text)["status"], "observed")
+        for index, event_type in enumerate(event_types):
+            payload = self.make_data_payload(
+                event_type=event_type,
+                webhookId=f"webhook-context-{index}",
+                data={
+                    "id": f"context-{index}",
+                    "updatedAt": f"2026-07-16T10:{index:02d}:00.000Z",
+                },
+            )
+            response = await self.adapter._handle_webhook(self.request_for(payload))
+            self.assertEqual(json.loads(response.text)["status"], "observed", event_type)
         self.assertEqual(self.events, [])
 
     async def test_self_event_is_ignored_and_delegate_removal_cancels_wait(self):

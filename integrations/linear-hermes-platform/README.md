@@ -198,7 +198,7 @@ cd /Users/mutlupolatcan/Desktop/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected result: `30/30 OK`.
+Expected result: `30/30 OK`. `/health` exposes the active `data_event_types` allowlist so a rollout can verify the accepted event contract without inspecting source files.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
@@ -212,7 +212,7 @@ Coverage includes invalid signatures, replay attempts, organization mismatch, se
 6. Retrying the same semantic event does not create duplicate execution.
 7. A blocked delegation returns `awaiting_input`, writes one `elicitation`, and starts no Hermes run.
 8. Completing the final blocker resumes the same session once; replaying the Issue webhook creates no second run.
-9. Ordinary Comment and ProjectUpdate events are observed without an LLM run; self-authored events are ignored.
+9. Selected comments, projects, project updates, issue/project labels, issue attachments, and comment reactions are observed without an LLM run; self-authored events are ignored.
 10. Delegate removal and Stop cancel durable waits; restart recovers an interrupted resume.
 11. A live Derya-to-Doruk mention canary proves that Linear emits the target agent's native Agent Session before cross-agent automation is enabled.
 

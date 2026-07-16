@@ -33,10 +33,28 @@ logger = logging.getLogger(__name__)
 
 _WEBHOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,200}$")
 _ALLOWED_ACTIONS = {"created", "prompted"}
-_DATA_EVENT_TYPES = {
-    "Issue", "IssueRelation", "Comment", "IssueLabel", "Project", "ProjectUpdate",
-    "PermissionChange", "AppUserNotification", "OAuthApp",
+_CONTROL_EVENT_TYPES = {
+    "Issue",
+    "IssueRelation",
+    "PermissionChange",
+    "AppUserNotification",
+    "OAuthApp",
 }
+_CONTEXT_EVENT_TYPES = {
+    "Comment",
+    "IssueLabel",
+    "Project",
+    "ProjectUpdate",
+    "ProjectLabel",
+    # Linear's UI/docs use human labels while payload model names can vary
+    # across webhook generations. Accept canonical names and known aliases.
+    "Attachment",
+    "IssueAttachment",
+    "Reaction",
+    "CommentReaction",
+    "EmojiReaction",
+}
+_DATA_EVENT_TYPES = _CONTROL_EVENT_TYPES | _CONTEXT_EVENT_TYPES
 
 
 def _read_env_file(path: str) -> dict[str, str]:
@@ -382,9 +400,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.4.2",
+                "version": "0.5.0",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
+                    "data_event_types": sorted(_DATA_EVENT_TYPES),
                     "dependency_wait": self._dependency_wait_enabled,
                     "status_writeback": self._status_writeback_enabled,
                 },
@@ -581,7 +600,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         raw: bytes,
         webhook_id: str,
     ) -> web.Response:
-        """Observe data changes without turning ordinary comments into LLM runs."""
+        """Observe control/context changes without turning them into LLM runs."""
         if self._linear is None or self._ledger is None:
             return web.json_response({"status": "unavailable"}, status=503)
         delivery_key = _delivery_key(payload, raw)
