@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from aiohttp import web
@@ -235,6 +236,12 @@ class PromptTests(unittest.TestCase):
 
 
 class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
+    def test_activity_uuid_is_deterministic_and_v4_shaped(self):
+        first = self.adapter._activity_uuid("thought:delivery-8")
+        second = self.adapter._activity_uuid("thought:delivery-8")
+        self.assertEqual(first, second)
+        self.assertEqual(uuid.UUID(first).version, 4)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         db_path = str(Path(self.temp.name) / "ledger.sqlite3")

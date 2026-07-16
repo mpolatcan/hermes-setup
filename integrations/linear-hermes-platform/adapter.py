@@ -373,7 +373,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.4.0",
+                "version": "0.4.1",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "dependency_wait": self._dependency_wait_enabled,
@@ -718,7 +718,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _activity_uuid(item_key: str) -> str:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"linear-hermes:{item_key}"))
+        # Linear accepts client-generated activity IDs but its live validator
+        # requires UUIDv4-shaped values. Derive the bytes from the stable item
+        # key, then set RFC 4122 version/variant bits to v4. This preserves
+        # deterministic replay without sending a UUIDv5 value.
+        digest = hashlib.sha256(f"linear-hermes:{item_key}".encode()).digest()[:16]
+        return str(uuid.UUID(bytes=digest, version=4))
 
     def _enqueue_activity(
         self,

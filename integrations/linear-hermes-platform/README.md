@@ -196,7 +196,7 @@ cd /Users/mutlupolatcan/Desktop/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected result: `29/29 OK`.
+Expected result: `30/30 OK`.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
