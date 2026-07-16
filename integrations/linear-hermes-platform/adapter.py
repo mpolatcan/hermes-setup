@@ -147,7 +147,7 @@ def _issue_label(agent_session: dict[str, Any]) -> tuple[str, str, str | None]:
     return identifier, title, str(url) if url else None
 
 
-def build_agent_prompt(payload: dict[str, Any]) -> str:
+def build_agent_prompt(payload: dict[str, Any], *, dependency_resume: bool = False) -> str:
     """Build a minimal, source-labelled prompt from Linear's documented fields."""
     action = str(payload.get("action") or "")
     agent_session = payload.get("agentSession")
@@ -160,6 +160,15 @@ def build_agent_prompt(payload: dict[str, Any]) -> str:
         f"Event action: {action}",
         f"Issue: {identifier} — {title}",
     ]
+    if dependency_resume:
+        lines.extend(
+            [
+                "",
+                "Adapter-verified current dependency state:",
+                "All blocking issues are complete. Resume the delegated task now.",
+                "Linear promptContext is a frozen creation snapshot and may still show stale blocked-by state; do not use that stale state to wait again.",
+            ]
+        )
     if url:
         lines.append(f"Issue URL: {url}")
     if action == "prompted":
@@ -373,7 +382,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.4.1",
+                "version": "0.4.2",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "dependency_wait": self._dependency_wait_enabled,
@@ -527,6 +536,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         payload: dict[str, Any],
         delivery_key: str,
         webhook_id: str,
+        *,
+        dependency_resume: bool = False,
     ) -> MessageEvent:
         action = str(payload.get("action") or "")
         agent_session = payload.get("agentSession")
@@ -540,7 +551,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         actor_id, actor_name = _actor(payload)
         identifier, title, _ = _issue_label(agent_session)
         return MessageEvent(
-            text="/stop" if is_stop else build_agent_prompt(payload),
+            text="/stop" if is_stop else build_agent_prompt(payload, dependency_resume=dependency_resume),
             message_type=MessageType.COMMAND if is_stop else MessageType.TEXT,
             source=self.build_source(
                 chat_id=agent_session_id,
@@ -560,6 +571,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 "linear_agent_session_id": agent_session_id,
                 "linear_issue_id": issue_id,
                 "linear_signal": signal,
+                "linear_dependency_resume": dependency_resume,
             },
         )
 
@@ -654,7 +666,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             return False
         try:
             payload = wait["prompt"]
-            event = self._message_event(payload, wait["delivery_key"], "dependency-resume")
+            event = self._message_event(
+                payload,
+                wait["delivery_key"],
+                "dependency-resume",
+                dependency_resume=True,
+            )
             self._schedule_thought(
                 session_id,
                 wait["issue_id"],

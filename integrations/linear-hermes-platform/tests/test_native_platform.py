@@ -418,6 +418,13 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.events), 1)
         self.assertEqual(self.events[0].source.chat_id, "session-8")
         self.assertTrue(self.events[0].message_id.startswith("linear-event-"))
+        self.assertTrue(self.events[0].metadata["linear_dependency_resume"])
+        self.assertIn("All blocking issues are complete", self.events[0].text)
+        self.assertIn("frozen creation snapshot", self.events[0].text)
+        self.assertLess(
+            self.events[0].text.index("Adapter-verified current dependency state"),
+            self.events[0].text.index("Linear promptContext"),
+        )
         self.assertEqual(self.adapter._ledger.get_wait("session-8")["state"], "resumed")
         duplicate = await self.adapter._handle_webhook(self.request_for(updated))
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
