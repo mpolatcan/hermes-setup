@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import hmac
 import importlib.util
@@ -39,6 +40,7 @@ MessageEvent = adapter_mod.MessageEvent
 MessageType = adapter_mod.MessageType
 ProcessingOutcome = adapter_mod.ProcessingOutcome
 LinearClient = client_mod.LinearClient
+LinearAPIError = client_mod.LinearAPIError
 DeliveryLedger = ledger_mod.DeliveryLedger
 
 
@@ -54,11 +56,27 @@ class FakeRequest:
 class FakeLinear:
     def __init__(self, organization_id: str = "org-1"):
         self.organization_id = organization_id
+        self.actor_id = "agent-derya"
         self.calls: list[tuple[str, str, str]] = []
+        self.blockers: dict[str, list[dict[str, str]]] = {}
 
-    async def create_activity(self, session_id: str, activity_type: str, body: str) -> str:
+    async def create_activity(
+        self,
+        session_id: str,
+        activity_type: str,
+        body: str,
+        *,
+        activity_id: str,
+    ) -> str:
         self.calls.append((session_id, activity_type, body))
-        return f"activity-{len(self.calls)}"
+        return activity_id
+
+    async def update_issue_state(self, issue_id, state_name, state_rank, state_ranks):
+        self.calls.append((issue_id, "state", state_name))
+        return f"state-{state_rank}"
+
+    async def get_open_blockers(self, issue_id):
+        return list(self.blockers.get(issue_id, []))
 
 
 class LedgerTests(unittest.TestCase):
@@ -97,6 +115,84 @@ class LedgerTests(unittest.TestCase):
             ).fetchone()[0]
             self.assertEqual(state, "processing")
             ledger.mark_done("linear-event-legacy", now=101)
+            ledger.close()
+
+    def test_outbox_persists_and_reclaims_in_flight_after_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "outbox.sqlite3")
+            ledger = DeliveryLedger(path, outbox_claim_timeout_seconds=10)
+            self.assertTrue(
+                ledger.enqueue_outbox(
+                    "item-1",
+                    "session-1",
+                    "activity.create",
+                    {"body": "durable"},
+                    now=100,
+                )
+            )
+            claimed = ledger.claim_due_outbox(now=100)
+            self.assertIsNotNone(claimed)
+            ledger.close()
+
+            reopened = DeliveryLedger(path, outbox_claim_timeout_seconds=10)
+            self.assertIsNone(reopened.claim_due_outbox(now=109))
+            reclaimed = reopened.claim_due_outbox(now=111)
+            self.assertEqual(reclaimed.id, "item-1")
+            self.assertEqual(reclaimed.payload, {"body": "durable"})
+            reopened.close()
+
+    def test_outbox_orders_per_session_and_deduplicates_producer_retries(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "outbox.sqlite3"))
+            self.assertTrue(ledger.enqueue_outbox("first", "session-1", "one", {}, now=100))
+            self.assertFalse(ledger.enqueue_outbox("first", "session-1", "one", {}, now=101))
+            self.assertTrue(ledger.enqueue_outbox("second", "session-1", "two", {}, now=100))
+            first = ledger.claim_due_outbox(now=100)
+            self.assertEqual(first.id, "first")
+            ledger.reschedule_outbox("first", "transient", 10, now=100)
+            self.assertIsNone(ledger.claim_due_outbox(now=105))
+            first_retry = ledger.claim_due_outbox(now=110)
+            self.assertEqual(first_retry.id, "first")
+            ledger.mark_outbox_delivered("first", now=110)
+            second = ledger.claim_due_outbox(now=110)
+            self.assertEqual(second.id, "second")
+            ledger.close()
+
+    def test_wait_persists_and_resume_claim_is_exactly_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "wait.sqlite3")
+            payload = {"type": "AgentSessionEvent", "action": "created"}
+            blockers = [{"id": "blocker-7", "identifier": "OPS-7", "state": "Todo"}]
+            ledger = DeliveryLedger(path)
+            ledger.put_wait("session-8", "issue-8", "delivery-8", payload, blockers, now=100)
+            ledger.close()
+
+            reopened = DeliveryLedger(path)
+            wait = reopened.get_wait("session-8")
+            self.assertEqual(wait["state"], "waiting")
+            self.assertEqual(wait["blockers"], blockers)
+            self.assertEqual(reopened.find_waiting_by_blocker("blocker-7")[0]["issue_id"], "issue-8")
+            self.assertTrue(reopened.claim_wait("session-8", now=101))
+            self.assertFalse(reopened.claim_wait("session-8", now=102))
+            reopened.close()
+
+            recovered = DeliveryLedger(path)
+            self.assertEqual(recovered.get_wait("session-8")["state"], "waiting")
+            self.assertIn("Recovered interrupted resume", recovered.get_wait("session-8")["last_error"])
+            self.assertTrue(recovered.claim_wait("session-8", now=103))
+            recovered.mark_wait_resumed("session-8", now=104)
+            self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 2)
+            recovered.close()
+
+    def test_dead_letter_can_be_manually_redriven(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "dead.sqlite3"))
+            ledger.enqueue_outbox("dead-1", "session-1", "activity.create", {}, now=100)
+            ledger.dead_letter_outbox("dead-1", "permanent", now=101)
+            self.assertTrue(ledger.requeue_dead_outbox("dead-1", now=102))
+            self.assertFalse(ledger.requeue_dead_outbox("dead-1", now=103))
+            self.assertEqual(ledger.get_outbox_item("dead-1")["state"], "pending")
             ledger.close()
 
 
@@ -147,6 +243,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._signing_secrets = ("s" * 32, "p" * 32)
         self.adapter._linear = FakeLinear("org-1")
         self.adapter._ledger = DeliveryLedger(db_path)
+        self.adapter._data_change_events_enabled = True
+        self.adapter._dependency_wait_enabled = True
         self.events = []
 
         async def capture(event):
@@ -176,6 +274,20 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
                 "id": "session-1",
                 "issue": {"identifier": "OPS-3", "title": "Native adapter"},
             },
+        }
+        payload.update(overrides)
+        return payload
+
+
+    def make_data_payload(self, event_type="Issue", **overrides):
+        payload = {
+            "type": event_type,
+            "action": "update",
+            "webhookId": "webhook-data-123",
+            "webhookTimestamp": int(time.time() * 1000),
+            "organizationId": "org-1",
+            "actor": {"id": "user-1", "name": "Mutlu"},
+            "data": {"id": "blocker-7", "updatedAt": "2026-07-16T10:00:00.000Z"},
         }
         payload.update(overrides)
         return payload
@@ -261,6 +373,149 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(self.adapter._linear.calls, [])
 
+
+    async def test_blocked_delegation_waits_without_starting_hermes(self):
+        self.adapter._linear.blockers["issue-8"] = [
+            {"id": "blocker-7", "identifier": "OPS-7", "title": "Human approval", "state": "Todo"}
+        ]
+        payload = self.make_payload(
+            webhookId="webhook-wait-123",
+            agentSession={
+                "id": "session-8",
+                "issue": {"id": "issue-8", "identifier": "OPS-8", "title": "Resume me"},
+            },
+        )
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+        self.assertEqual(json.loads(response.text)["status"], "awaiting_input")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.get_wait("session-8")["state"], "waiting")
+        self.assertEqual(self.adapter._linear.calls[0][1], "elicitation")
+        self.assertIn("OPS-7", self.adapter._linear.calls[0][2])
+
+    async def test_blocker_update_resumes_same_session_exactly_once(self):
+        self.adapter._linear.blockers["issue-8"] = [
+            {"id": "blocker-7", "identifier": "OPS-7", "title": "Human approval", "state": "Todo"}
+        ]
+        created = self.make_payload(
+            webhookId="webhook-wait-456",
+            agentSession={
+                "id": "session-8",
+                "issue": {"id": "issue-8", "identifier": "OPS-8", "title": "Resume me"},
+            },
+        )
+        await self.adapter._handle_webhook(self.request_for(created))
+        self.adapter._linear.blockers["issue-8"] = []
+        updated = self.make_data_payload(webhookId="webhook-issue-done-1")
+        response = await self.adapter._handle_webhook(self.request_for(updated))
+        self.assertEqual(json.loads(response.text), {"status": "observed", "resumed": 1})
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.chat_id, "session-8")
+        self.assertTrue(self.events[0].message_id.startswith("linear-event-"))
+        self.assertEqual(self.adapter._ledger.get_wait("session-8")["state"], "resumed")
+        duplicate = await self.adapter._handle_webhook(self.request_for(updated))
+        self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
+        self.assertEqual(len(self.events), 1)
+
+    async def test_normal_comment_and_project_update_are_context_only(self):
+        comment = self.make_data_payload(
+            event_type="Comment",
+            webhookId="webhook-comment-1",
+            data={"id": "comment-1", "updatedAt": "2026-07-16T10:01:00.000Z", "body": "FYI"},
+        )
+        project_update = self.make_data_payload(
+            event_type="ProjectUpdate",
+            webhookId="webhook-project-update-1",
+            data={"id": "update-1", "updatedAt": "2026-07-16T10:02:00.000Z", "body": "On track"},
+        )
+        first = await self.adapter._handle_webhook(self.request_for(comment))
+        second = await self.adapter._handle_webhook(self.request_for(project_update))
+        self.assertEqual(json.loads(first.text)["status"], "observed")
+        self.assertEqual(json.loads(second.text)["status"], "observed")
+        self.assertEqual(self.events, [])
+
+    async def test_self_event_is_ignored_and_delegate_removal_cancels_wait(self):
+        self_event = self.make_data_payload(
+            event_type="Comment",
+            webhookId="webhook-self-comment",
+            actor={"id": "agent-derya", "name": "Derya"},
+            data={"id": "comment-self", "updatedAt": "2026-07-16T10:03:00.000Z"},
+        )
+        ignored = await self.adapter._handle_webhook(self.request_for(self_event))
+        self.assertEqual(json.loads(ignored.text)["status"], "ignored_self")
+
+        self.adapter._ledger.put_wait(
+            "session-cancel",
+            "issue-cancel",
+            "delivery-cancel",
+            self.make_payload(agentSession={"id": "session-cancel", "issue": {"id": "issue-cancel"}}),
+            [{"id": "blocker-7", "identifier": "OPS-7"}],
+        )
+        removal = self.make_data_payload(
+            webhookId="webhook-delegate-remove",
+            data={"id": "issue-cancel", "updatedAt": "2026-07-16T10:04:00.000Z", "delegate": None},
+            updatedFrom={"delegateId": "agent-derya"},
+        )
+        await self.adapter._handle_webhook(self.request_for(removal))
+        self.assertEqual(self.adapter._ledger.get_wait("session-cancel")["state"], "canceled")
+
+    async def test_stop_cancels_wait_before_forwarding_command(self):
+        self.adapter._ledger.put_wait(
+            "session-stop-wait",
+            "issue-stop",
+            "delivery-stop",
+            self.make_payload(agentSession={"id": "session-stop-wait", "issue": {"id": "issue-stop"}}),
+            [{"id": "blocker-7", "identifier": "OPS-7"}],
+        )
+        stopped = self.make_payload(
+            webhookId="webhook-stop-wait",
+            action="prompted",
+            agentActivity={"id": "activity-stop-wait", "body": "stop", "signal": "stop"},
+            agentSession={
+                "id": "session-stop-wait",
+                "issue": {"id": "issue-stop", "identifier": "OPS-8", "title": "Stop me"},
+            },
+        )
+        await self.adapter._handle_webhook(self.request_for(stopped))
+        self.assertEqual(self.adapter._ledger.get_wait("session-stop-wait")["state"], "canceled")
+        self.assertEqual(self.events[-1].text, "/stop")
+
+
+    async def test_inbox_unassign_cancels_wait_and_oauth_revoke_degrades_health(self):
+        self.adapter._linear.blockers["issue-8"] = [
+            {"id": "blocker-7", "identifier": "OPS-7", "title": "Blocker", "state": {"type": "started"}}
+        ]
+        created = self.make_payload()
+        created["agentSession"]["issue"]["id"] = "issue-8"
+        response = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.adapter._ledger.get_wait("session-1")["state"], "waiting")
+
+        notification = {
+            "type": "AppUserNotification",
+            "action": "issueUnassignedFromYou",
+            "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "organizationId": "org-1",
+            "oauthClientId": "oauth-1",
+            "appUserId": "agent-derya",
+            "notification": {"id": "notification-1", "issueId": "issue-8"},
+        }
+        response = await self.adapter._handle_webhook(self.request_for(notification))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.adapter._ledger.get_wait("session-1")["state"], "canceled")
+
+        revoked = self.make_data_payload(
+            "OAuthApp",
+            action="revoked",
+            data={"id": "oauth-1", "updatedAt": "2026-07-16T10:00:01.000Z"},
+        )
+        response = await self.adapter._handle_webhook(self.request_for(revoked))
+        self.assertEqual(response.status, 200)
+        self.adapter._running = True
+        health = await self.adapter._health(None)
+        body = json.loads(health.body)
+        self.assertEqual(body["status"], "degraded")
+        self.assertTrue(body["oauth_revoked"])
+
     async def test_invalid_signature_stale_and_wrong_organization_fail_closed(self):
         invalid = await self.adapter._handle_webhook(
             self.request_for(self.make_payload(webhookId="webhook-invalid-1"), valid_signature=False)
@@ -318,8 +573,130 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
         self.assertEqual(
             self.adapter._linear.calls,
-            [("session-failure", "error", "Hermes encountered an error while processing the task.")],
+            [(
+                "session-failure",
+                "error",
+                "Hermes encountered an error while processing the task. The issue state was preserved for retry or human triage.",
+            )],
         )
+
+    async def test_transient_delivery_survives_adapter_restart(self):
+        class FlakyLinear(FakeLinear):
+            async def create_activity(self, *args, **kwargs):
+                raise LinearAPIError("temporary outage", retryable=True)
+
+        self.adapter._linear = FlakyLinear("org-1")
+        self.adapter._outbox_base_delay = 0
+        result = await self.adapter.send("session-restart", "persist me")
+        self.assertTrue(result.success)
+        item_id = next(
+            row[0]
+            for row in self.adapter._ledger._db.execute(
+                "SELECT id FROM outbox WHERE aggregate_key = ?", ("session-restart",)
+            ).fetchall()
+        )
+        self.assertEqual(self.adapter._ledger.get_outbox_item(item_id)["state"], "pending")
+
+        self.adapter._ledger.close()
+        self.adapter._ledger = DeliveryLedger(self.adapter.database_path)
+        self.adapter._linear = FakeLinear("org-1")
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [("session-restart", "response", "persist me")],
+        )
+        self.assertEqual(self.adapter._ledger.get_outbox_item(item_id)["state"], "delivered")
+
+    async def test_response_precedes_done_status_writeback(self):
+        self.adapter._status_writeback_enabled = True
+        self.adapter._enqueue_activity("session-status", "response", "finished")
+        event = MessageEvent(
+            text="task",
+            source=self.adapter.build_source(
+                chat_id="session-status",
+                chat_name="OPS-20 — Test",
+                chat_type="dm",
+                user_id="user-1",
+                user_name="Mutlu",
+                role_authorized=True,
+            ),
+            metadata={"linear_issue_id": "issue-20", "linear_delivery_key": "delivery-20"},
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-status", "response", "finished"),
+                ("issue-20", "state", "Done"),
+            ],
+        )
+
+
+class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_open_blockers_filters_terminal_relations(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("inverseRelations", query)
+            return {
+                "issue": {
+                    "inverseRelations": {
+                        "nodes": [
+                            {
+                                "type": "blocks",
+                                "issue": {
+                                    "id": "open-1",
+                                    "identifier": "OPS-7",
+                                    "title": "Open",
+                                    "state": {"name": "Todo", "type": "unstarted"},
+                                },
+                            },
+                            {
+                                "type": "blocks",
+                                "issue": {
+                                    "id": "done-1",
+                                    "identifier": "OPS-6",
+                                    "title": "Done",
+                                    "state": {"name": "Done", "type": "completed"},
+                                },
+                            },
+                            {
+                                "type": "related",
+                                "issue": {
+                                    "id": "related-1",
+                                    "identifier": "OPS-5",
+                                    "state": {"name": "Todo", "type": "unstarted"},
+                                },
+                            },
+                        ]
+                    }
+                }
+            }
+
+        client.graphql = fake_graphql
+        blockers = await client.get_open_blockers("issue-8")
+        self.assertEqual([item["id"] for item in blockers], ["open-1"])
+
+    async def test_human_custom_state_wins_over_status_writeback(self):
+        client = LinearClient("/unused")
+        calls = []
+
+        async def fake_graphql(query, variables=None):
+            calls.append(query)
+            return {
+                "issue": {
+                    "state": {"id": "review-1", "name": "Review", "type": "started"},
+                    "team": {"states": {"nodes": []}},
+                }
+            }
+
+        client.graphql = fake_graphql
+        state_id = await client.update_issue_state(
+            "issue-1", "Done", 40, {"Todo": 10, "Blocked": 15, "In Progress": 20, "Done": 40}
+        )
+        self.assertEqual(state_id, "review-1")
+        self.assertEqual(len(calls), 1)
 
 
 class OAuthRotationTests(unittest.IsolatedAsyncioTestCase):
@@ -398,7 +775,12 @@ class OAuthRotationTests(unittest.IsolatedAsyncioTestCase):
                 os.chmod(path, 0o600)
                 client = LinearClient(str(path))
                 await client.connect()
-                activity_id = await client.create_activity("session-1", "response", "full response")
+                activity_id = await client.create_activity(
+                    "session-1",
+                    "response",
+                    "full response",
+                    activity_id="activity-client-id",
+                )
                 await client.close()
                 stored = json.loads(path.read_text())
                 self.assertEqual(calls["refresh"], 1)
@@ -409,6 +791,7 @@ class OAuthRotationTests(unittest.IsolatedAsyncioTestCase):
                     calls["activities"][0]["content"],
                     {"type": "response", "body": "full response"},
                 )
+                self.assertEqual(calls["activities"][0]["id"], "activity-client-id")
         finally:
             client_mod.LINEAR_TOKEN_URL = old_token_url
             client_mod.LINEAR_GRAPHQL_URL = old_graphql_url

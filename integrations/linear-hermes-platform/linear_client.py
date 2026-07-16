@@ -189,8 +189,15 @@ class LinearClient:
             raise LinearAPIError("Linear GraphQL response did not contain data")
         return data
 
-    async def create_activity(self, agent_session_id: str, activity_type: str, body: str) -> str:
-        if activity_type not in {"thought", "response", "error"}:
+    async def create_activity(
+        self,
+        agent_session_id: str,
+        activity_type: str,
+        body: str,
+        *,
+        activity_id: str,
+    ) -> str:
+        if activity_type not in {"thought", "response", "error", "elicitation"}:
             raise ValueError(f"Unsupported Linear activity type: {activity_type}")
         mutation = """
 mutation LinearNativeAgentActivity($input: AgentActivityCreateInput!) {
@@ -200,17 +207,136 @@ mutation LinearNativeAgentActivity($input: AgentActivityCreateInput!) {
   }
 }
 """
-        data = await self.graphql(
-            mutation,
-            {
-                "input": {
-                    "agentSessionId": agent_session_id,
-                    "content": {"type": activity_type, "body": body},
-                }
-            },
-        )
+        try:
+            data = await self.graphql(
+                mutation,
+                {
+                    "input": {
+                        "id": activity_id,
+                        "agentSessionId": agent_session_id,
+                        "content": {"type": activity_type, "body": body},
+                    }
+                },
+            )
+        except LinearAPIError as exc:
+            # A client-generated activity ID makes an ambiguous timeout safe to retry.
+            # If Linear committed the first request, replay can reconcile by that ID.
+            if exc.retryable or "timed out" in str(exc).lower():
+                raise LinearAPIError(str(exc), retryable=True, retry_after=exc.retry_after) from exc
+            if await self.activity_exists(activity_id):
+                return activity_id
+            raise
         result = data.get("agentActivityCreate") or {}
         activity = result.get("agentActivity") or {}
         if not result.get("success") or not activity.get("id"):
             raise LinearAPIError("agentActivityCreate did not report success")
         return str(activity["id"])
+
+    async def activity_exists(self, activity_id: str) -> bool:
+        query = """
+query LinearNativeAgentActivityById($id: String!) {
+  agentActivity(id: $id) { id }
+}
+"""
+        try:
+            data = await self.graphql(query, {"id": activity_id})
+        except LinearAPIError:
+            return False
+        activity = data.get("agentActivity") or {}
+        return str(activity.get("id") or "") == activity_id
+
+    async def get_open_blockers(self, issue_id: str) -> list[dict[str, str]]:
+        """Return incomplete issues that block issue_id through inverse `blocks` relations."""
+        query = """
+query LinearNativeIssueBlockers($id: String!) {
+  issue(id: $id) {
+    inverseRelations(first: 100) {
+      nodes {
+        type
+        issue { id identifier title state { id name type } }
+      }
+    }
+  }
+}
+"""
+        data = await self.graphql(query, {"id": issue_id})
+        issue = data.get("issue") or {}
+        relations = ((issue.get("inverseRelations") or {}).get("nodes")) or []
+        blockers: list[dict[str, str]] = []
+        for relation in relations:
+            if str(relation.get("type") or "").casefold() != "blocks":
+                continue
+            blocker = relation.get("issue") or {}
+            state = blocker.get("state") or {}
+            if str(state.get("type") or "") in {"completed", "canceled"}:
+                continue
+            blocker_id = str(blocker.get("id") or "")
+            if blocker_id:
+                blockers.append({
+                    "id": blocker_id,
+                    "identifier": str(blocker.get("identifier") or blocker_id),
+                    "title": str(blocker.get("title") or ""),
+                    "state": str(state.get("name") or ""),
+                })
+        return blockers
+
+    async def update_issue_state(
+        self,
+        issue_id: str,
+        target_state_name: str,
+        target_rank: int,
+        state_ranks: dict[str, int],
+    ) -> str:
+        """Apply a monotonic symbolic state transition and preserve human terminal states."""
+        query = """
+query LinearNativeIssueState($id: String!) {
+  issue(id: $id) {
+    state { id name type }
+    team { states { nodes { id name type } } }
+  }
+}
+"""
+        data = await self.graphql(query, {"id": issue_id})
+        issue = data.get("issue") or {}
+        current = issue.get("state") or {}
+        current_id = str(current.get("id") or "")
+        current_name = str(current.get("name") or "")
+        current_type = str(current.get("type") or "")
+        if current_type in {"completed", "canceled"}:
+            return current_id
+        normalized_ranks = {name.casefold(): int(rank) for name, rank in state_ranks.items()}
+        current_rank = normalized_ranks.get(current_name.casefold(), -1)
+        # Human-owned/custom workflow states are never overwritten. Backlog and
+        # unstarted are safe initial states; configured bridge states are safe
+        # monotonic transitions. Everything else wins over automation.
+        if current_rank < 0 and current_type not in {"backlog", "unstarted"}:
+            return current_id
+        if current_rank >= int(target_rank):
+            return current_id
+        states = ((issue.get("team") or {}).get("states") or {}).get("nodes") or []
+        target = next(
+            (state for state in states if str(state.get("name") or "").casefold() == target_state_name.casefold()),
+            None,
+        )
+        if not target or not target.get("id"):
+            raise LinearAPIError(f"Linear workflow state not found: {target_state_name}")
+        mutation = """
+mutation LinearNativeIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { id state { id name } } }
+}
+"""
+        try:
+            updated = await self.graphql(
+                mutation,
+                {"id": issue_id, "input": {"stateId": str(target["id"])}},
+            )
+        except LinearAPIError as exc:
+            # Assigning the same state twice is idempotent, including after an
+            # ambiguous response timeout.
+            if exc.retryable or "timed out" in str(exc).lower():
+                raise LinearAPIError(str(exc), retryable=True, retry_after=exc.retry_after) from exc
+            raise
+        result = updated.get("issueUpdate") or {}
+        if not result.get("success"):
+            raise LinearAPIError("issueUpdate did not report success")
+        return str((((result.get("issue") or {}).get("state") or {}).get("id")) or target["id"])

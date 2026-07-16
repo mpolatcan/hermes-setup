@@ -107,6 +107,18 @@ gateway:
         processing_timeout_seconds: 300
         dedup_retention_seconds: 604800
         preauth_rate_limit_per_minute: 120
+        outbox_poll_seconds: 1
+        outbox_base_delay_seconds: 2
+        outbox_max_delay_seconds: 300
+        data_change_events_enabled: false     # enable after OPS-28 source + webhook canary
+        dependency_wait_enabled: false        # enable after Issues events are verified
+        dependency_poll_seconds: 60           # recovery only; no LLM polling
+        issue_status_writeback_enabled: false # enable only after OPS-21 approval
+        issue_status_mapping:
+          queued: Todo
+          running: In Progress
+          blocked: Blocked
+          done: Done
 ```
 
 The plugin source is deployed to the profile-local runtime directory:
@@ -116,6 +128,45 @@ The plugin source is deployed to the profile-local runtime directory:
 ```
 
 A gateway restart is required after configuration or plugin changes. For Derya/general, the default safe operation is Mutlu issuing `/restart` from Telegram.
+
+## Persistent outbox and issue status writeback
+
+All outbound `agentActivityCreate` and `issueUpdate` operations are inserted into the same SQLite database before network delivery. The outbox row contains a stable ID, Agent Session aggregate key, per-session sequence, operation, JSON payload, state (`pending`, `in_flight`, `delivered`, or `dead`), attempt count, next-attempt time, and delivery/error timestamps.
+
+Delivery is ordered per Agent Session. A later `Done` write cannot overtake the response activity that proves completion. Stale `in_flight` rows are reclaimed after restart. Retryable failures use exponential backoff capped by `outbox_max_delay_seconds`; Linear `retry_after` wins when supplied. Non-retryable failures become dead letters and appear in `/health` as `status: degraded` without turning the liveness endpoint into a restart loop.
+
+Activity creates use the client-generated `AgentActivityCreateInput.id`, so replay after an ambiguous timeout reuses the same Linear entity ID. Issue state assignment is naturally idempotent. Producer retries use stable outbox IDs for thought, error, and status operations; normal responses receive one persisted UUID when accepted.
+
+Execution-to-issue mapping:
+
+| Execution state | Default Linear state | Trigger |
+|---|---|---|
+| `queued` | `Todo` | Accepted `created` Agent Session event |
+| `running` | `In Progress` | Thought acknowledgement persisted |
+| `blocked` | `Blocked` | An unresolved Linear `blocks` relation is durably recorded |
+| `done` | `Done` | Successful response durably accepted |
+
+`ProcessingOutcome.FAILURE` and `ProcessingOutcome.CANCELLED` intentionally preserve the current issue state: a transport, model, or cancellation signal does not prove a dependency blocker or completion. Terminal human states (`completed` or `canceled`) and custom human workflow states are never overwritten. Bridge-owned transitions use `Todo(10) -> Blocked(15) -> In Progress(20) -> Done(40)`, allowing automatic `Blocked -> In Progress` resume. State names are resolved against the issue team at delivery time; IDs are not hard-coded.
+
+`issue_status_writeback_enabled` defaults to `false`. Enabling it is the separate OPS-21 approval and rollout action; the outbox code can be deployed and tested without changing issue states.
+
+
+## Data-change events and dependency waiting
+
+`AgentSessionEvent` remains the only direct execution trigger. When `data_change_events_enabled` is true, signed `Issue`, `IssueRelation`, `Comment`, `IssueLabel`, `Project`, `ProjectUpdate`, `AppUserNotification`, `PermissionChange`, and OAuth revoke events pass organization validation and semantic dedup, but ordinary comments and project updates are context-only and do not start an LLM run. Inbox notification timestamps may use the documented ISO `createdAt` field. Explicit agent mentions must produce Linear's native Agent Session event; this is a live canary requirement, not a comment parser assumption. Events authored by the current Linear app actor are ignored to prevent self-trigger loops. An `issueUnassignedFromYou` notification cancels a durable wait, while OAuth revocation degrades `/health`.
+
+Agent output remains an immutable Agent Activity. Linear renders `response` and `elicitation` activities into the issue comment thread for human visibility; later execution context is reconstructed from frozen Agent Activities rather than editable comments.
+
+When `dependency_wait_enabled` is true, a newly delegated issue is queried for incomplete inverse `blocks` relations before Hermes execution starts. If blockers exist, the adapter:
+
+1. Writes the original prompt, Agent Session, issue, and blocker snapshot to `waiting_executions` in SQLite.
+2. Persists an `elicitation` activity naming the blockers; Linear derives `awaitingInput`.
+3. Does not enqueue the Hermes run.
+4. Reconciles the issue after commit to close the blocker-completed-before-wait race.
+5. Reconciles again on signed Issue/IssueRelation updates, with a low-frequency GraphQL recovery poll for missed webhooks.
+6. Atomically claims `waiting -> resuming`, reuses the original stable delivery key, and starts the same Agent Session exactly once when no blockers remain.
+
+Stop and delegate-removal events cancel a pending wait. Interrupted `resuming` rows return to `waiting` on adapter restart. `/health` reports waiting counts, oldest wait age, and the latest wait error; failed waits degrade health without causing a restart loop. The additive SQLite schema is versioned with `PRAGMA user_version=2`. Back up `linear-bridge.sqlite3*` before first migration and retain the backup until live acceptance completes.
 
 ## Funnel
 
@@ -145,9 +196,9 @@ cd /Users/mutlupolatcan/Desktop/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected result: `15/15 OK`.
+Expected result: `29/29 OK`.
 
-Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, and session-lock release.
+Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
 ## Live acceptance criteria
 
@@ -157,13 +208,19 @@ Coverage includes invalid signatures, replay attempts, organization mismatch, se
 4. A Stop signal interrupts the active Hermes task through `/stop`.
 5. The session becomes `complete`, with no extra error activity or residual process.
 6. Retrying the same semantic event does not create duplicate execution.
+7. A blocked delegation returns `awaiting_input`, writes one `elicitation`, and starts no Hermes run.
+8. Completing the final blocker resumes the same session once; replaying the Issue webhook creates no second run.
+9. Ordinary Comment and ProjectUpdate events are observed without an LLM run; self-authored events are ignored.
+10. Delegate removal and Stop cancel durable waits; restart recovers an interrupted resume.
+11. A live Derya-to-Doruk mention canary proves that Linear emits the target agent's native Agent Session before cross-agent automation is enabled.
 
 ## Rollback
 
-1. Disable the Linear application webhook.
-2. Disable the Funnel route.
-3. Set `gateway.platforms.linear.enabled: false`.
-4. Mutlu issues `/restart` from Telegram.
-5. Restore the rollback copy from the profile-local runtime backup directory.
+1. Set `dependency_wait_enabled: false`, `data_change_events_enabled: false`, and `issue_status_writeback_enabled: false`; queued evidence remains in SQLite.
+2. Disable the added Issue/Comment/Label/Project/ProjectUpdate data-change categories in the Linear application, retaining Agent Session events if the base canary remains healthy.
+3. If the adapter itself must roll back, disable the Linear application webhook and Funnel route.
+4. Set `gateway.platforms.linear.enabled: false`.
+5. Mutlu issues `/restart` from Telegram.
+6. Restore the pre-migration `linear-bridge.sqlite3*` backup only while the gateway is stopped. Do not delete the migrated database until pending/dead outbox rows and waiting executions have been audited.
 
 Rollback never touches the App Store Tailscale or Remote Desktop process. The former bridge daemon and the built-in webhook route on `127.0.0.1:8644` remain disabled unless a separate architectural decision explicitly restores them.
