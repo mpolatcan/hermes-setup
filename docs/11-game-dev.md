@@ -6,11 +6,10 @@
 
 ```mermaid
 flowchart LR
-    scout["Doruk · researcher<br/>weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>backlog + rubric scoring<br/>Phase B"]:::mini
+    scout["Doruk · researcher<br/>GPT-5.6-sol · weekly game-scout cron"]:::codex -->|raw opportunities| backlog["Sarp · producer<br/>GPT-5.6-luna · backlog + rubric scoring"]:::codex
     backlog -->|top 3| pick{"You pick<br/>taste gate"}:::pick
-    pick -->|graduate| prd["Ozan · writer<br/>lean 2-page PRD"]:::codex
-    prd --> proto["Naz · coder<br/>Godot prototype"]:::mini
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    pick -->|graduate| prd["Ozan · writer<br/>GPT-5.6-sol · lean 2-page PRD"]:::codex
+    prd --> proto["Naz · coder<br/>GPT-5.6-sol · Godot prototype"]:::codex
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef pick fill:#FDD835,stroke:#F9A825,color:#212121
 ```
@@ -19,7 +18,7 @@ flowchart LR
 
 This is the concrete answer to "I want to start PC and mobile game development but have no time for research, PRDs, market research." You are **exploring**, not committed to a specific game. So this workstream is built as a **discovery engine** — agents surface and score opportunities, you pick one, *then* prototype. It is not a "build-this-game" machine, because you don't yet know the game.
 
-Engine direction: **Godot now, Unity later** (16.7). Provider reality: the main models run on **two providers — DeepSeek (direct API key) and OpenAI Codex** — plus a little **OpenRouter** for cheap aux (5.5). No Anthropic key needed.
+Engine direction: **Godot now, Unity later** (16.7). Provider reality: **OpenAI Codex/GPT-5.6 is primary for every agent and cron; DeepSeek V4 Flash is the only profile-level fallback.** OpenRouter is a separate vision-fallback and Honcho-worker path.
 
 ### 16.0 Rollout order — research first, build later
 
@@ -65,7 +64,7 @@ Stand it up like any other profile (Section 6, Phase 3):
 
 ```bash
 hermes profile create producer
-hermes -p producer setup          # Sarp bot token, DeepSeek model, keys
+hermes -p producer setup          # Sarp bot token + GPT-5.6/Codex auth; static keys resolve from 1Password
 # write SOUL.md (16.8), prune toolsets (Section 6.6), then: hermes -p producer gateway install
 ```
 
@@ -82,7 +81,7 @@ Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAu
 | `writer` | PRD / store copy | `gpt-5.6-sol` (Codex) | `xhigh` | Voice and long-form drafting. |
 | `coder` | Godot prototyping | `gpt-5.6-sol` (Codex) | `xhigh` | Strongest GDScript quality; the **heaviest** agent — first to feel the shared ChatGPT quota window (§5.3). |
 
-- **Auxiliary tasks** (vision, summarization, context compression) for all four → **OpenRouter · Gemini Flash** (5.5) — V4 Flash has no vision, and keeping aux cross-provider means an aux outage and a chat outage can't share a cause.
+- **Vision auxiliary:** the profile's GPT-5.6 tier is primary, with OpenRouter/Gemini Flash fallback. Other auxiliary tasks inherit the main route unless explicitly overridden; DeepSeek is not the canonical direct auxiliary provider.
 - **Fallback chains:** Codex-primary agents fall back to DeepSeek (docs/04 §5.7).
 
   Every profile now carries the same shape (`~/.hermes/profiles/<slug>/config.yaml`) — only `default` (5.6 tier) and `reasoning_effort` differ:
@@ -94,10 +93,10 @@ Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAu
     - provider: deepseek
       model: deepseek-v4-flash
   agent:
-    reasoning_effort: xhigh   # coder/researcher/writer · medium general/assistant · low the rest
+    reasoning_effort: xhigh   # general/coder/researcher/writer · medium assistant/finance/health · low marketing/producer
   ```
 
-- **Wallet simplification:** the main models need only **two providers** — DeepSeek (pay-per-token) + Codex (ChatGPT sub) — so you can drop Anthropic entirely. **Keep OpenRouter** though: it's the cheap aux route and the cross-provider hedge (5.5–5.7). A few dollars a month — don't cut it.
+- **Provider roles:** Codex serves primary agent and cron turns; DeepSeek is fallback only; OpenRouter serves vision fallback and Honcho workers. Anthropic and MiniMax are not active routing dependencies.
 
 ### 16.5 `researcher` as opportunity scout (the cron)
 
@@ -177,7 +176,7 @@ project_roots:
   - ~/godot-projects
 ```
 
-Division of labor: `coder` edits scripts/scenes, runs tests, and can drive Godot itself (headless for quick checks or the GUI for a real run); **you** still own the taste call — open the editor, play it, decide if it's fun (16.10). Because `coder` runs natively as your user, it can read your files and your other profiles' `.env` — that residual risk is fenced with `approvals: smart` + redaction + blocklist in [Section 13](09-security.md). Treat a permissive approval mode on `coder` as handing an LLM your shell.
+Division of labor: `coder` edits scripts/scenes, runs tests, and can drive Godot itself (headless for quick checks or the GUI for a real run); **you** still own the taste call. Because `coder` runs natively as your user, the residual risk is managed with scoped toolsets, credential stripping, Tirith/blocklists, and careful project roots. Fleet approvals are `off`; treat that as handing an LLM your shell and keep the scope narrow ([Section 13](09-security.md)).
 
 ### 16.8 SOUL.md seeds
 

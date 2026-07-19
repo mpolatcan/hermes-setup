@@ -8,12 +8,12 @@ A native Linear Agent Session platform plugin for Hermes Gateway. Linear is Dery
 flowchart LR
     L["Linear Agent Session"]:::net -->|"HTTPS webhook + HMAC"| F["Tailscale Funnel"]:::net
     F -->|"loopback proxy"| A["Hermes native Linear adapter<br/>127.0.0.1:8787"]:::svc
-    A -->|"MessageEvent"| G["Hermes Gateway · Derya"]:::mini
+    A -->|"MessageEvent"| G["Hermes Gateway · Derya<br/>GPT-5.6-sol primary"]:::codex
     G -->|"AgentActivity GraphQL"| L
 
     classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FFCC80,stroke:#EF6C00,color:#E65100
 ```
 
 - Plugin registration: Hermes `ctx.register_platform()` API.
@@ -111,8 +111,8 @@ gateway:
         outbox_poll_seconds: 1
         outbox_base_delay_seconds: 2
         outbox_max_delay_seconds: 300
-        data_change_events_enabled: false     # enable after OPS-28 source + webhook canary
-        dependency_wait_enabled: false        # enable after Issues events are verified
+        data_change_events_enabled: true      # live since 0.5.0; selected data events are context/control only
+        dependency_wait_enabled: true         # live; blocked sessions resume exactly once after blocker closure
         dependency_poll_seconds: 60           # recovery only; no LLM polling
         issue_status_writeback_enabled: false # enable only after OPS-21 approval
         issue_status_mapping:

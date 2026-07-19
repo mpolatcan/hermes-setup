@@ -12,7 +12,7 @@ flowchart TB
     end
     subgraph hon["🧠 Layer 3 — Honcho · Mini · shared"]
         user["user peer = YOU<br/>shared across all agents"]:::user
-        peers["ai peers (= slugs): general, researcher, assistant,<br/>marketing, coder, writer, producer — one per agent"]:::infra
+        peers["ai peers (= slugs): all 9 profiles<br/>studio/general shared · finance/health isolated"]:::infra
     end
     per --> hon
     classDef l1 fill:#1976D2,stroke:#0D47A1,color:#fff
@@ -42,7 +42,7 @@ Injected into the system prompt as a frozen snapshot at session start. The agent
 
 **Layer 2 — Session search (always on, per-agent, local).**
 
-Every CLI and messaging session is stored in SQLite at `~/.hermes/profiles/<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions and uses an auxiliary LLM (Gemini Flash by default) to summarize matches.
+Every CLI and messaging session is stored in SQLite at `~/.hermes/profiles/<name>/state.db` with FTS5 full-text search. The agent has a `session_search` tool — when you ask "did we discuss X last week?" it queries past sessions. Auxiliary routing follows the profile's configured policy; the canonical fleet default is GPT-5.6 primary with DeepSeek fallback, not a hard-coded Gemini default.
 
 The distinction that matters: **Layer 1 is for facts that should *always* be in the prompt. Layer 2 is for facts that *might* be relevant if you ask.** Different jobs.
 
@@ -90,7 +90,7 @@ The Honcho stack is **four containers**: API, Postgres+pgvector, Redis, and the 
 ```mermaid
 flowchart TB
     subgraph mini["🖥️ M4 Mini · single host"]
-        ag["Native agents (launchd)<br/>general (Derya) · researcher (Doruk) · assistant (Tuna) · marketing (Nilay)<br/>coder (Naz) · writer (Ozan) · producer (Sarp)"]:::mini
+        ag["Native agents (launchd)<br/>general · researcher · assistant · marketing · coder<br/>writer · producer · finance · health"]:::codex
         subgraph orb["OrbStack (Docker)"]
             subgraph hs["honcho-stack/"]
                 api["api · FastAPI :8000"]:::svc
@@ -101,7 +101,7 @@ flowchart TB
         end
     end
     ag -. "Honcho over loopback<br/>http://127.0.0.1:8000" .-> api
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#FFCC80,stroke:#EF6C00,color:#E65100
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     style mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
@@ -189,7 +189,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
 | `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
 
-All nine use Honcho. Each needs a config telling Hermes where the Honcho server is and what AI peer name to use — for this fleet that lives once in the shared `~/.hermes/honcho.json` (host keys `hermes_<slug>` — auto-derived and verified working on v0.16.0; note the *official* documented form is dot-notation `hermes.<slug>`, so if a future upgrade ever breaks per-agent peer separation, switch the underscores to dots), not a per-profile file. (Per-profile `~/.hermes/profiles/<name>/honcho.json` also works if you want an override.)
+All nine use Honcho. The fleet configuration lives once in shared `~/.hermes/honcho.json`; per-profile duplicates are unnecessary. Host-key resolution and peer separation were re-verified operationally on v0.18.2.
 
 Create one per agent. Example for `coder`:
 

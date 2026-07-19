@@ -29,10 +29,12 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
     ├── marketing/     ← Nilay
     ├── coder/         ← Naz
     ├── writer/        ← Ozan
-    └── producer/      ← Sarp
+    ├── producer/      ← Sarp
+    ├── finance/       ← Murat
+    └── health/        ← Defne
 ```
 
-*(Verified against v0.16.0: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs at `~/.hermes/profiles/<slug>/logs/gateway.log`. `profile create` also drops a wrapper at `~/.local/bin/<slug>`, so `researcher setup` ≡ `hermes -p researcher setup`.)*
+*(Re-verified on Hermes v0.18.2 / 2026.7.7.2: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs live under that profile. `profile create` also drops a wrapper at `~/.local/bin/<slug>`.)*
 
 Each profile directory holds the full state for that agent:
 
@@ -80,7 +82,7 @@ All state will live under `~/.hermes/`.
 
 ```bash
 hermes profile create researcher
-hermes -p researcher setup        # verified v0.16.0: global -p/--profile flag, not `setup --profile`
+hermes -p researcher setup        # re-verified v0.18.2: global -p/--profile flag
                                 # (or use the wrapper: `researcher setup`)
 ```
 
@@ -104,7 +106,7 @@ do not flatten disagreement. Concise by default; expand only when asked.
 **Step 1.4: Run the gateway**
 
 ```bash
-hermes -p researcher gateway run   # foreground; verified v0.16.0
+hermes -p researcher gateway run   # foreground; re-verified v0.18.2
 ```
 
 Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p researcher gateway install` (Section 7).
@@ -142,7 +144,7 @@ hermes -p general setup          # different bot token, different SOUL.md
 
 From a chat with `researcher`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `researcher`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
-> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile could still read another profile's files on disk — that's why shells are limited to `coder` (game dev), `finance` (fenced Python), and `general`/Derya (fleet admin), each fenced ([Section 13](09-security.md)). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)).
+> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile can read another profile's files on disk — all nine profiles are shell-capable by design (accepted 2026-07-19). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)). Each profile's persona guardrails reduce the risk of a shell-capable profile targeting sibling state ([Section 13](09-security.md)).
 
 **Step 2.4: Independent-lifecycle test**
 
@@ -167,13 +169,13 @@ For each new agent:
 
 **Special considerations per agent:**
 
-- **`coder`** — a primary code-running agent, and it runs **natively** for Metal GPU + the Godot GUI ([Section 16](11-game-dev.md)). Mount nothing; it already has your user's filesystem. Fence it: `approvals: smart`, credential redaction, website blocklist, optional `docker` code-exec backend ([Section 13](09-security.md)). Point it at your projects directory in config (e.g. `~/godot-projects`).
-- **`marketing`** — no shell; `web` + TinyFish for market/competitor research, `cronjob` for the devlog/social cadence. Briefs `writer` when it needs finished copy.
+- **`coder`** — the heaviest code-driver, native for Metal GPU + the Godot GUI. Approvals are `off` fleet-wide; all profiles share host-code capability by design, so the fence is persona guardrails + credential stripping + website blocklist.
+- **`marketing`** — web/TinyFish/cron is the expected persona, but the uniform tool surface makes it host-code-capable too. Guardrails across the fleet manage this; see Section 13.
 - **`writer`** — if you want finished drafts in a tidy spot, set its file output to `~/Documents/writer-output/` in config.
 
 ### 6.6 Toolset hygiene — disable what each agent doesn't need
 
-Hermes loads **~17 toolsets by default**, and each enabled toolset injects its schemas into *every* prompt that agent sends. Pruning is the single cheapest lever on three things at once: **token cost** (fewer schemas per prompt), **risk surface** (`terminal`, `code_execution`, `browser` = shell, arbitrary code, full browser automation), and **focus** (fewer tempting wrong tools). With no container boundary, **toolset pruning is now a primary security control**, not just a cost lever — a no-shell agent simply cannot run host commands.
+Hermes loads **~17 toolsets by default**, and each enabled toolset injects its schemas into *every* prompt that agent sends. Pruning is the single cheapest lever on three things at once: **token cost** (fewer schemas per prompt), **risk surface** (`terminal`, `code_execution`, `browser` = shell, arbitrary code, full browser automation), and **focus** (fewer tempting wrong tools). Even though all nine profiles are host-code-capable by design (accepted 2026-07-19), pruning still cuts token cost and risk surface per agent.
 
 First, separate three things people conflate:
 
@@ -186,75 +188,34 @@ First, separate three things people conflate:
 **The high-value disables** (all default-on, rarely needed):
 
 - **`browser`** — heavy (≈10 tools, needs Chromium). We use **TinyFish via MCP** (Section 10) for web. Disable everywhere; re-enable only on an agent that genuinely needs interactive page automation (none do, at first).
-- **`terminal`** — shell access. Native, this shell is your **real Mac**, not a container. Held by `coder` (game dev) and `general`/Derya (fleet admin — §13.7a). Everyone else: off.
-- **`code_execution`** — runs Python on the host. `coder`, `general` (admin), and `finance` (fenced). Others: off.
+- **`terminal`** — shell access to the real Mac. Resolved on all nine profiles by design (accepted 2026-07-19).
+- **`code_execution` / `execute_code`** — host Python/code execution. Resolved on all nine profiles by design (accepted 2026-07-19).
 - **`image_gen`** — requires a FAL.ai key you don't have; dead schema weight. Disable everywhere.
 - **`delegation`** — spawns in-process subagents = surprise token spend. Disable until you deliberately want fan-out.
 
-**Per-agent matrix** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
+**Per-agent tool surface** (core toolsets — `memory`, `session_search`, `skills`, `clarify`, `safe` — always kept and omitted):
 
-| Toolset | researcher | assistant | marketing | coder | writer |
-|---|:--:|:--:|:--:|:--:|:--:|
-| `terminal` | ✗ | ✗ | ✗ | ✓ | ✗ |
-| `code_execution` | ✗ | ✗ | ✗ | ✓ | ✗ |
-| `browser` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `web` (built-in) | ✓ fallback | ✓ fallback | ✓ fallback | ✓ fallback | ✓ fallback |
-| `file` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `vision` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `image_gen` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `tts` | ✗ | ✓ | ✗ | ✗ | ✗ |
-| `cronjob` | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `messaging` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `delegation` | ✗ | ✗ | ✗ | opt | ✗ |
-| `kanban` | opt | ✗ | ✗ | opt | opt |
-| `todo` | ✗ | ✗ | ✗ | ✓ | ✗ |
+| Profile | `terminal` | `execute_code` | Approvals |
+|---|:---:|:---:|:---:|
+| general | ✓ | ✓ | off |
+| researcher | ✓ | ✓ | off |
+| assistant | ✓ | ✓ | off |
+| marketing | ✓ | ✓ | off |
+| coder | ✓ | ✓ | off |
+| writer | ✓ | ✓ | off |
+| producer | ✓ | ✓ | off |
+| finance | ✓ | ✓ | off |
+| health | ✓ | ✓ | off |
 
-The `kanban` row is **opt** on the studio pipeline (`researcher`, `writer`, plus `producer`/`coder`) — off at first, flipped on only if the backlog outgrows hand-curation ([Section 17](12-agent-comms.md)). `marketing` mirrors `researcher` (web + TinyFish + cron, no shell). Everything else is off where unused.
+This is the **accepted current design** (decided 2026-07-19). The old intended three-agent shell boundary was superseded; the live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance`.
 
-**Per-agent `disabled_toolsets`** (paste into each `config.yaml`):
-
-```yaml
-# general (Derya)  — FLEET ADMIN: conversational + config management (terminal/code_execution/file ON)
-agent:
-  disabled_toolsets: [browser, image_gen, delegation, messaging, todo, kanban]
-approvals:
-  mode: manual          # gates dangerous commands; benign hermes/launchctl run un-prompted (§13.7a)
-  cron_mode: deny
-security:
-  tirith_enabled: true
-
-# researcher
-agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
-
-# assistant
-agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, delegation, messaging, todo, kanban]
-
-# marketing (Nilay) — web + TinyFish + cron, no shell; mirrors researcher
-agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, tts, delegation, messaging, todo]
-
-# coder  (game-dev shell + code execution; web kept on for SearXNG fallback)
-agent:
-  disabled_toolsets: [browser, image_gen, tts, cronjob, messaging, delegation]
-
-# writer  (web kept on for SearXNG fallback)
-agent:
-  disabled_toolsets: [terminal, code_execution, browser, image_gen, cronjob, messaging, delegation, todo]
-```
-
-Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off** — do not list them. Verify the live result per agent:
+Opt-in toolsets (`search`, `video`, `video_gen`, `moa`, `debugging`, `computer_use`, `homeassistant`, `spotify`, `discord`, `feishu_doc`, `feishu_drive`, `yuanbao`, `x_search`) are **already off**. Verify the live result per agent:
 
 ```bash
 hermes -p <name> tools list   # active vs available-but-disabled
 ```
 
-**`producer` (Phase B):** disable `[terminal, code_execution, browser, image_gen, vision, tts, delegation, messaging]`. Keeps `web` (SearXNG fallback — every agent is Layer 2, [docs/08 §10.6](08-web-search.md)), `file` (writes `backlog.md`), `cronjob` (weekly scoring), optional `kanban`, plus the core set.
-
-**One flag worth remembering:** native, **`terminal` is the real host.** `coder`'s shell sees your actual Mac — your files, your other profiles' `.env`. There is no container wall. That is the whole reason shells are limited to `coder`, `general` (admin), and `finance` (fenced) — each fenced in [Section 13](09-security.md).
-
-**Phase A relevance:** only `researcher` (and then `Derya`/`general`) is live at first, so their disable lists are all you need on day one. The rest apply as each agent comes online.
+**One flag worth remembering:** native, `terminal` is the real host. All nine profiles have it; treat every agent as a potential shell surface.
 
 ---
 
@@ -262,7 +223,7 @@ hermes -p <name> tools list   # active vs available-but-disabled
 
 The s6 supervision tree only exists inside the Docker image. Native, **launchd** is the supervisor: it starts each gateway at login and restarts it on crash — the native equivalent of `--restart unless-stopped`.
 
-**Verified against v0.16.0: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and logs at `~/.hermes/profiles/<profile>/logs/gateway.log` (+ `gateway.error.log`):
+**Re-verified on v0.18.2: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and profile-local logs:
 
 ```bash
 hermes -p researcher gateway install    # write + bootstrap the launchd service

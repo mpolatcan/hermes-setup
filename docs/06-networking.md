@@ -42,11 +42,11 @@ If you never enable the dashboard or HTTP API, **skip this whole section** — T
 
 The dashboard is **one console for the whole fleet**, not one-per-agent: the UI has a profile **list + switcher** (`/api/profiles`, `/api/profiles/active`) and a **unified sessions view aggregated across all profiles**, plus per-profile config / API-key editing and create/delete. The `-p <slug>` flag only sets which profile is *selected on load*. Config/keys stay *stored* per-profile (that's the isolation); the dashboard is just one window onto all of them. (Cross-*agent* activity is the kanban board's job — separate, and CLI/TUI only.)
 
-⚠️ **Formula gap (verified v0.16.0):** the Homebrew/pip package ships **neither the built frontend (`hermes_cli/web_dist/`) nor its `web/` source**, so `hermes dashboard` 404s with `{"error":"Frontend not built. Run: cd web && npm run build"}`. Build it once from the matching repo tag and point `HERMES_WEB_DIST` at the output (keeps it outside the brew cellar, which `brew upgrade` wipes):
+⚠️ **Formula gap (re-verified v0.18.2 / 2026.7.7.2):** the Homebrew package still ships neither the built frontend (`hermes_cli/web_dist/`) nor its `web/` source. Build it once from the matching official GitHub tag and point `HERMES_WEB_DIST` at the output (keeps it outside the brew cellar, which `brew upgrade` wipes):
 
 ```bash
-# clone just web/ at the tag matching your install (hermes --version → v2026.6.5)
-git clone --depth 1 --branch v2026.6.5 --filter=blob:none --sparse \
+# clone just web/ at the tag matching the current install (v0.18.2 → v2026.7.7.2)
+git clone --depth 1 --branch v2026.7.7.2 --filter=blob:none --sparse \
   https://github.com/NousResearch/hermes-agent.git ~/hermes-dashboard-src
 git -C ~/hermes-dashboard-src sparse-checkout set web
 cd ~/hermes-dashboard-src/web && npm install && npm run build   # → ../hermes_cli/web_dist

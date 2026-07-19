@@ -102,7 +102,7 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 
 ## 14.5 Fleet health alerting — a dumb watchdog (no agent needed)
 
-There is **no dedicated ops agent for host monitoring** — that's deliberately *not* an LLM's job (it stays the dumb watchdog's, below). An agent that watches the fleet would be a shell-capable agent (more attack surface, §13) doing a job that wants determinism, not reasoning. (Config/fleet *administration* — tuning agents, restarting gateways — was later handed to `general`/Derya via an admin shell, gated by manual approval — [docs/02 §2.1](02-agents.md), [docs/09 §13.7a](09-security.md); that's config management, not the critical alert path.) The right tool is a **dumb watchdog**: a launchd job that checks the fleet every 15 minutes and, on failure, messages you through the **raw Telegram Bot API**, bypassing the agents entirely. It must not depend on any agent — it has to work precisely when they don't. `KeepAlive` restarts a crashed process but *masks crash-loops*, and the Layer-1 checks (Section 12) are weekly-manual — this closes that gap. (Richer "why is X slow" diagnosis stays a manual ask, or a future ops agent if you ever genuinely need one.)
+There is **no dedicated ops agent for host monitoring** — that's deliberately not an LLM's job. Config/fleet administration belongs to `general`/Derya, with an explicit show-then-confirm behavioral rule; approvals are `off`. All nine profiles are shell-capable by design, so there is no "ops is the only extra shell risk" concern. The health path remains a **dumb watchdog**: a launchd job that checks the fleet every 15 minutes and messages through the raw Telegram API on failure.
 
 `~/.hermes/scripts/watchdog.sh`:
 

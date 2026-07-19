@@ -8,18 +8,17 @@
 flowchart TB
     subgraph Mini["🖥️ Mac Mini M4 · 16 GB · native Hermes · one install"]
         subgraph always["always-on"]
-            general["Derya · general<br/>creative director · DeepSeek"]:::mini
-            researcher["Doruk · researcher<br/>market scout · DeepSeek"]:::mini
-            assistant["Tuna · assistant<br/>studio manager · DeepSeek"]:::mini
-            marketing["Nilay · marketing<br/>community & go-to-market · GPT-5.6-luna"]:::mini
+            general["Derya · general<br/>creative director · GPT-5.6-sol"]:::codex
+            researcher["Doruk · researcher<br/>market scout · GPT-5.6-sol xhigh"]:::codex
+            assistant["Tuna · assistant<br/>studio manager · GPT-5.6-terra"]:::codex
+            marketing["Nilay · marketing<br/>community & go-to-market · GPT-5.6-luna"]:::codex
         end
         subgraph demand["on-demand"]
             coder["Naz · coder<br/>lead programmer · Godot/Metal · GPT-5.6-sol xhigh"]:::codex
             writer["Ozan · writer<br/>narrative designer · GPT-5.6-sol xhigh"]:::codex
-            producer["Sarp · producer<br/>product lead · GPT-5.6-luna"]:::mini
+            producer["Sarp · producer<br/>product lead · GPT-5.6-luna"]:::codex
         end
     end
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     style Mini fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
     style always fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
@@ -63,17 +62,17 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **GPT-5.6-terra via Codex OAuth primary** (fleet-wide since 2026-07-05, effort `medium` for Derya), **DeepSeek V4 Flash fallback** — quota exhaustion degrades to Flash instead of stalling ([docs/04](04-models.md)).
+- **Model:** **GPT-5.6-sol via Codex OAuth primary** (effort `xhigh` for Derya), **DeepSeek V4 Flash fallback** — live config re-verified 2026-07-19 ([docs/04](04-models.md)).
   ```yaml
   # ~/.hermes/profiles/general/config.yaml (live)
   model:
     provider: openai-codex
-    default: gpt-5.6-terra
+    default: gpt-5.6-sol
   fallback_providers:
     - provider: deepseek
       model: deepseek-v4-flash
   agent:
-    reasoning_effort: medium
+    reasoning_effort: xhigh
   ```
 - **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob` — **plus `terminal` + `code_execution` + `file`.** Derya is the **fleet admin**: she configures/tunes the other agents (`hermes config set`, edits `honcho.json`/`SOUL.md`) and restarts gateways (`launchctl kickstart`). ⚠️ This makes her the **highest-privilege agent in the fleet** — always-on *and* web/vision-facing *and* holding a host shell. Gated by Tirith pre-exec scanning + a confirm-first SOUL (§6.7) — approvals run `off` fleet-wide ([docs/09 §13](09-security.md)), so the confirm-first rule is *behavioral, not enforced*.
   ```yaml
@@ -91,7 +90,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 - **Profile / directory:** profile `general`, data dir `~/.hermes/profiles/general/`. Stand it up like any other (Section 6):
   ```bash
   hermes profile create general
-  hermes -p general setup        # Derya bot token, DeepSeek model, keys
+  hermes -p general setup        # Derya bot token + GPT-5.6/Codex auth; static keys resolve from 1Password
   # write SOUL.md (6.7), prune toolsets (6.6), then: hermes -p general gateway install (Section 7)
   ```
   No container, no port, no compose — Telegram is outbound, so Derya needs no inbound port.
@@ -111,12 +110,12 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 | Slug | Display | Does | Toolsets | Model |
 |---|---|---|---|---|
-| `finance` | **Murat** | Markets & finance analyst — analyzes read-only data you share (published Google-Sheet CSVs via `web`, statements/charts via `vision`), scans news/Reddit/finance sites (BIST + global), **crunches numbers with `code_execution`**. Informational, *not* investment advice. | `web`+TinyFish, **`code_execution` (fenced)**, `file`, `vision`, `cronjob`, Honcho | DeepSeek V4 Flash |
-| `health` | **Defne** | Health & fitness coach — workout/nutrition logging, **calorie/macro estimate from food photos** (`vision`, ballpark), trend tracking, research. *Not* medical advice. | `web`+TinyFish, `file`, `vision`, `cronjob`, Honcho — **no shell** | DeepSeek V4 Flash |
+| `finance` | **Murat** | Markets & finance analyst — analyzes read-only data you share (published Google-Sheet CSVs via `web`, statements/charts via `vision`), scans news/Reddit/finance sites (BIST + global), **crunches numbers with `code_execution`**. Informational, *not* investment advice. | `web`+TinyFish, **`code_execution` (fenced)**, `file`, `vision`, `cronjob`, Honcho | GPT-5.6-terra → DeepSeek fallback |
+| `health` | **Defne** | Health & fitness coach — workout/nutrition logging, **calorie/macro estimate from food photos** (`vision`, ballpark), trend tracking, research. *Not* medical advice. | `web`+TinyFish, `file`, `vision`, `cronjob`, Honcho (all profiles host-code-capable by design) | GPT-5.6-terra → DeepSeek fallback |
 
-- **`finance` is a fenced shell-capable agent** (Python only) — alongside `coder` (game-dev shell) and `general`/Derya (admin shell, §2.1). It has `code_execution` ON *because* spreadsheet/CSV analysis is the point, so it's **fenced** identically: `approvals: manual`, website blocklist, no `terminal` (Python exec only). The clean read-only data path is **publish the Google Sheet tab to web as CSV** → the agent fetches the URL (no OAuth, genuinely read-only) → `code_execution` crunches it. See [docs/09 §13.7](09-security.md).
+- **All profiles are shell-capable by design (accepted 2026-07-19).** The old intended design (coder/finance/general only) was superseded — the v0.18.2 resolver exposes `terminal` and `execute_code` on all nine profiles; approvals are `off`. Security relies on persona guardrails + credential stripping + Tirith ([docs/09](09-security.md)).
 - **X/Twitter deferred** — Hermes's `x_search` needs an xAI/SuperGrok key (§ docs/04); `finance` covers Reddit + news + finance sites via TinyFish instead. Add the key later for native X sentiment.
-- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (DeepSeek/OpenRouter see what you send; Honcho stores derived facts locally) — same posture as the rest of the fleet ([docs/07](07-memory.md)). Zero-leak would require a local model.
+- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (Codex handles primary turns; DeepSeek may receive fallback traffic; OpenRouter handles vision fallback and Honcho workers). Honcho stores derived facts locally ([docs/07](07-memory.md)).
 
 ---
 

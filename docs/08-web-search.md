@@ -52,7 +52,7 @@ Start with single shared key. Upgrade only if you observe rate-limit errors in a
 
 #### Step 3: Add the TinyFish MCP server to each agent
 
-> **Verified on the Mini (v0.16.0):** TinyFish's MCP endpoint authenticates with **OAuth 2.1 PKCE**, *not* an `X-API-Key` header. You do **not** hand-write the MCP block and you do **not** need `TINYFISH_API_KEY` for the MCP (the key only matters if you also call TinyFish's REST API directly; the MCP path ignores it). Use the CLI — it runs the OAuth flow and writes the config for you:
+> **Re-verified on the Mini with Hermes v0.18.2:** TinyFish's MCP endpoint authenticates with **OAuth 2.1 PKCE**, not an `X-API-Key` header. Do not hand-write the MCP block or add `TINYFISH_API_KEY` for MCP. Use the CLI; it runs OAuth and writes the profile-local config/token state:
 
 ```bash
 hermes -p researcher mcp add tinyfish --url https://agent.tinyfish.ai/mcp
@@ -239,7 +239,7 @@ For reference when wiring up each agent:
 
 ### 10.6a URL extraction — TinyFish carries it; no built-in extract backend
 
-Search and extraction are separate capabilities in Hermes. SearXNG is **search-only**: the built-in `web_extract` tool needs an extract-capable backend — v0.16.0's provider registry supports `firecrawl`, `tavily`, `exa`, and `parallel` (`searxng`/`ddgs`/`brave-free` return a typed "search-only" error, no silent fallback).
+Search and extraction are separate capabilities in Hermes. SearXNG is **search-only**: the v0.18.2 `web_extract` provider registry supports `firecrawl`, `tavily`, `exa`, and `parallel`; `searxng`, `ddgs`, and `brave-free` return a typed search-only error rather than silently falling back.
 
 **Current config: no `extract_backend` is set.** Page extraction runs through **TinyFish MCP** (its fetch/agent endpoints), which every profile already has — consistent with TinyFish-primary above. `web_extract` itself returns a clean "no extract provider configured" error, which is fine: the agents route around it.
 

@@ -8,15 +8,15 @@
 flowchart TB
     subgraph mini["🖥️ Mac Mini M4 · 16 GB · always-on"]
         subgraph hermes["native Hermes · one install · ~/.hermes"]
-            k["Derya · general"]:::mini
-            m["Doruk · researcher"]:::mini
-            u["Tuna · assistant"]:::mini
-            w["Ozan · writer"]:::codex
-            c["Naz · coder<br/>Metal GPU · Godot GUI"]:::codex
-            o["Nilay · marketing"]:::mini
-            p["Sarp · producer"]:::mini
-            f["Murat · finance"]:::mini
-            h["Defne · health"]:::mini
+            k["Derya · general<br/>GPT-5.6-sol"]:::codex
+            m["Doruk · researcher<br/>GPT-5.6-sol"]:::codex
+            u["Tuna · assistant<br/>GPT-5.6-terra"]:::codex
+            w["Ozan · writer<br/>GPT-5.6-sol"]:::codex
+            c["Naz · coder<br/>GPT-5.6-sol · Metal GPU · Godot GUI"]:::codex
+            o["Nilay · marketing<br/>GPT-5.6-luna"]:::codex
+            p["Sarp · producer<br/>GPT-5.6-luna"]:::codex
+            f["Murat · finance<br/>GPT-5.6-terra"]:::codex
+            h["Defne · health<br/>GPT-5.6-terra"]:::codex
         end
         subgraph svc["Docker · services only"]
             Honcho[("Honcho<br/>shared memory")]:::infra
@@ -24,10 +24,9 @@ flowchart TB
         end
     end
     phone["📱 You · Telegram + Tailscale"]:::user --> mini
-    note["One install = one trust domain.<br/>Profiles share ~/.hermes — NOT filesystem sandboxes.<br/>Isolation = single-tenant host + toolset hygiene + coder guardrails."]:::danger
+    note["One install = one trust domain.<br/>Profiles share ~/.hermes — NOT filesystem sandboxes.<br/>Isolation = single-tenant host + persona guardrails + uniform tooling."]:::danger
     hermes --- note
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
@@ -64,17 +63,15 @@ Be honest about the trade. Profiles are **not filesystem sandboxes** — a shell
 So isolation is no longer *structural*. It comes from three things instead:
 
 1. **Single tenant.** Every agent, token, and file is yours. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another. 1Password reduces persistent plaintext sprawl but does not make a credential invisible after Hermes resolves it into a running process.
-2. **Toolset hygiene.** Three agents can run code: `coder` (`terminal` + `code_execution`, game dev), `general`/Derya (same + `file` — the **fleet admin**), and `finance` (fenced Python). The other six have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever — and Derya, the always-on web-facing admin, is the highest-privilege agent ([docs/09 §13.7a](09-security.md)).
-3. **Code-runner guardrails.** `coder` is a primary arbitrary-code agent sharing the install (the always-on `general`/Derya admin shell is the other — §13.7a), so they carry the residual risk. Each is fenced with `approvals: manual`/`smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
-
-The payoff of the old container choice (a kernel boundary) is replaced by **a much smaller attack surface** (six no-shell agents) plus **focused guardrails on the agents that can do damage** (`coder`, `finance`, and the Derya admin shell). For a solo operator that is the right altitude.
+2. **Uniform tooling by design (accepted 2026-07-19).** All nine profiles resolve both `terminal` and `execute_code`; approvals are `off` fleet-wide. The boundary is behavioral: persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance`. See [Section 6.6](05-deployment.md).
+3. **Host-level risk is fleet-wide, managed.** Every profile has host-code access. Tirith pre-exec scans dangerous patterns on Derya and Doruk; credential stripping removes secrets from child-process environments; the configured website blocklists limit browser-path SSRF exfiltration for Naz and Murat. Derya's explicit confirmation rule applies to fleet changes but is behavioral rather than platform-enforced.
 
 ---
 
 ## 11. Native-install notes (macOS)
 
 - **Install path.** Native Hermes via the official installer / Homebrew formula (see [Section 14](10-operations.md) for the exact upgrade story). All state lives under `~/.hermes/`.
-- **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, Hermes' **built-in installer** wires one launchd LaunchAgent per profile — `hermes -p <profile> gateway install` writes + bootstraps `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist` (verified v0.16.0) — so each gateway auto-starts at login and restarts on crash. This is the native equivalent of `--restart unless-stopped` + s6.
+- **Supervision is launchd's job.** The s6 tree only exists inside the Docker image. Native, Hermes' **built-in installer** wires one launchd LaunchAgent per profile — `hermes -p <profile> gateway install` writes + bootstraps `~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist` (re-verified on Hermes v0.18.2 / 2026.7.7.2) — so each gateway auto-starts at login and restarts on crash.
 - **Start-at-login.** LaunchAgents load at user login. The Mini must therefore **auto-login** after a reboot (System Settings → Users & Groups → Automatic login) or the agents won't come back unattended.
 - **Docker stays — for services only.** Honcho (4 containers: api, deriver, pgvector Postgres, Redis) and SearXNG are infrastructure, not agents. Keep a minimal Docker/OrbStack install for **those five containers only** (VM capped at 4 GB); no agent runs in a container. Resist adding heavy service stacks to the VM — a self-hosted Firecrawl proved the point by OOM-ing it ([docs/08 §10.6a](08-web-search.md)).
 - **Resource pressure has no hard cap.** Native gives no per-agent `--memory` ceiling. A runaway profile can swap the whole Mini. Mitigations: Hermes `max_turns` iteration budgets ([Section 13](09-security.md)) bound loops, the on-demand agents (`coder`, `writer`, `producer`) are light while idle (in practice all 9 gateways run 24/7 — an idle gateway is ~0.3–0.5 GB since inference is remote), and the **watchdog** ([Section 14.5](10-operations.md)) catches a down or crash-looping gateway within 15 minutes.

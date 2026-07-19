@@ -9,8 +9,8 @@ flowchart TB
     you["📱 You · 9 Telegram bots"]:::user
     subgraph install["native Hermes · one install · ~/.hermes"]
         direction LR
-        derya["Derya · router"]:::mini
-        others["researcher · assistant<br/>writer · producer · coder"]:::mini
+        derya["Derya · router<br/>GPT-5.6-sol"]:::codex
+        others["8 specialist profiles<br/>GPT-5.6 sol / terra / luna"]:::codex
         honcho[("Honcho<br/>shared user model")]:::infra
         board[("kanban.db<br/>off — flip later")]:::off
     end
@@ -20,7 +20,7 @@ flowchart TB
     derya -.-> honcho
     others -. "opt · when earned" .-> board
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
-    classDef mini fill:#388E3C,stroke:#1B5E20,color:#fff
+    classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     classDef off fill:#B0BEC5,stroke:#607D8B,color:#263238
     style install fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20

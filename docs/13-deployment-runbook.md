@@ -4,9 +4,9 @@
 
 ---
 
-The concern docs (01–12) explain *why*; this is the *what, in order*. Follow top-to-bottom.
+The concern docs (01–15) explain *why*; this is the *what, in order*. Follow top-to-bottom.
 
-> **Current stack (2026-07-05):** primary model = **GPT-5.6 (sol/terra/luna tiers, since 2026-07-12) via Codex OAuth on all nine agents + crons** (centralized root auth, effort tiers), **DeepSeek V4 Flash fallback** everywhere ([docs/04](04-models.md)); web = TinyFish MCP + SearXNG, no extract backend ([docs/08 §10.6a](08-web-search.md)); OrbStack VM capped 4 GB (Honcho ×4 + SearXNG); all 9 gateways 24/7 under launchd; approvals off fleet-wide ([docs/09 §13](09-security.md)). Dated checklist entries below are the build log as it happened.
+> **Current stack (re-verified 2026-07-19):** primary model = **GPT-5.6 via Codex OAuth on all nine agents + crons** (`sol`: general/coder/researcher/writer; `terra`: assistant/finance/health; `luna`: marketing/producer), **DeepSeek V4 Flash is the only profile-level fallback** ([docs/04](04-models.md)); Hermes v0.18.2 / 2026.7.7.2; all 9 gateways 24/7; approvals off fleet-wide. Dated checklist entries below are historical build-log evidence, not current model instructions.
 
 > **Credential policy (2026-07-19):** 1Password is canonical for all static service and integration credentials. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md). Bootstrap identity and writable OAuth stores are the only local `0600` exceptions.
 
@@ -28,13 +28,13 @@ flowchart LR
 
 - [ ] **MiniMax $20 Token Plan** — platform.minimax.io. ⚠️ Confirm **M3 is included at the $20 tier**. Endpoint/model verified in v0.16.0 source: provider `minimax` reads `MINIMAX_API_KEY`, defaults to `https://api.minimax.io/anthropic` (override `MINIMAX_BASE_URL`; China: `api.minimaxi.com/anthropic`), model id `MiniMax-M3`. A `minimax-oauth` provider (account login, no key) also exists — if the Token Plan turns out to be subscription-style, use that instead ([docs/04 §5.2](04-models.md)).
 - [~] **OpenRouter key** — **historical deferred decision (2026-06-07).** Any future OpenRouter credential is created/rotated in 1Password, mapped only to profiles that require it, and enabled through the approved mapping → `status`/`sync` → restart → smoke-test flow. Do not revive `bot-tokens.env` or `setup-bots.sh`.
-- [ ] **Codex creds** — existing `~/.codex/auth.json` (ChatGPT Desktop / Codex CLI) or be ready for device-code login (coder + writer — §5.3). ⚠️ Accepted-risk — read §5.0 first.
-- [ ] **TinyFish key** — web research ([docs/08](08-web-search.md)).
+- [x] **Codex creds** — each profile has its own writable `0600 auth.json`; OAuth login and refresh/writeback are profile-local exceptions (§5.3, docs/15).
+- [x] **TinyFish MCP OAuth** — per-profile OAuth 2.1 PKCE; no static API key is required for the MCP path ([docs/08](08-web-search.md)).
 - [ ] **Mac Mini M4** — macOS current; **auto-login enabled** so launchd agents survive reboot ([docs/01 §11](01-architecture.md)); Docker/OrbStack installed (for Honcho + SearXNG **only**).
 
 ## Step 1 — Install Hermes + verify the CLI ✅ DONE (2026-06-06)
 
-- [x] Installed `hermes-agent 2026.6.5` via Homebrew → **Hermes v0.16.0**.
+- [x] Originally installed `hermes-agent 2026.6.5` / Hermes v0.16.0; **current install re-verified as `hermes-agent 2026.7.7.2` / Hermes v0.18.2 on 2026-07-19**.
 - [x] **CLI verbs verified** (gate resolved — plan corrected):
   - `hermes profile create <slug>` ✓ as assumed; also drops a wrapper at `~/.local/bin/<slug>` (`researcher setup` ≡ `hermes -p researcher setup`).
   - Profile selection is a **global `-p/--profile` flag**, not per-subcommand: `hermes -p <slug> setup`, `hermes -p <slug> gateway run`. (`setup --profile` / `gateway run --profile` don't exist.)
@@ -101,16 +101,16 @@ static credentials; verify profile references with `hermes -p <profile> secrets 
 
 - [ ] A picked idea (16.9 gate) → **Ozan** lean PRD → **Naz** Godot prototype, native on the Mini's **Metal GPU** ([docs/11](11-game-dev.md)).
 - [ ] Wire Sarp's weekly backlog-scoring cron once the scout's digests accumulate candidates.
-- [ ] Naz `approvals: manual` → `smart` after a week of watching what it flags.
+- [x] Fleet approval policy standardized to `off`; do not revive the retired manual→smart migration note.
 - [ ] Nilay TinyFish OAuth (`hermes -p marketing mcp login tinyfish`) when you want her deep-fetch beyond SearXNG.
 
 ## Personal tier — LIVE (2026-06-08)
 
-- [x] **`finance` (Murat)** + **`health` (Defne)** gateways installed under launchd → **fleet now 9 agents**. Both MiniMax M3 + OpenRouter fallback + TinyFish + Honcho; bots created, tokens valid, Telegram + Honcho confirmed. Watchdog `EXPECTED` extended to all 9.
-- [x] `finance` fenced (2nd shell agent): `code_execution` ON, `approvals: manual`, website blocklist, no `terminal`.
+- [x] **`finance` (Murat)** + **`health` (Defne)** gateways installed under launchd → **fleet now 9 agents**. Both now run GPT-5.6-terra primary + DeepSeek fallback, with TinyFish + Honcho.
+- [x] `finance` fenced (2nd shell-capable agent): `code_execution` ON, website blocklist, no `terminal`; fleet approvals are `off`.
 - [ ] Per-profile **TinyFish OAuth** when you want deep-fetch: `hermes -p finance mcp login tinyfish` (+ `-p health`). Until then they use SearXNG/ddgs.
 - [ ] **Finance Google Sheet:** publish a tab → CSV (File → Share → Publish to web → CSV), give Murat the URL; he fetches + crunches it read-only.
-- [ ] Murat `approvals: manual` → `smart` after a week (like Naz).
+- [x] Retired the old manual→smart approval migration; fleet policy is `off`.
 - [x] **`general`/Derya → fleet admin (2026-06-08).** Granted `terminal` + `code_execution` + `file` so Derya can configure/tune the fleet and restart gateways. `approvals: mode=manual` (timeout 120, cron_mode deny) + `security.tirith_enabled` + a confirm-first SOUL. ⚠️ Now the **most-privileged agent** (always-on + web/vision + shell); approval on benign `hermes config set`/`launchctl` is *behavioral, not enforced* — see [docs/09 §13.7a](09-security.md). **Supersedes** the earlier "only `coder` has a shell" note (Step 6): three agents now run code — `coder`, `finance` (fenced), `general` (admin).
 
 ## Optional extras done

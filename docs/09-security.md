@@ -6,7 +6,7 @@
 
 ## 13. Safety and operational guardrails
 
-Nine agents touching the network and filesystem need explicit guardrails. **Three can run code:** `coder` (terminal + Python — game dev), `general`/Derya (terminal + Python + `file` — the **fleet admin**, and the highest-privilege agent: always-on *and* web-facing *and* a host shell — §13.7a), and `finance` (fenced Python only). The other six have no command-execution surface.
+Nine agents touching the network and filesystem need explicit guardrails. Hermes v0.18.2 resolves both `terminal` and `execute_code` on **all nine profiles** by design (accepted 2026-07-19); approvals are `off` fleet-wide. The live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` — not a shell-restriction policy.
 
 **Approvals policy.** In each agent's `config.yaml`:
 
@@ -15,7 +15,7 @@ approvals:
   mode: 'off'    # current fleet-wide setting — no approval gate on any profile
 ```
 
-**Current posture: all nine profiles run `approvals.mode: 'off'`**, including the three shell-capable agents (`coder`, `general`, `finance`); Tirith pre-exec scanning is enabled on `general` only. This trades the approval gate for zero-friction operation. What that means concretely: on the shell-capable agents, the layers between LLM output and your Mac are credential redaction, the website blocklist, Tirith (on `general`), and the SOUL's behavioral rules — there is no per-command human gate. §13.7's analysis of that trade still applies in full; the graduated alternative if the risk calculus ever changes is `manual` on the shell agents (`coder`/`general`/`finance`) and `smart` elsewhere:
+**Current posture: all nine profiles run `approvals.mode: 'off'`**; Tirith pre-exec scanning is enabled on `general` and `researcher`, while the website blocklist is enabled on `coder` and `finance`. With all profiles host-code-capable by design, persona text, credential redaction, Tirith and blocklists reduce risk but do not create a host sandbox; there is no per-command human gate. A graduated `manual`/`smart` policy remains a possible future alternative, not the current state:
 
 ```yaml
 approvals:
@@ -45,7 +45,7 @@ security:
       - "169.254.*"       # link-local; blocks cloud metadata endpoints
 ```
 
-The `100.*` entry deserves attention specifically because of Tailscale. Without it, an agent's `web_fetch` could hit other tailnet members (your phone, work laptop, other Macs). The agent isn't supposed to do that, but the network boundary won't stop it — only the blocklist will. Add this entry for every agent unless one has a specific reason to talk to another tailnet device.
+The `100.*` entry deserves attention specifically because of Tailscale. Without it, an agent's `web_fetch` could hit other tailnet members (your phone, work laptop, other Macs). The live explicit blocklist is currently enabled only on `coder` and `finance`; extending it to other profiles is a future config change that requires review and approval.
 
 **Tirith security scanning** (optional). If you want pre-execution scanning of shell commands:
 
@@ -55,7 +55,7 @@ security:
   tirith_fail_open: true   # commands run if scanner unavailable; set false for strict mode
 ```
 
-Requires the `tirith` binary in the container's PATH.
+Requires the `tirith` binary in the host PATH. The live fleet enables it on `general` and `researcher`.
 
 **Secrets redaction.**
 
@@ -70,21 +70,21 @@ security:
 
 **This is the security cost of the native, single-install decision (Section 1) — pay attention to it.** Hermes offers four command-execution backends — `local` (no isolation, runs on the host), `docker`, `modal`, and `daytona` (sandboxes). Native on the `local` backend, the docs' warning applies in full: *"for gateway sessions on the local backend, neither the approval system nor container isolation protects the host."* There is no container wrapping the agent — a `terminal` or `code_execution` command runs **directly on your Mac, as your user.**
 
-Because all profiles share one install, a shell-capable agent can read sibling config references, bootstrap identity and writable OAuth stores. Static service credentials are no longer duplicated across profile `.env` files; they remain canonical in scoped 1Password vaults. This reduces persistent plaintext blast radius but does not protect a secret already resolved into a running process, so the residual risk still concentrates on the few agents that run code.
+Because all profiles share one install, a shell-capable agent can read sibling config references, bootstrap identity and writable OAuth stores. Static service credentials are canonical in scoped 1Password vaults, but that does not protect a secret already resolved into a process. All nine profiles are host-code-capable by design, so the residual risk is fleet-wide.
 
 **Threat model — be precise about what you're defending against.** This is single-tenant. The real threat is **prompt-injection-driven exfiltration** — a poisoned web page or repository tricking a shell-capable profile into using a resolved credential, reading local bootstrap/OAuth state, or running a destructive command. 1Password removes stale copies; it is not a runtime sandbox.
 
 The fence around `coder`:
 
-- **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `researcher`, `assistant`, `marketing`, `writer`, `producer`, and `health` — **six of the nine agents have zero command-execution surface.** Three can run code: `coder` (terminal + Python), `general`/Derya (terminal + Python + `file` — fleet admin, §13.7a), and `finance` (fenced `code_execution` only, no shell). Toolset pruning is the primary control now that there is no container.
-- **`approvals: smart` is mandatory on `coder`.** With no container boundary, the approval layer is the *only* gate between LLM-generated code and your Mac. It judges risk and escalates dangerous commands — especially the network sends that an exfiltration attempt needs. Run `manual` for `coder`'s first week.
-- **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from child processes. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. 1Password prevents static credential sprawl on disk; stripping limits resolved-value propagation into child processes.
-- **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on `coder` so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.
-- **Optional: route `coder`'s `code_execution` through the `docker` backend.** If you want the on-disk-secret protection back without losing GPU game-dev, run the *agent* native (Godot GUI on the host) but set its `code_execution` backend to `docker`, so untrusted generated code runs jailed while interactive engine work stays native. This re-introduces Docker for one code path only — worth it if `coder` will execute much third-party code.
-- **OS-user isolation isn't available here.** A dedicated macOS user for `coder` would mean a *separate* Hermes install (a different `~/.hermes`), which forfeits the single-install benefits — shared Honcho continuity and native `kanban` across the pipeline. So the fence is approvals + redaction + blocklist (+ optional docker backend), **not** a second user account. If `coder`'s blast radius ever feels too large, the clean escalation is to move it back to its own machine/install — not to fragment users on this one.
-- **`code_execution` `PYTHONPATH` disclosure (issue #7071).** The code-execution path injects the project root into the child's `PYTHONPATH`, which can leak config/security files into LLM-run code. Keeping `code_execution` on `coder` only confines that to the one agent you already watch.
-- **Be honest about what these are: risk reducers, not a sandbox.** In the container draft a kernel boundary contained `coder`; native, nothing does. Approvals, redaction, and the blocklist *lower* the odds and cost of a bad action — they don't make one impossible. Specifically, **the website blocklist does not stop a shell.** It gates browser-style fetches, but `coder` also has `terminal` + `code_execution`, so `curl`, a Python socket, or any shell command **bypasses the blocklist entirely.** The blocklist helps against the `web`/`browser` path, not the shell path.
-- **For untrusted or third-party code, the `docker` code-exec backend (or a separate machine) is the recommended default.** It limits access to profile state and resolved runtime credentials. Treat `local`-backend code-exec as acceptable only for code authored under your eye.
+|- **All nine profiles are shell-capable; there is no scope advantage left in targeting only coder.** The v0.18.2 resolver assembles `terminal` and `execute_code` for 9/9 profiles. This is accepted by design — the fence is credential stripping + Tirith + persona guardrails + website blocklist, not a "fewer shells" policy.
+|- **Approvals are currently `off`.** There is no enforced per-command human gate. All nine profiles share the host-level residual risk.
+|- **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from child processes. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. 1Password prevents static credential sprawl on disk; stripping limits resolved-value propagation into child processes.
+|- **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on active shell profiles so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.
+|- **Optional: route `coder`'s `code_execution` through the `docker` backend.** If you want the on-disk-secret protection back without losing GPU game-dev, run the *agent* native (Godot GUI on the host) but set its `code_execution` backend to `docker`, so untrusted generated code runs jailed while interactive engine work stays native. This re-introduces Docker for one code path only — worth it if `coder` will execute much third-party code.
+|- **OS-user isolation isn't available here.** A dedicated macOS user for `coder` would mean a separate Hermes install. The current fence is tool scope + redaction + blocklist (+ optional docker backend), **not** approvals or a second user account.
+|- **`code_execution` `PYTHONPATH` disclosure (issue #7071).** The code-execution path injects the project root into the child's `PYTHONPATH`, which can leak config/security files into LLM-run code. All nine profiles are affected; this is accepted risk mitigated by credential stripping and persona guardrails.
+|- **Be honest about what these are: risk reducers, not a sandbox.** In the container draft a kernel boundary contained `coder`; native, nothing does. Approvals, redaction, and the blocklist *lower* the odds and cost of a bad action — they don't make one impossible. Specifically, **the website blocklist does not stop a shell.** It gates browser-style fetches, but any agent with `terminal` + `code_execution` can use `curl`, a Python socket, or any shell command **bypassing the blocklist entirely.** The blocklist helps against the `web`/`browser` path, not the shell path.
+|- **For untrusted or third-party code, the `docker` code-exec backend (or a separate machine) is the recommended default.** It limits access to profile state and resolved runtime credentials. Treat `local`-backend code-exec as acceptable only for code authored under your eye.
 
 #### 13.7a — Derya as fleet admin (the highest-privilege exposure)
 
@@ -92,9 +92,8 @@ The fence around `coder`:
 
 What gates her, and what does *not*:
 
-- **Manual approvals + Tirith** catch *dangerous-pattern* commands (`rm -rf`, `curl|sh`, writes to `/etc`, killing a gateway). Useful against a blatant injection.
-- **What is NOT gated:** plain `hermes config set …`, `launchctl kickstart …`, and `file`/`patch` writes to `honcho.json`/`SOUL.md`/sibling configs are *not* dangerous patterns — they **run with no prompt**. So "every config change is approved by me" is **behavioral** (her SOUL is told to show the change and wait for a yes), **not enforced** by Hermes. A clever injection can talk past the SOUL.
-- **Self-disable path:** with a shell she can run `hermes config set approvals.mode off` un-prompted. The built-in file-guard blocks editing her *own* `config.yaml` via `file`, but not via the shell. SOUL says never; nothing enforces it.
+- **Tirith** catches some dangerous command patterns on `general` (and is also enabled on `researcher`); it is not an approval gate.
+- **What is NOT gated:** plain `hermes config set …`, `launchctl kickstart …`, and `file`/`patch` writes can run with no platform prompt. “Show the exact fleet change and wait for yes” is behavioral, not enforced by Hermes.
 - **What limits the blast radius:** `code_execution`'s child env is scrubbed of secrets (provider/Telegram keys aren't in the script's environment), the single allowed Telegram user is you, and SSRF protection blocks loopback/RFC1918 fetches.
 
 Honest framing: Derya-as-admin is **convenience traded for surface**. Treat it as "Derya *can* change the fleet and is asked to confirm first," not "Derya *cannot* act without my approval." The hard-guarantee alternative is **proposal-only** (Derya drafts the change, you apply it) — no shell, true gating. If her blast radius ever feels too large, revert her toolsets to read-only and go proposal-only.
