@@ -72,14 +72,14 @@ No container, no port, no compose — just a profile under `~/.hermes/profiles/p
 
 ### 16.4 Model assignment (GPT-5.6 sol/terra/luna fleet-wide since 2026-07-12)
 
-Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAuth primary (capability tier per role: `gpt-5.6-sol` xhigh, `-terra` medium, `-luna` low), `deepseek-v4-flash` fallback** (patron decision 2026-07-05, overriding the old cron-stays-on-DeepSeek rule; accepted risk). Reasoning efforts are tiered per role. Full reasoning + the override record in [docs/04](04-models.md).
+Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAuth primary (capability tier per role: `gpt-5.6-sol` medium, `-terra` medium, `-luna` low), `deepseek-v4-flash` fallback** (patron decision 2026-07-05, overriding the old cron-stays-on-DeepSeek rule; accepted risk). Sol stays at medium to control quota and cost. Full reasoning + the override record in [docs/04](04-models.md).
 
 | Agent | Role | Model | Effort | Rationale |
 |---|---|---|---|---|
-| `researcher` | opportunity scout | `gpt-5.6-sol` (Codex) | `xhigh` | Deep multi-source research quality; weekly scout cron now also on GPT (quota watch applies). |
+| `researcher` | opportunity scout | `gpt-5.6-sol` (Codex) | `medium` | Deep multi-source research with controlled Sol quota use; weekly scout cron also inherits this route. |
 | `producer` | backlog + scoring | `gpt-5.6-luna` (Codex) | `low` | Frequent light reasoning — low effort keeps quota draw down. |
-| `writer` | PRD / store copy | `gpt-5.6-sol` (Codex) | `xhigh` | Voice and long-form drafting. |
-| `coder` | Godot prototyping | `gpt-5.6-sol` (Codex) | `xhigh` | Strongest GDScript quality; the **heaviest** agent — first to feel the shared ChatGPT quota window (§5.3). |
+| `writer` | PRD / store copy | `gpt-5.6-sol` (Codex) | `medium` | Voice and long-form drafting with controlled Sol cost. |
+| `coder` | Godot prototyping | `gpt-5.6-sol` (Codex) | `medium` | Strong GDScript quality with controlled Sol quota use. |
 
 - **Vision auxiliary:** the profile's GPT-5.6 tier is primary, with OpenRouter/Gemini Flash fallback. Other auxiliary tasks inherit the main route unless explicitly overridden; DeepSeek is not the canonical direct auxiliary provider.
 - **Fallback chains:** Codex-primary agents fall back to DeepSeek (docs/04 §5.7).
@@ -93,7 +93,7 @@ Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAu
     - provider: deepseek
       model: deepseek-v4-flash
   agent:
-    reasoning_effort: xhigh   # coder/researcher/writer · medium general/assistant/finance/health · low marketing/producer
+    reasoning_effort: medium  # general/assistant/coder/finance/health/researcher/writer · low marketing/producer
   ```
 
 - **Provider roles:** Codex serves primary agent and cron turns; DeepSeek is fallback only; OpenRouter serves vision fallback and Honcho workers. Anthropic and MiniMax are not active routing dependencies.

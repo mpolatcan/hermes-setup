@@ -17,7 +17,7 @@ flowchart LR
     classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
 ```
 
-- **Reasoning efforts:** `xhigh` coder/researcher/writer · `medium` general/assistant/finance/health · `low` marketing/producer.
+- **Reasoning efforts:** `medium` general/assistant/coder/finance/health/researcher/writer · `low` marketing/producer. GPT-5.6 Sol stays at `medium` to control quota and cost.
 - **Codex OAuth is profile-local.** Each profile has its own writable `0600 auth.json`; the nine stores are distinct and refresh/writeback remains local to the selected profile. Never copy OAuth JSON between profiles or paste tokens into chat or documentation.
 - **Watch items:** the Codex quota window is shared across nine agents. Verify the billed provider in session statistics rather than inferring it from response text.
 - **Credential policy:** static DeepSeek/OpenRouter keys resolve from ID-based 1Password references. Codex OAuth and its refresh writeback remain the documented local `0600` exception ([docs/15](15-credential-management.md)).
@@ -59,9 +59,9 @@ All nine: **GPT-5.6 primary via `openai-codex` OAuth (⚠️ accepted-risk), `de
 
 | Slug | Bot | Main model | Effort | Fallback | Why this tier |
 |---|---|---|---|---|---|
-| `coder` | Naz | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Code quality ceiling; **heaviest agent → first to feel the shared quota window** |
-| `researcher` | Doruk | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Deep multi-source research + weekly scout cron |
-| `writer` | Ozan | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Voice, long-form drafting |
+| `coder` | Naz | `gpt-5.6-sol` | `medium` | `deepseek-v4-flash` | Strong code quality with controlled Sol quota use |
+| `researcher` | Doruk | `gpt-5.6-sol` | `medium` | `deepseek-v4-flash` | Multi-source research with controlled Sol quota use |
+| `writer` | Ozan | `gpt-5.6-sol` | `medium` | `deepseek-v4-flash` | Voice and long-form drafting with controlled Sol cost |
 | `general` | Derya | `gpt-5.6-sol` | `medium` | `deepseek-v4-flash` | Main line and fleet administration; live config differs from the old Terra assignment |
 | `assistant` | Tuna | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Daily logistics |
 | `finance` | Murat | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Personal markets analyst (personal tier, docs/02 §2.2) |
@@ -69,7 +69,7 @@ All nine: **GPT-5.6 primary via `openai-codex` OAuth (⚠️ accepted-risk), `de
 | `marketing` | Nilay | `gpt-5.6-luna` | `low` | `deepseek-v4-flash` | Frequent light tasks — Luna built for fast high-volume work |
 | `producer` | Sarp | `gpt-5.6-luna` | `low` | `deepseek-v4-flash` | Idea scoring — light reasoning |
 
-For all nine, the **vision auxiliary** uses the profile's GPT-5.6 tier and falls back to `openrouter:google/gemini-2.5-flash`. Hermes auxiliary tasks configured as `provider: auto` inherit the main GPT-5.6 provider and top-level fallback chain.
+For all nine, the **vision auxiliary** uses GPT-5.6 (`terra` for Derya; otherwise the profile's own tier) and falls back to `openrouter:google/gemini-2.5-flash`. All text auxiliary tasks use `provider: auto`, inheriting the profile's main GPT-5.6 model and top-level DeepSeek fallback chain.
 
 ### 5.2 DeepSeek setup — the fleet-wide fallback (was primary until 2026-07-05)
 
@@ -141,10 +141,10 @@ Pay-per-token via console.anthropic.com. Switch to Opus for hard work with `/mod
 
 ### 5.5 Auxiliary routing
 
-Hermes's `auto` auxiliary provider inherits the main provider and top-level fallback chain. The canonical fleet policy is therefore:
+Hermes's `auto` auxiliary provider inherits the main provider and top-level fallback chain. The live fleet policy is:
 
-- text auxiliary tasks: `auto` → GPT-5.6 primary, DeepSeek fallback;
-- vision: profile GPT-5.6 tier primary, OpenRouter/Gemini Flash fallback;
+- all nine profiles' text auxiliary tasks: `auto`/default → GPT-5.6 primary, DeepSeek fallback;
+- vision: GPT-5.6 primary (`terra` for Derya; otherwise the profile tier), OpenRouter/Gemini Flash fallback;
 - Honcho workers: OpenRouter/DeepSeek on their separate service path.
 
 Representative vision config:

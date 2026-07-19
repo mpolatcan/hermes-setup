@@ -9,13 +9,13 @@ flowchart TB
     subgraph Mini["🖥️ Mac Mini M4 · 16 GB · native Hermes · one install"]
         subgraph always["always-on"]
             general["Derya · general<br/>creative director · GPT-5.6-sol"]:::codex
-            researcher["Doruk · researcher<br/>market scout · GPT-5.6-sol xhigh"]:::codex
+            researcher["Doruk · researcher<br/>market scout · GPT-5.6-sol medium"]:::codex
             assistant["Tuna · assistant<br/>studio manager · GPT-5.6-terra"]:::codex
             marketing["Nilay · marketing<br/>community & go-to-market · GPT-5.6-luna"]:::codex
         end
         subgraph demand["on-demand"]
-            coder["Naz · coder<br/>lead programmer · Godot/Metal · GPT-5.6-sol xhigh"]:::codex
-            writer["Ozan · writer<br/>narrative designer · GPT-5.6-sol xhigh"]:::codex
+            coder["Naz · coder<br/>lead programmer · Godot/Metal · GPT-5.6-sol medium"]:::codex
+            writer["Ozan · writer<br/>narrative designer · GPT-5.6-sol medium"]:::codex
             producer["Sarp · producer<br/>product lead · GPT-5.6-luna"]:::codex
         end
     end
