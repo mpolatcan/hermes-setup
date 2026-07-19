@@ -239,8 +239,9 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
 15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
 16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
-17. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
-18. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, tasks, decisions, reports, auth boundary, and hygiene
+17. [Honcho Codex OAuth adapter](integrations/honcho-codex-adapter/README.md) — local OpenAI-compatible transport from Honcho inference routes to Hermes Codex OAuth, with tests, probes and rollback
+18. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
+19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, tasks, decisions, reports, auth boundary, and hygiene
 
 ---
 

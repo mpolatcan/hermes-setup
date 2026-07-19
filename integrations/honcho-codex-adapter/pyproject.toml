@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "honcho-codex-adapter"
+version = "0.1.0"
+description = "Honcho-only OpenAI Chat Completions facade over Hermes Codex OAuth transport"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.28",
+  "jsonschema>=4.23",
+  "openai==2.24.0",
+  "pydantic>=2.10",
+  "uvicorn>=0.34",
+]
+
+[project.scripts]
+honcho-codex-adapter = "honcho_codex_adapter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
