@@ -1,4 +1,4 @@
-# Memory — Honcho
+# Memory — Hermes, Honcho & Notion Boundary
 
 [← All docs](../README.md)
 
@@ -14,11 +14,15 @@ flowchart TB
         user["user peer = YOU<br/>shared across all agents"]:::user
         peers["ai peers (= slugs): all 9 profiles<br/>studio/general shared · finance/health isolated"]:::infra
     end
+    notion[("Durable knowledge plane — Notion<br/>knowledge · decisions · tasks · reports")]:::knowledge
     per --> hon
+    per <--> notion
+    hon -. "promote durable conclusions" .-> notion
     classDef l1 fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef l2 fill:#00838F,stroke:#006064,color:#fff
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef knowledge fill:#00796B,stroke:#004D40,color:#fff
     style per fill:#E3F2FD,stroke:#64B5F6,color:#0D47A1
     style hon fill:#F3E5F5,stroke:#BA68C8,color:#4A148C
 ```
@@ -27,9 +31,9 @@ flowchart TB
 
 Memory is the *defining* feature of Hermes — the whole reason for this setup rather than nine chatbot wrappers. It's worth treating as a first-class part of the design, not an afterthought.
 
-### 9.1 The three layers
+### 9.1 The three memory layers — plus the durable knowledge plane
 
-Hermes memory has three layers that complement each other. Knowing which layer does what is the key to using them well.
+Hermes memory has three layers that complement each other. **Notion is a fourth, separate durable knowledge/reporting plane rather than another Hermes memory provider.** Knowing which system does what is the key to avoiding duplicate or misplaced state.
 
 **Layer 1 — Built-in memory (always on, per-agent).**
 
@@ -52,7 +56,19 @@ This layer is local to each profile and never crosses agent boundaries. `coder` 
 
 Hermes ships with 8 plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory. Only one can be active at a time. They run alongside Layers 1 and 2, never replacing them. They add capabilities the built-in layer doesn't have: automatic fact extraction (no agent intervention needed), semantic search across long history, knowledge-graph reasoning, or — in Honcho's case — running user models with dialectic reasoning.
 
-For a nine-agent setup with shared user identity, **Honcho is the right choice**. The reason is its data model.
+For a nine-agent setup with shared user identity, **Honcho is the right memory provider**. The reason is its data model.
+
+**Durable knowledge plane — Notion (external, cross-profile).**
+
+Stable research, decisions, tasks, capability candidates, and detailed cron reports belong in structured Notion surfaces. They are searchable and reusable across profiles without pretending that a derived conversational observation is a project artifact. Honcho may promote durable conclusions into Notion through the scheduled bridge, but it does not become the canonical store for documents or pipeline state. Full ownership, auth, dedup, schema-read, and verification rules: [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
+
+| Need | Correct system |
+|---|---|
+| Fact required in every turn | `MEMORY.md` / `USER.md` |
+| Exact earlier discussion | Per-profile session search |
+| User/peer model or semantic conversation context | Honcho |
+| Durable reusable knowledge, decision, task, or report | Notion |
+| Static credential | 1Password, never any memory layer |
 
 ### 9.2 Why Honcho fits a nine-agent setup specifically
 
@@ -187,7 +203,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `marketing` | Yes | Yes | Yes (peer: `marketing`) | Audience/positioning notes, what messaging landed, channel history |
 | `coder` | Yes | Yes | Yes (peer: `coder`) | Language preferences, project conventions |
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
-| `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; backlog via Honcho workspace |
+| `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; canonical pipeline rows in Notion |
 
 All nine use Honcho. The fleet configuration lives once in shared `~/.hermes/honcho.json`; per-profile duplicates are unnecessary. Host-key resolution and peer separation were re-verified operationally on v0.18.2.
 
@@ -328,7 +344,7 @@ Verify a backup is restorable at least once. Sometime in month 1, do a test rest
 A few things worth being explicit about:
 
 - **`marketing` (Nilay) builds an audience model over time.** Its Honcho peer accumulates what messaging and channels actually work for you — the opposite of throwaway; the more it learns your positioning, the better its go-to-market advice.
-- **`producer` (Sarp) memory grows with the idea backlog.** Its Honcho peer (`producer`) plus the backlog workspace hold your taste profile across scored ideas.
+- **`producer` (Sarp) memory grows with your reactions to ideas.** Its Honcho peer learns the taste profile; Notion holds the scored candidate rows and decisions.
 - **You still need to actually talk to the agents.** The system can only learn from interactions that happen. An agent that gets one message per week will have a thin user model regardless of how good the memory stack is.
 - **Cross-agent reasoning isn't automatic.** Honcho's user peer is shared, but each AI peer reasons independently. If `coder` learned something that `assistant` should know, you may need to tell `assistant` once. The agents do not auto-broadcast knowledge to each other.
 

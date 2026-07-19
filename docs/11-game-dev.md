@@ -44,7 +44,7 @@ The pipeline surfaces candidates → scores them → you choose → you prototyp
 
 _(Pipeline diagram at the top of this page.)_
 
-All four agents are profiles in the one native install on the Mini, so the **entire pipeline is single-host**. `researcher` runs its always-on scout cron and delivers to Telegram; `producer` scores when you sit down to review; `writer` and `coder` pick up graduated ideas. Honcho's shared workspace carries the candidate list and your evolving taste profile across all four, and — because they co-locate — the pipeline is **`kanban`-ready** (16.11): a single board could auto-promote `researcher → producer → writer → coder` if the cadence ever justifies it. It doesn't yet; a flat `backlog.md` is the right altitude (16.6).
+All four agents are profiles in the one native install on the Mini, so execution is single-host. `researcher` runs its scout cron and delivers a short Telegram brief; durable opportunity rows go to Notion, where `producer`, `writer`, and `coder` can query the pipeline by domain without reading a sibling profile's files. Honcho carries the evolving user/taste model, not the candidate list. Because the agents co-locate, the pipeline is also **`kanban`-ready** (16.11): a single board could auto-promote `researcher → producer → writer → coder` if the cadence ever justifies it. It doesn't yet; Notion plus a flat producer-owned `backlog.md` working copy is the right altitude (16.6).
 
 ### 16.3 The `producer` agent — Sarp *(Phase B — deferred)*
 
@@ -118,8 +118,9 @@ prompt: |
   4. Reddit r/gamedev + r/IndieGaming — recurring pain points, asset/tool gaps,
      "why does no game do X" threads.
   Output a ranked list of 5–8 raw opportunities, each as
-  {title, genre, signal, the-gap, solo-buildable?}. Write them to the Honcho
-  workspace so the producer agent can score them. Keep the Telegram digest
+  {title, genre, signal, the-gap, solo-buildable?}. Deduplicate and write them
+  to the Notion Knowledge Library with the game/market domain so the producer
+  can query and score them cross-profile. Keep the Telegram digest
   under 600 words.
 ```
 
@@ -129,15 +130,16 @@ Why complaint mining is flagged priority: chart-topper summaries tell you what e
 
 > **Until producer exists (Phase A):** the scout's weekly digest lands in Telegram and you curate by hand — star what interests you, ignore the rest. No backlog file, no automated scoring. The rubric below is still worth keeping in your head as you skim. When manual curation gets tedious, that's the signal to build producer and automate it.
 
-`producer` keeps a persistent backlog at `~/.hermes/profiles/producer/backlog.md` (Honcho-shared). It scores each new candidate Mondays, right after the scout runs.
+Notion is the canonical cross-profile candidate store. `producer` may keep `~/.hermes/profiles/producer/backlog.md` as an inspectable local working copy for rubric scoring, but Honcho does not share that file and other profiles must not depend on sibling filesystem reads.
 
 ```yaml
 # ~/.hermes/profiles/producer/cron/score-backlog.yaml
 schedule: "0 9 * * 1"        # Mondays 09:00, after the 08:00 scout
 deliver_to: telegram_home
 prompt: |
-  Read this week's raw opportunities from the Honcho workspace and the existing
-  backlog at ~/.hermes/profiles/producer/backlog.md. Score each NEW candidate 1–5 on:
+  Query this week's game/market opportunities from the Notion Knowledge Library
+  and read the local working backlog at ~/.hermes/profiles/producer/backlog.md.
+  Score each NEW candidate 1–5 on:
     - Buildable : solo prototype in under 3 months?
     - Loop      : core loop expressible in one sentence?
     - Discovery : niche, searchable, streamable — can players find it?

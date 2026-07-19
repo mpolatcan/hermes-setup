@@ -1,8 +1,8 @@
 # Hermes Setup
 
-A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the interface, self-hosted Honcho as shared memory. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
+A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the main interface, self-hosted Honcho for conversational memory, Notion for durable knowledge/reporting, and 1Password as the canonical static-credential plane. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
 
-**Status: fully deployed — 9/9 agents live** under launchd on the Mini, all answering from Telegram, all on shared Honcho memory.
+**Status: fully deployed — 9/9 agents live** under launchd on the Mini, all answering from Telegram, all connected to the fleet's Honcho, Notion, and 1Password-backed operating planes.
 
 The fleet is **not** game-studio-only. It's a **general-purpose personal assistant layer** (works for your whole life) **plus** a **game-studio pipeline** layered on top. The studio names are flavor; the capabilities underneath are general.
 
@@ -46,17 +46,21 @@ flowchart TB
     tg <--> hermes
     linear <--> funnel["Tailscale Funnel<br/>HMAC webhook"]:::net
     funnel <--> Derya
-    gen -. shared memory .-> Honcho
-    studio -. shared memory .-> Honcho
-    personal -. shared memory .-> Honcho
+    gen -. "conversational memory" .-> Honcho
+    studio -. "conversational memory" .-> Honcho
+    personal -. "conversational memory" .-> Honcho
     gen -. "search fallback" .-> SearXNG
     studio -. "search fallback" .-> SearXNG
     personal -. "search fallback" .-> SearXNG
     wd -. "down/crash alert<br/>(bypasses agents)" .-> tg
 
+    Notion[("Notion<br/>knowledge · tasks · decisions · reports")]:::knowledge
+    OnePassword["1Password<br/>canonical static credentials"]:::secret
     ext["☁️ Codex · GPT-5.6 primary<br/>DeepSeek · fallback<br/>TinyFish · OpenRouter"]:::ext
     hermes --> ext
     Honcho --> ext
+    hermes <--> Notion
+    OnePassword -. "op:// resolution<br/>at process startup" .-> hermes
 
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
     classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
@@ -65,6 +69,8 @@ flowchart TB
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef knowledge fill:#00796B,stroke:#004D40,color:#fff
+    classDef secret fill:#455A64,stroke:#263238,color:#fff
     classDef wd fill:#D32F2F,stroke:#B71C1C,color:#fff
     style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
@@ -74,7 +80,14 @@ flowchart TB
     style svc fill:#E0F7FA,stroke:#26C6DA,color:#006064
 ```
 
-**Colours:** orange = GPT-5.6/Codex agents · purple = Honcho · teal = services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs. All nine agents use **GPT-5.6 via Codex as primary**; DeepSeek V4 Flash is the profile-level fallback.
+**Colours:** orange = GPT-5.6/Codex agents · purple = Honcho · teal = local services · red = watchdog · indigo = you · blue = network · dark-teal = external APIs/knowledge · slate = credential plane. All nine agents use **GPT-5.6 via Codex as primary**; DeepSeek V4 Flash is the profile-level fallback.
+
+| Plane | System | Canonical responsibility |
+|---|---|---|
+| Hot/local context | `MEMORY.md`, `USER.md`, session SQLite | Compact prompt facts and exact per-profile conversation recall |
+| Conversational memory | Honcho | Derived user/peer models and semantic conversation context |
+| Durable knowledge/reporting | Notion | Bilgi Kütüphanesi, decisions, tasks, candidate pools, and cron reports |
+| Credentials | 1Password | Static provider, bot, webhook, and integration secrets resolved at startup |
 
 ---
 
@@ -216,17 +229,18 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 4. [Model Providers](docs/04-models.md) — GPT-5.6/Codex primary, DeepSeek-only fallback, auxiliary routing
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
 6. [Networking](docs/06-networking.md) — Telegram needs no ports; Tailscale optional for the dashboard
-7. [Memory — Honcho](docs/07-memory.md) — three layers, shared user model, backups
+7. [Memory — Hermes, Honcho & Notion boundary](docs/07-memory.md) — hot memory, session recall, conversational memory, and durable knowledge
 8. [Web Search — TinyFish & SearXNG](docs/08-web-search.md) — TinyFish MCP (OAuth) primary + SearXNG fallback, all 9 agents
 9. [Security & Sandboxing](docs/09-security.md) — native guardrails; all nine profiles are host-code-capable
 10. [Operations](docs/10-operations.md) — evaluation, native upgrade, watchdog, startup ping, open questions
 11. [Game Development Workstream](docs/11-game-dev.md) — discovery-first pipeline
-12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Honcho, backlog.md, kanban-when-earned
+12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Notion knowledge, Honcho context, and kanban
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
 15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
 16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
 17. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
+18. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, tasks, decisions, reports, auth boundary, and hygiene
 
 ---
 
@@ -242,12 +256,14 @@ hermes -p <profile> secrets onepassword status
 #    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
 # 4. web stack — TinyFish (primary, OAuth) + SearXNG (fallback), all agents:
 ./scripts/wire-tinyfish.sh     # per-profile OAuth (own browser consent each — tokens are NOT shared) + SearXNG fallback + restart
-# 5. fleet-wide Telegram /codex_usage command (dry-run, then apply; no restart performed):
+# 5. verify the shared Notion OAuth/CLI plane without printing credential state:
+NOTION_KEYRING=0 NOTION_HOME=/Users/YOU/.hermes/profiles/general/home/.notion ntn whoami
+# 6. fleet-wide Telegram /codex_usage command (dry-run, then apply; no restart performed):
 python3 integrations/codex-usage/install.py
 python3 integrations/codex-usage/install.py --apply
 ```
 
-**1Password is the single source of truth for static credentials.** Profile configs contain only ID-based `op://` references. Bootstrap identity and writable OAuth stores are the documented local `0600` exceptions; see [Credential Management](docs/15-credential-management.md).
+**1Password is the single source of truth for static credentials.** Profile configs contain only ID-based `op://` references. Bootstrap identity and writable OAuth stores — including the shared Notion CLI OAuth state — are the documented local `0600` exceptions; see [Credential Management](docs/15-credential-management.md) and [Notion — Knowledge & Reporting](docs/16-notion-knowledge-and-reporting.md).
 
 ---
 

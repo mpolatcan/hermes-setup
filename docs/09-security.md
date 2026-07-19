@@ -128,8 +128,10 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 | DeepSeek / OpenRouter / other static API key | vendor dashboard | replace the shared or persona 1Password field; verify mappings; restart affected profiles |
 | 1Password service-account token | 1Password service accounts | revoke and replace only the profile-local `0600 .op.env` bootstrap token |
 | Codex OAuth | ChatGPT password change / sign out all devices | redo native OAuth login; `auth.json` remains the writable `0600` exception |
-| MCP / Linear OAuth | vendor revoke/reauthorize | redo native OAuth flow; token JSON remains the writable `0600` exception |
+| MCP / Linear / Notion OAuth | vendor revoke/reauthorize | redo native OAuth flow; token JSON remains the writable `0600` exception; Notion CLI state is canonical under `general/home/.notion/` |
 
 **Why Telegram tokens first:** the bot token *is* the front door — whoever holds it receives your messages and can impersonate the bot to you. `TELEGRAM_ALLOWED_USERS` stops others from commanding your agents, but not from reading what you send. Revoke kills the old token instantly.
+
+**External data planes are separate blast radii.** Honcho stores derived conversation/person memory locally, while Notion stores durable knowledge, tasks, decisions, and reports as SaaS state. A Notion OAuth compromise does not expose 1Password values, but it can expose or modify every Notion surface granted to that OAuth identity. Keep `home/.notion/auth.json` at `0600`, never print it, and revoke/reauthorize at Notion on suspicion. See [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
 
 ---

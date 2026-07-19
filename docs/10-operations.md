@@ -17,6 +17,7 @@ On the Mini, weekly check:
 - No crash loops: `launchctl print gui/$(id -u)/ai.hermes.gateway-<profile>` shows a stable PID and no climbing failure count (`launchctl list` shows the current PID/exit code, not a restart history)
 - Logs clean: `tail -n 200 ~/.hermes/logs/gateways/<name>/current` shows no repeated errors
 - Services up: `docker compose ps` shows Honcho + SearXNG running
+- External planes reachable: `ntn whoami` resolves the expected Notion workspace and `hermes -p <profile> secrets onepassword status` reports healthy mappings without printing values
 - Gateway reconnection working: kill Wi-Fi briefly, confirm gateways reconnect
 
 ### Layer 2 — per-agent quality
@@ -39,6 +40,7 @@ This is what differentiates Hermes from other agent frameworks. Track over a mon
 - **Skill reuse.** When the same kind of task recurs, does the agent reuse a skill it created earlier, or recreate it from scratch?
 - **Memory accumulation.** Check `~/.hermes/profiles/<name>/memories/USER.md` and `MEMORY.md` over time. Is the agent building an accurate model of you and the work, or accumulating noise?
 - **Cross-session continuity.** Reference something from a prior conversation without re-explaining it. Does the agent pick it up?
+- **Knowledge hygiene.** Sample durable facts and reports in Notion: are they deduplicated, in the correct canonical surface, source-attributed, and linked rather than copied across domains?
 
 The learning loop is the long-tail value. A one-shot benchmark misses the entire point. Plan to evaluate this over weeks, not minutes.
 
@@ -91,7 +93,7 @@ Because it's one binary, rollback is **all-or-nothing** — there is no per-agen
 
 **Backup strategy:**
 
-See Section 9.7 for the full memory backup plan. In summary: `~/.hermes/profiles/*/memories/`, `~/.hermes/profiles/*/sessions/`, and `~/.hermes/profiles/*/skills/` go into whatever you already back up (Time Machine, Restic, rsync) — Time Machine on the Mini already covers `~/.hermes/` if enabled. The Honcho Postgres needs a weekly `pg_dump`. Verify at least one restore works before relying on it.
+See Section 9.7 for the full memory backup plan. In summary: `~/.hermes/profiles/*/memories/`, `~/.hermes/profiles/*/sessions/`, and `~/.hermes/profiles/*/skills/` go into whatever you already back up (Time Machine, Restic, rsync) — Time Machine on the Mini already covers `~/.hermes/` if enabled. The Honcho Postgres needs a weekly `pg_dump`. Notion is external SaaS state: local Hermes/Honcho backups do not back up its page/database contents, and local OAuth files are credentials rather than data backups. Verify at least one restore/export path for every state plane before relying on it.
 
 **Log management:**
 

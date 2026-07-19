@@ -4,11 +4,11 @@
 
 ---
 
-The concern docs (01–15) explain *why*; this is the *what, in order*. Follow top-to-bottom.
+The concern docs (01–16) explain *why*; this is the *what, in order*. Follow top-to-bottom.
 
 > **Current stack (re-verified 2026-07-19):** primary model = **GPT-5.6 via Codex OAuth on all nine agents + crons** (`sol`: general/coder/researcher/writer; `terra`: assistant/finance/health; `luna`: marketing/producer), **DeepSeek V4 Flash is the only profile-level fallback** ([docs/04](04-models.md)); Hermes v0.18.2 / 2026.7.7.2; all 9 gateways 24/7; approvals off fleet-wide. Dated checklist entries below are historical build-log evidence, not current model instructions.
 
-> **Credential policy (2026-07-19):** 1Password is canonical for all static service and integration credentials. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md). Bootstrap identity and writable OAuth stores are the only local `0600` exceptions.
+> **Credential and knowledge policy (2026-07-19):** 1Password is canonical for all static service and integration credentials; Notion is canonical for durable cross-profile knowledge, decisions, tasks, and detailed reports. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md) and [docs/16](16-notion-knowledge-and-reporting.md). Bootstrap identity and writable OAuth stores are the only local `0600` credential exceptions.
 
 > ⚠️ = a **verify-gate**: the plan makes an assumption about native Hermes that hasn't been tested against a live install. Confirm it before trusting it, and adjust the runbook if reality differs.
 
@@ -30,6 +30,7 @@ flowchart LR
 - [~] **OpenRouter key** — **historical deferred decision (2026-06-07).** Any future OpenRouter credential is created/rotated in 1Password, mapped only to profiles that require it, and enabled through the approved mapping → `status`/`sync` → restart → smoke-test flow. Do not revive `bot-tokens.env` or `setup-bots.sh`.
 - [x] **Codex creds** — each profile has its own writable `0600 auth.json`; OAuth login and refresh/writeback are profile-local exceptions (§5.3, docs/15).
 - [x] **TinyFish MCP OAuth** — per-profile OAuth 2.1 PKCE; no static API key is required for the MCP path ([docs/08](08-web-search.md)).
+- [x] **Notion CLI OAuth** — one canonical complete CLI state under `general/home/.notion/`, linked into the other profiles; `auth.json` mode `0600`; all 9 profiles verified against the same workspace without printing tokens ([docs/16](16-notion-knowledge-and-reporting.md)).
 - [ ] **Mac Mini M4** — macOS current; **auto-login enabled** so launchd agents survive reboot ([docs/01 §11](01-architecture.md)); Docker/OrbStack installed (for Honcho + SearXNG **only**).
 
 ## Step 1 — Install Hermes + verify the CLI ✅ DONE (2026-06-06)
@@ -85,7 +86,7 @@ flowchart LR
 
 ## ✅ FLEET COMPLETE — 9/9 live (2026-06-08)
 
-All nine gateways under launchd, all smoke-tested from Telegram, all on Honcho:
+All nine gateways run under launchd and were smoke-tested from Telegram. All use Honcho for their allowed conversational-memory tier, resolve static credentials from 1Password, and can access the shared Notion knowledge/reporting plane:
 Derya (general, dual-use) · Doruk (researcher) · Tuna (assistant, dual-use) · Nilay
 (marketing) · Naz (coder, fenced) · Ozan (writer) · Sarp (producer) · Murat (finance,
 fenced) · Defne (health). Watchdog watches all 9; SearXNG + Honcho stack up; OpenRouter
@@ -96,6 +97,7 @@ deliberate restarts. After `brew upgrade hermes-agent`, re-pip the venv extras
 (python-telegram-bot ddgs websockets mcp honcho-ai) + `docker compose up -d --build`
 Honcho if its config changed. 1Password items are the only rebuild/rotation source for
 static credentials; verify profile references with `hermes -p <profile> secrets onepassword status`.
+Verify the Notion plane separately with `NOTION_KEYRING=0 NOTION_HOME=/Users/YOU/.hermes/profiles/general/home/.notion ntn whoami`; its OAuth state is not a 1Password mapping.
 
 ## Step 7 — Phase C: game-dev (when you start a real game)
 

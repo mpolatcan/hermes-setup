@@ -43,6 +43,7 @@ Each profile directory holds the full state for that agent:
 | `config.yaml` | Hermes configuration plus ID-based `op://` secret references |
 | `.op.env` | Optional `0600` 1Password bootstrap token only; no service credentials |
 | `auth.json`, `mcp-tokens/` | Writable OAuth state only; mode `0600` |
+| `home/.notion/` | Notion CLI OAuth/workspace state; canonical under `general`, linked into the other profiles; `auth.json` mode `0600` |
 | `SOUL.md` | Agent personality and instructions |
 | `sessions/` | Conversation history |
 | `memories/` | Persistent memory store (USER.md, MEMORY.md) |
@@ -62,7 +63,7 @@ If you do expose any port, bind it to the Tailscale interface only and key it �
 
 Do not stand up all agents at once. Build in three phases so problems get isolated as they arise.
 
-**Prerequisites:** Section 4 done (bots exist, tokens stored in the correct 1Password items, your Telegram user ID known) and Section 5 done (provider credentials stored in 1Password; native OAuth completed where required). No credential is pasted into chat, clipboard, `config.yaml`, or profile `.env` files.
+**Prerequisites:** Section 4 done (bots exist, tokens stored in the correct 1Password items, your Telegram user ID known) and Section 5 done (provider credentials stored in 1Password; native OAuth completed where required). The shared Notion CLI OAuth plane is established and passes `ntn whoami` before any workflow promises durable cross-profile writes. No credential is pasted into chat, clipboard, `config.yaml`, or profile `.env` files.
 
 ### Phase 1 — native install + first profile (day 1)
 
@@ -116,6 +117,7 @@ Confirm it connects and responds to a Telegram message. Once it works in the for
 ```bash
 hermes profile list                                    # researcher is present
 tail -f ~/.hermes/profiles/researcher/logs/gateway.log       # no errors at startup
+NOTION_KEYRING=0 NOTION_HOME=/Users/YOU/.hermes/profiles/general/home/.notion ntn whoami
 ```
 
 Send the bot a message; confirm a new session file appears under `~/.hermes/profiles/researcher/sessions/`. Leave it running overnight via launchd and check it's healthy in the morning.
@@ -124,6 +126,7 @@ Send the bot a message; confirm a new session file appears under `~/.hermes/prof
 - Gateway stays up for 24+ hours (under launchd) without crashing
 - A skill gets created and persists across a gateway restart
 - A new session picks up context from a memory file written in an earlier session
+- Notion identity resolves without printing or copying OAuth material
 
 ### Phase 2 — second profile, validate coexistence (day 2–3)
 
@@ -144,7 +147,7 @@ hermes -p general setup          # different bot token, different SOUL.md
 
 From a chat with `researcher`, have it write a memory note. From a chat with `general`, ask it to recall that note — it **must not** have it. Built-in session/memory search never crosses profiles (`general` cannot see `researcher`'s sessions). Confirm each profile has its own `~/.hermes/profiles/<profile>/sessions/` and `memories/`.
 
-> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile can read another profile's files on disk — all nine profiles are shell-capable by design (accepted 2026-07-19). Cross-profile *sharing* of the things that should be shared (your user model) is Honcho's job ([Section 9](07-memory.md)). Each profile's persona guardrails reduce the risk of a shell-capable profile targeting sibling state ([Section 13](09-security.md)).
+> **Note:** This is *state* separation, not a *filesystem* sandbox. A shell-capable profile can read another profile's files on disk — all nine profiles are shell-capable by design (accepted 2026-07-19). Honcho shares the user/conversation model where policy allows; Notion carries intentional durable cross-profile knowledge and reporting ([Section 9](07-memory.md), [Notion plane](16-notion-knowledge-and-reporting.md)). Each profile's persona guardrails reduce the risk of a shell-capable profile targeting sibling state ([Section 13](09-security.md)).
 
 **Step 2.4: Independent-lifecycle test**
 

@@ -83,7 +83,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
   security:
     tirith_enabled: true  # pre-exec command scanning (the remaining gate on her shell)
   ```
-- **Memory:** full built-in + **Honcho** — Derya builds the richest user model, since it's where you talk about everything. Its own AI peer. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config.
+- **Memory and knowledge:** full built-in + **Honcho** for Derya's rich user/conversation model; **Notion** for durable knowledge, tasks, decisions, and reports. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config. Notion records use their canonical source/domain fields instead of duplicating local profile memory.
   ```json
   // ~/.hermes/profiles/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "polatcan-gaming"  (studio tier; finance/health use their own workspaces — docs/07 §9.2)
   ```
@@ -103,6 +103,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 **A personal (non-studio) tier.** Profiles aren't only the game studio — each is an independent identity (own SOUL, memory, bot, toolsets). Spare-time domains get their own profile: a finance/budget agent, fitness coach, language tutor, home-automation, journaling. Guidance:
 - **One domain per profile.** Don't cram finance + fitness onto one agent — focus is the whole point, and an idle profile costs ~nothing.
 - **Honcho spans identity.** A new agent already knows *who you are* (shared user peer); domain-specific observations stay per-agent (Section 9).
+- **Notion spans durable knowledge intentionally.** Cross-profile facts and artifacts are shared through explicit canonical records and domain/visibility fields, not by searching sibling sessions or treating Honcho as a document store ([docs/16](16-notion-knowledge-and-reporting.md)).
 - **Theme freely.** The Turkish-crew naming is studio flavor; personal agents can be themed differently. Slugs stay functional and ASCII.
 - **Single-tenant caveat.** All of this assumes **one human** (you). If other *people* get access (employees, family), the multi-tenant isolation we dropped ([Section 1](01-architecture.md)) comes back — that's the case for **per-person installs or machines**. Solo-you-many-hats → one install is right.
 
@@ -115,7 +116,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 - **All profiles are shell-capable by design (accepted 2026-07-19).** The old intended design (coder/finance/general only) was superseded — the v0.18.2 resolver exposes `terminal` and `execute_code` on all nine profiles; approvals are `off`. Security relies on persona guardrails + credential stripping + Tirith ([docs/09](09-security.md)).
 - **X/Twitter deferred** — Hermes's `x_search` needs an xAI/SuperGrok key (§ docs/04); `finance` covers Reddit + news + finance sites via TinyFish instead. Add the key later for native X sentiment.
-- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (Codex handles primary turns; DeepSeek may receive fallback traffic; OpenRouter handles vision fallback and Honcho workers). Honcho stores derived facts locally ([docs/07](07-memory.md)).
+- **Privacy, stated plainly:** finance + health are your most sensitive data and **inference leaves the box** (Codex handles primary turns; DeepSeek may receive fallback traffic; OpenRouter handles vision fallback and Honcho workers). Honcho stores derived facts locally; durable Notion records are SaaS state and must respect domain/visibility boundaries ([docs/07](07-memory.md), [docs/16](16-notion-knowledge-and-reporting.md)).
 
 ---
 

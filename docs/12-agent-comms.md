@@ -11,17 +11,21 @@ flowchart TB
         direction LR
         derya["Derya · router<br/>GPT-5.6-sol"]:::codex
         others["8 specialist profiles<br/>GPT-5.6 sol / terra / luna"]:::codex
-        honcho[("Honcho<br/>shared user model")]:::infra
+        honcho[("Honcho<br/>conversational user model")]:::infra
         board[("kanban.db<br/>off — flip later")]:::off
     end
+    notion[("Notion<br/>durable cross-profile knowledge")]:::knowledge
     you -->|pick a bot| install
     derya -.->|hand-off / native| others
     others -.-> honcho
     derya -.-> honcho
+    derya <--> notion
+    others <--> notion
     others -. "opt · when earned" .-> board
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef knowledge fill:#00796B,stroke:#004D40,color:#fff
     classDef off fill:#B0BEC5,stroke:#607D8B,color:#263238
     style install fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
 ```
@@ -36,17 +40,18 @@ The default coordination mechanism is **you**. Each agent has its own Telegram b
 
 **Derya assists the routing socially, not over the wire.** Derya's SOUL (Section 6.7) knows the crew: *"Doruk digs up market data, Naz writes the code, Ozan the story… when a task is clearly someone's, say so and offer to pass it over."* So Derya's "hand-off" is a suggestion to you — "this is research, want me to ask Doruk?" — not a background RPC. For a solo operator that is usually enough and always the safest.
 
-### 17.2 The three native coordination layers
+### 17.2 Coordination layers
 
-When agents genuinely need to share state or work — beyond you relaying — there are three local mechanisms, in increasing weight. **No HTTP, no ports, no keys** — they all work because the agents share one install and one host.
+When agents genuinely need to share state or work — beyond you relaying — there are four mechanisms. Honcho and the local board benefit from the shared host; Notion is the external durable knowledge plane and uses OAuth through the official CLI.
 
 | Layer | Mechanism | Use it for | Status |
 |---|---|---|---|
-| **Shared knowledge** | **Honcho** ([Section 9](07-memory.md)) — shared user peer | A durable model of *you* that every agent reasons over. Cross-agent *continuity*, async. | **on** (Phase B) |
-| **Shared artifact** | **`backlog.md`** + Honcho workspace | The game-dev pipeline's durable state — candidates, scores, decisions. `producer` owns the file (`~/.hermes/profiles/producer/backlog.md`); the candidate list is shared to the other agents through the **Honcho workspace**, not by reaching into a sibling's directory. | **on** when `producer` lands ([Section 16](11-game-dev.md)) |
+| **Shared conversational context** | **Honcho** ([Section 9](07-memory.md)) — shared user peer | A derived model of *you* and semantic conversation continuity. | **on** |
+| **Shared durable knowledge** | **Notion** ([knowledge/reporting plane](16-notion-knowledge-and-reporting.md)) | Research, candidates, decisions, tasks, and reports queried across profiles by domain. | **on** |
+| **Local working artifact** | **`backlog.md`** | Producer's inspectable working copy for scoring; canonical cross-profile candidates and decisions live in Notion. | **on** when the scoring workflow is used ([Section 16](11-game-dev.md)) |
 | **Task orchestration** | **`kanban`** — single-host board, dispatcher spawns sibling profiles | Auto-promoting multi-stage pipelines with dependency chains, claims, crash recovery. | **off** — native-ready, flip when earned (17.3) |
 
-Honcho is *knowledge* sharing, not messaging — note Section 9's caveat that cross-agent reasoning isn't automatic: if `coder` learned something `assistant` should know, you may still need to say it once. `backlog.md` is the right *artifact* layer for a weekly pipeline. `kanban` is the heavy *orchestration* layer, held in reserve.
+Honcho is contextual memory, not messaging or canonical document storage. Notion is durable knowledge, not an execution bus. `backlog.md` is a working artifact; `kanban` is the heavier orchestration layer, held in reserve. Keeping those roles separate prevents the same fact from drifting across four stores.
 
 ### 17.3 `kanban` — why it's available now, and why it stays off
 
@@ -55,7 +60,7 @@ The single-machine move is exactly what makes `kanban` viable. Per Hermes' kanba
 So the full pipeline `researcher → producer → writer → coder` is now reachable by one board. **We still keep it off**, because availability isn't need:
 
 - The pipeline is **solo, weekly-cadence, human-gated**. `kanban`'s value is removing a human dispatcher who is sequencing many concurrent tasks — you are not that. A board here manufactures process (cards, dispatchers, heartbeats) without removing real work.
-- `backlog.md` + chat gives ~90% of the value (durable list, audit trail via git, your curation) at ~0 infrastructure, and is easier to inspect.
+- Notion + `backlog.md` + chat gives most of the value (canonical cross-profile rows, an inspectable working copy, and your curation) without an orchestration service.
 - Co-location makes the upgrade **a config flip, not a migration**: the `kanban` toolset is already listed *opt* for the pipeline agents (Section 6.6). The day you flip it on, the board is just there.
 
 **Flip condition:** you can name specific recurring handoffs you want claimed and advanced **automatically, without you sequencing them** — e.g. "every scored candidate that clears the rubric should auto-spawn a PRD draft." Until you can name that, `backlog.md` is correct. (See [Section 16.11](11-game-dev.md).)

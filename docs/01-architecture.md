@@ -19,17 +19,23 @@ flowchart TB
             h["Defne · health<br/>GPT-5.6-terra"]:::codex
         end
         subgraph svc["Docker · services only"]
-            Honcho[("Honcho<br/>shared memory")]:::infra
+            Honcho[("Honcho<br/>conversational memory")]:::infra
             SearXNG["SearXNG<br/>search fallback"]:::svc
         end
     end
     phone["📱 You · Telegram + Tailscale"]:::user --> mini
+    Notion[("Notion<br/>durable knowledge + reports")]:::knowledge
+    OnePassword["1Password<br/>canonical static credentials"]:::secret
+    hermes <--> Notion
+    OnePassword -. "op:// resolution at startup" .-> hermes
     note["One install = one trust domain.<br/>Profiles share ~/.hermes — NOT filesystem sandboxes.<br/>Isolation = single-tenant host + persona guardrails + uniform tooling."]:::danger
     hermes --- note
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef knowledge fill:#00796B,stroke:#004D40,color:#fff
+    classDef secret fill:#455A64,stroke:#263238,color:#fff
     classDef danger fill:#D32F2F,stroke:#B71C1C,color:#fff
     style mini fill:#ECEFF1,stroke:#90A4AE,color:#263238
     style hermes fill:#E8F5E9,stroke:#66BB6A,color:#1B5E20
@@ -41,6 +47,8 @@ flowchart TB
 **We run the official default.** Since the s6-supervision migration, Hermes' own guide says: *"the s6 supervision tree treats each profile as a first-class supervised service, so the recommended deployment is one container hosting all profiles."* We take the same shape **without the container** — a single **native** Hermes install on the Mac Mini M4, with one **profile per agent** (`hermes profile create <name>`), all sharing `~/.hermes`. macOS **launchd** plays the supervision role s6 plays inside the image.
 
 An earlier draft of this plan did the opposite — one Docker container per agent, split across a Mac Mini and a MacBook Pro, for hard kernel-level isolation. We dropped it. The reasons that justified container-per-agent (*"resource isolation, independent image pinning, network segmentation, compliance"*) are **multi-tenant** concerns. This is a **single-tenant, single-user, single-machine** setup: every agent is yours, every token is yours, everything runs on one Mac you own. Paying the container tax to isolate yourself from yourself is the wrong trade.
+
+The install is one trust domain, but its state is deliberately split by responsibility: local Hermes files hold hot prompt/session state, Honcho holds derived conversational/person memory, Notion holds durable structured knowledge and operational records, and 1Password holds static credentials. Notion and 1Password are external planes used by all nine profiles; neither runs inside the Docker service stack. See [Section 9](07-memory.md), [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md), and [Credential Management](15-credential-management.md).
 
 What dropping containers buys us:
 

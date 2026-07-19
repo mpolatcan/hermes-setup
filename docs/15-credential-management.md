@@ -77,7 +77,7 @@ The bootstrap token is the unavoidable root-of-trust exception. It is never stor
 
 ### Writable OAuth stores
 
-Codex `auth.json`, Hermes `mcp-tokens/*.json`, and Linear's OAuth JSON remain native local `0600` files because refresh-token rotation requires atomic writeback. They are not alternate stores for static API keys. Static companion values — client secrets, webhook signing secrets, PATs, and API keys — remain in 1Password.
+Codex `auth.json`, Hermes `mcp-tokens/*.json`, Linear's OAuth JSON, and the official Notion CLI state under `general/home/.notion/` remain native local `0600` files because OAuth refresh/workspace state requires writeback. The other profiles link to the canonical Notion CLI directory rather than copying it. These are not alternate stores for static API keys. Static companion values — client secrets, webhook signing secrets, PATs, and API keys — remain in 1Password. See [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md) for the data-plane boundary.
 
 ## New credential workflow
 
