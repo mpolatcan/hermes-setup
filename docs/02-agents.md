@@ -62,7 +62,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
 
 `Derya` (the `general` profile) is the agent you message most: open conversation, brainstorming, quick answers, and hand-offs to the crew. Always-on on the Mini so it answers from your phone anytime.
 
-- **Model:** **GPT-5.6-sol via Codex OAuth primary** (effort `xhigh` for Derya), **DeepSeek V4 Flash fallback** — live config re-verified 2026-07-19 ([docs/04](04-models.md)).
+- **Model:** **GPT-5.6-sol via Codex OAuth primary** (effort `medium` for Derya), **DeepSeek V4 Flash fallback** — live config re-verified 2026-07-19 ([docs/04](04-models.md)).
   ```yaml
   # ~/.hermes/profiles/general/config.yaml (live)
   model:
@@ -72,7 +72,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
     - provider: deepseek
       model: deepseek-v4-flash
   agent:
-    reasoning_effort: xhigh
+    reasoning_effort: medium
   ```
 - **Toolsets** (extends Section 6.6): keep `web`, `vision`, `tts`, `memory`, `session_search`, `skills`, `clarify`, `cronjob` — **plus `terminal` + `code_execution` + `file`.** Derya is the **fleet admin**: she configures/tunes the other agents (`hermes config set`, edits `honcho.json`/`SOUL.md`) and restarts gateways (`launchctl kickstart`). ⚠️ This makes her the **highest-privilege agent in the fleet** — always-on *and* web/vision-facing *and* holding a host shell. Gated by Tirith pre-exec scanning + a confirm-first SOUL (§6.7) — approvals run `off` fleet-wide ([docs/09 §13](09-security.md)), so the confirm-first rule is *behavioral, not enforced*.
   ```yaml

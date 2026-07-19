@@ -17,7 +17,7 @@ flowchart LR
     classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
 ```
 
-- **Reasoning efforts:** `xhigh` general/coder/researcher/writer · `medium` assistant/finance/health · `low` marketing/producer.
+- **Reasoning efforts:** `xhigh` coder/researcher/writer · `medium` general/assistant/finance/health · `low` marketing/producer.
 - **Codex OAuth is profile-local.** Each profile has its own writable `0600 auth.json`; the nine stores are distinct and refresh/writeback remains local to the selected profile. Never copy OAuth JSON between profiles or paste tokens into chat or documentation.
 - **Watch items:** the Codex quota window is shared across nine agents. Verify the billed provider in session statistics rather than inferring it from response text.
 - **Credential policy:** static DeepSeek/OpenRouter keys resolve from ID-based 1Password references. Codex OAuth and its refresh writeback remain the documented local `0600` exception ([docs/15](15-credential-management.md)).
@@ -62,7 +62,7 @@ All nine: **GPT-5.6 primary via `openai-codex` OAuth (⚠️ accepted-risk), `de
 | `coder` | Naz | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Code quality ceiling; **heaviest agent → first to feel the shared quota window** |
 | `researcher` | Doruk | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Deep multi-source research + weekly scout cron |
 | `writer` | Ozan | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Voice, long-form drafting |
-| `general` | Derya | `gpt-5.6-sol` | `xhigh` | `deepseek-v4-flash` | Main line and fleet administration; live config differs from the old Terra assignment |
+| `general` | Derya | `gpt-5.6-sol` | `medium` | `deepseek-v4-flash` | Main line and fleet administration; live config differs from the old Terra assignment |
 | `assistant` | Tuna | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Daily logistics |
 | `finance` | Murat | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Personal markets analyst (personal tier, docs/02 §2.2) |
 | `health` | Defne | `gpt-5.6-terra` | `medium` | `deepseek-v4-flash` | Fitness/nutrition coach (personal tier) |

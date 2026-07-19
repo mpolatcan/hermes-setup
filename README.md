@@ -192,6 +192,7 @@ flowchart LR
 ```
 
 - **GPT-5.6 via Codex OAuth** — **primary for all nine agents and their crons**. Live tiers: `gpt-5.6-sol` for general/coder/researcher/writer · `gpt-5.6-terra` for assistant/finance/health · `gpt-5.6-luna` for marketing/producer. Each profile has its own writable `0600 auth.json` OAuth store; refresh/writeback is profile-local.
+- **Reasoning effort** — `xhigh` for coder/researcher/writer · `medium` for general/assistant/finance/health · `low` for marketing/producer.
 - **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — **the fallback on every profile**: quota-window exhaustion or a Codex outage degrades the fleet to Flash instead of stalling it.
 - **OpenRouter** (~$10 credit) — aux tasks and Honcho's cheap memory-extraction model (`deepseek-v4-flash`, ~$1/mo).
 

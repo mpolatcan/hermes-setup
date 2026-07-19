@@ -93,7 +93,7 @@ Current routing: **every agent — and every cron — runs GPT-5.6 via Codex OAu
     - provider: deepseek
       model: deepseek-v4-flash
   agent:
-    reasoning_effort: xhigh   # general/coder/researcher/writer · medium assistant/finance/health · low marketing/producer
+    reasoning_effort: xhigh   # coder/researcher/writer · medium general/assistant/finance/health · low marketing/producer
   ```
 
 - **Provider roles:** Codex serves primary agent and cron turns; DeepSeek is fallback only; OpenRouter serves vision fallback and Honcho workers. Anthropic and MiniMax are not active routing dependencies.
