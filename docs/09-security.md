@@ -64,25 +64,27 @@ security:
   redact_secrets: true   # strip API key patterns from logs and tool output
 ```
 
+**Credential source of truth.** 1Password is canonical for static provider, Telegram, webhook and integration credentials. Hermes configs hold only ID-based `op://` references and resolve them at startup. Do not store real service credentials in profile `.env`, `config.yaml`, chat, clipboard, Notion, Linear or the repository. The 1Password bootstrap identity and writable OAuth stores are the only local `0600` exceptions; full architecture and rotation procedure: [Section 15](15-credential-management.md).
+
 ### 13.7 Execution sandboxing — native, there is no container boundary
 
 **This is the security cost of the native, single-install decision (Section 1) — pay attention to it.** Hermes offers four command-execution backends — `local` (no isolation, runs on the host), `docker`, `modal`, and `daytona` (sandboxes). Native on the `local` backend, the docs' warning applies in full: *"for gateway sessions on the local backend, neither the approval system nor container isolation protects the host."* There is no container wrapping the agent — a `terminal` or `code_execution` command runs **directly on your Mac, as your user.**
 
-And because all profiles share one install, a shell-capable agent can read **any sibling profile's `~/.hermes/profiles/<profile>/.env`** — every bot token and API key in the fleet. The old container-per-agent draft closed that gap with a kernel boundary; native, the gap is open. We accept it deliberately, for one reason it was worth it (Section 1): `coder` needs the Metal GPU and the Godot GUI, which a macOS container cannot provide. So the residual risk concentrates on the **few agents that run code** — and we fence those instead of the whole fleet. (At first that was just `coder`; `finance` later added fenced Python, and `general`/Derya was given an admin shell — §13.7a. The fence applies to each.)
+Because all profiles share one install, a shell-capable agent can read sibling config references, bootstrap identity and writable OAuth stores. Static service credentials are no longer duplicated across profile `.env` files; they remain canonical in scoped 1Password vaults. This reduces persistent plaintext blast radius but does not protect a secret already resolved into a running process, so the residual risk still concentrates on the few agents that run code.
 
-**Threat model — be precise about what you're defending against.** This is single-tenant: every token `coder` could read is *yours*. One profile reading another's `.env` is you reading your own data, not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration** — a poisoned web page or repository tricking `coder` into sending your keys somewhere, or running a destructive command. The guardrails below target that.
+**Threat model — be precise about what you're defending against.** This is single-tenant. The real threat is **prompt-injection-driven exfiltration** — a poisoned web page or repository tricking a shell-capable profile into using a resolved credential, reading local bootstrap/OAuth state, or running a destructive command. 1Password removes stale copies; it is not a runtime sandbox.
 
 The fence around `coder`:
 
 - **The best sandbox is no shell at all.** Per Section 6.6, `terminal` and `code_execution` are disabled on `researcher`, `assistant`, `marketing`, `writer`, `producer`, and `health` — **six of the nine agents have zero command-execution surface.** Three can run code: `coder` (terminal + Python), `general`/Derya (terminal + Python + `file` — fleet admin, §13.7a), and `finance` (fenced `code_execution` only, no shell). Toolset pruning is the primary control now that there is no container.
 - **`approvals: smart` is mandatory on `coder`.** With no container boundary, the approval layer is the *only* gate between LLM-generated code and your Mac. It judges risk and escalates dangerous commands — especially the network sends that an exfiltration attempt needs. Run `manual` for `coder`'s first week.
-- **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from the child processes of `terminal` and `code_execution`, so generated code can't read your keys *from the environment*. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. (Note: this protects the environment, not `.env` files on disk — see the optional docker backend below for that.)
+- **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from child processes. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. 1Password prevents static credential sprawl on disk; stripping limits resolved-value propagation into child processes.
 - **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on `coder` so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.
 - **Optional: route `coder`'s `code_execution` through the `docker` backend.** If you want the on-disk-secret protection back without losing GPU game-dev, run the *agent* native (Godot GUI on the host) but set its `code_execution` backend to `docker`, so untrusted generated code runs jailed while interactive engine work stays native. This re-introduces Docker for one code path only — worth it if `coder` will execute much third-party code.
 - **OS-user isolation isn't available here.** A dedicated macOS user for `coder` would mean a *separate* Hermes install (a different `~/.hermes`), which forfeits the single-install benefits — shared Honcho continuity and native `kanban` across the pipeline. So the fence is approvals + redaction + blocklist (+ optional docker backend), **not** a second user account. If `coder`'s blast radius ever feels too large, the clean escalation is to move it back to its own machine/install — not to fragment users on this one.
 - **`code_execution` `PYTHONPATH` disclosure (issue #7071).** The code-execution path injects the project root into the child's `PYTHONPATH`, which can leak config/security files into LLM-run code. Keeping `code_execution` on `coder` only confines that to the one agent you already watch.
 - **Be honest about what these are: risk reducers, not a sandbox.** In the container draft a kernel boundary contained `coder`; native, nothing does. Approvals, redaction, and the blocklist *lower* the odds and cost of a bad action — they don't make one impossible. Specifically, **the website blocklist does not stop a shell.** It gates browser-style fetches, but `coder` also has `terminal` + `code_execution`, so `curl`, a Python socket, or any shell command **bypasses the blocklist entirely.** The blocklist helps against the `web`/`browser` path, not the shell path.
-- **For untrusted or third-party code, the `docker` code-exec backend (or a separate machine) is the recommended default, not an option.** If `coder` will run code it didn't write — installing packages, executing a cloned repo — route `code_execution` through the `docker` backend so that code can't read your `.env` files on disk or `curl` your keys out. Treat `local`-backend code-exec as acceptable only for code `coder` itself authored under your eye. And `approvals: off` on `coder` is equivalent to handing an LLM your shell — never do it.
+- **For untrusted or third-party code, the `docker` code-exec backend (or a separate machine) is the recommended default.** It limits access to profile state and resolved runtime credentials. Treat `local`-backend code-exec as acceptable only for code authored under your eye.
 
 #### 13.7a — Derya as fleet admin (the highest-privilege exposure)
 
@@ -119,16 +121,15 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 4. Tighten before restart: `approvals: manual`, prune toolsets further, extend the blocklist (Section 13).
 5. Restart only once you understand the trigger. A restart without a diagnosis re-runs the experiment.
 
-**Credential compromise (or reasonable suspicion):** rotate in blast-radius order. And remember 13.7 — every shell-capable agent can read every profile's `.env`, so **if `coder` or `general` was compromised, assume *all* keys leaked and rotate all of them**, not just its own. (`general`/Derya is always-on and web-facing, so it's the likeliest compromise vector — §13.7a.)
+**Credential compromise (or reasonable suspicion):** revoke at the vendor first, rotate the canonical field in 1Password, verify affected `op://` mappings, then restart and smoke-test only the affected profiles. If a shell-capable profile was compromised, include every credential mapped into or resolved by that profile; do not automatically rotate unrelated vaults without evidence.
 
 | Credential | Rotate where | Then |
 |---|---|---|
-| Telegram bot tokens (×9) | BotFather → `/revoke` per bot | rerun `setup-bots.sh` with new tokens (rewrites `~/.hermes/profiles/<slug>/.env`), restart gateways |
-| DeepSeek API key | platform.deepseek.com | update all `.env`s (`DEEPSEEK_API_KEY` fans to all nine profiles — fleet-wide fallback since 2026-07-05; was primary profiles) |
-| MiniMax API key (dormant) | platform.minimax.io | still present in every `.env` though no profile uses `provider: minimax` — rotate or remove |
-| OpenRouter key | openrouter.ai → key settings | update aux/fallback config |
-| Codex OAuth | ChatGPT password change / "sign out all devices" (revokes the refresh token) | redo login Path A/B per [docs/04 §5.3](04-models.md) — `invalid_grant` in logs is expected until you do |
-| TinyFish key | TinyFish dashboard | update the MCP config ([docs/08](08-web-search.md)) |
+| Telegram bot token | BotFather → `/revoke` | replace that persona's 1Password field; restart only that profile |
+| DeepSeek / OpenRouter / other static API key | vendor dashboard | replace the shared or persona 1Password field; verify mappings; restart affected profiles |
+| 1Password service-account token | 1Password service accounts | revoke and replace only the profile-local `0600 .op.env` bootstrap token |
+| Codex OAuth | ChatGPT password change / sign out all devices | redo native OAuth login; `auth.json` remains the writable `0600` exception |
+| MCP / Linear OAuth | vendor revoke/reauthorize | redo native OAuth flow; token JSON remains the writable `0600` exception |
 
 **Why Telegram tokens first:** the bot token *is* the front door — whoever holds it receives your messages and can impersonate the bot to you. `TELEGRAM_ALLOWED_USERS` stops others from commanding your agents, but not from reading what you send. Revoke kills the old token instantly.
 

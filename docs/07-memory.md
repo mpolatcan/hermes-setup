@@ -134,13 +134,13 @@ mkdir -p ~/honcho-stack && cd ~/honcho-stack
 git clone https://github.com/elkimek/honcho-self-hosted.git config
 git clone --depth 1 https://github.com/plastic-labs/honcho.git server
 
-# Copy configs into the server repo
+# Copy non-secret configs into the server repo
 cp config/docker-compose.yml server/
 cp config/config.toml server/
 cp config/env.example server/.env
 
-# Edit .env — set your LLM provider keys (OpenRouter recommended)
-nano server/.env
+# Inject required provider variables from 1Password at process start.
+# Do not place real provider keys in server/.env; see docs/15-credential-management.md.
 ```
 
 Then bring it up:

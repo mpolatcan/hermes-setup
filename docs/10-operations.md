@@ -183,7 +183,7 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
 **Test it once** (the runbook has this as a gate): `launchctl bootout` the researcher gateway, wait ≤15 min for the Telegram alert, `bootstrap` it back.
 
-**Known limit:** a same-machine watchdog can't report the machine dying (power, kernel panic, no network). If you want that too, add one line at the end of a *successful* run — `curl -fsS https://hc-ping.com/<uuid>` against a free dead-man service (e.g. healthchecks.io), which emails you when the pings stop. Optional; the Telegram path already covers the common failures (gateway crash-loop, broken config after an upgrade).
+**Known limit:** a same-machine watchdog can't report the machine dying (power, kernel panic, no network). If you add a dead-man service, treat its ping UUID/URL as a credential: store it in 1Password and resolve it at runtime rather than embedding it in the script, plist or documentation. Optional; the Telegram path already covers the common failures.
 
 **Phase B:** extend `EXPECTED`, and add a `docker compose ps` check so Honcho + SearXNG count as fleet members.
 
@@ -193,7 +193,7 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
 The watchdog (14.5) is *anomaly* alerting — it speaks up on down/crash-loop. It does **not** announce a healthy startup. And Hermes' own restart message only reaches *recently-active* chats (it calls `notify_active_sessions` on SIGTERM; an idle bot has `active_at_start=0`, so e.g. Sarp gets nothing when you restart it cold). To get a deterministic "I'm up" line in **every** bot's own chat when the fleet starts, add a one-shot launchd job — same dumb-pipe pattern as the watchdog, no agent involved.
 
-`scripts/notify-online.sh` (in this repo — deploy to `~/.hermes/scripts/`, same as `wire-tinyfish.sh`) posts `🟢 <Display> online — gateway up` to each agent's own DM (Sarp's chat gets Sarp's ping), reading the per-profile `TELEGRAM_BOT_TOKEN` + first `TELEGRAM_ALLOWED_USERS` straight from `.env`. It waits up to ~60s per slug for the gateway's launchd PID to appear (so the ping means "gateway actually came up", 🟡 if it didn't), and sends `disable_notification=true` so a nine-bot boot doesn't buzz nine times.
+`scripts/notify-online.sh` (in this repo — deploy to `~/.hermes/scripts/`, same as `wire-tinyfish.sh`) checks all launchd labels and asks `hermes -p general send --to telegram` to deliver one fleet-level status message. The helper does not read or fan out Telegram tokens; Hermes resolves the general profile's 1Password-backed mapping. It waits briefly for gateways before checking them.
 
 ```bash
 notify-online.sh           # all nine (what the launchd job runs)

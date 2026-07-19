@@ -10,12 +10,12 @@ sequenceDiagram
     actor You
     participant BF as BotFather
     participant API as Telegram Bot API
-    participant ENV as ~/.hermes/profiles/*/.env
+    participant OP as 1Password vaults
     You->>BF: /newbot ×9
     BF-->>You: 9 tokens
-    You->>You: fill bot-tokens.env (9 tokens + ALLOWED_USERS)
-    You->>API: setup-bots.sh → setMyName / Description / Commands
-    You->>ENV: setup-bots.sh → write TELEGRAM_BOT_TOKEN + ALLOWED_USERS
+    You->>OP: store each token in its persona item
+    You->>OP: keep shared allowed-user ID in Shared - Secrets
+    OP-->>API: Hermes resolves ID-based op:// refs at startup
     You->>BF: /setprivacy Disable · /setjoingroups Disable
 ```
 
@@ -51,8 +51,9 @@ Open Telegram, search for `@BotFather`, start a conversation. Then for each of y
 → Bot's display name: Research Assistant (or whatever you want users to see)
 → Bot's username: researcher_<yourname>_bot   (must end in "bot" and be unique on Telegram)
 
-BotFather replies with the token. Copy it immediately into a notes app — you'll
-need it in step 4.4. Then for the same bot, run these to harden settings:
+BotFather replies with the token. Enter it directly into that persona's 1Password
+item; do not stage it in notes, chat, clipboard, or `bot-tokens.env`. Then run these
+to harden settings:
 
 /mybots → pick the bot → Bot Settings
 → /setprivacy → Disable (lets the bot see all messages in groups if you ever add it to one)
@@ -63,27 +64,22 @@ need it in step 4.4. Then for the same bot, run these to harden settings:
 
 Suggested username pattern: `<role>_<yourname>_bot`. So `researcher_alice_bot`, `assistant_alice_bot`, `ops_alice_bot`, `coder_alice_bot`, `writer_alice_bot`. The bot's username must be globally unique on Telegram, so simple names like `research_bot` are almost certainly taken. Suffix with your own handle to avoid collisions.
 
-By the end, you have nine tokens (eight if you skip the deferred `producer`/Sarp bot for now). Save them somewhere temporary (a notes file you'll delete) — you're about to put them into each agent's `.env`.
+By the end, each persona's 1Password item contains its own Telegram token. The shared allowed-user ID lives once in `Hermes Agent - Shared` / `Shared - Secrets`.
 
-### 4.4 Distribute tokens into each agent's `.env`
+### 4.4 Map tokens from 1Password
 
-This is the bridge between Telegram's side and Hermes's side. Each agent needs two env vars in its host-side `.env` file:
+Each profile maps the two runtime variable names to ID-based `op://` references; no real value is written to `.env` or `config.yaml`:
 
 ```bash
-# On the Mini, for the researcher agent:
-cat >> ~/.hermes/profiles/researcher/.env <<EOF
-TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
-TELEGRAM_ALLOWED_USERS=123456789
-EOF
-
-# Repeat for each agent — each gets its own bot token, same user ID
+hermes -p researcher secrets onepassword set TELEGRAM_BOT_TOKEN \
+  'op://<researcher-vault-id>/<researcher-item-id>/<telegram-field-id>'
+hermes -p researcher secrets onepassword set TELEGRAM_ALLOWED_USERS \
+  'op://<shared-vault-id>/<shared-item-id>/<allowed-users-field-id>'
+hermes -p researcher secrets onepassword status
+hermes -p researcher secrets onepassword sync
 ```
 
-Important formatting rules:
-
-- **No quotes around the token value.** Telegram tokens contain a colon, which some env parsers misinterpret under quoting. Plain `TOKEN=value` form only.
-- **`TELEGRAM_ALLOWED_USERS` is comma-separated.** Single value for a personal setup. If you want a friend to also be able to talk to a specific bot, add their user ID separated by a comma (no spaces).
-- **Permissions on the `.env` file.** `chmod 600 ~/.hermes/profiles/*/.env` so only your user can read them. The tokens are bearer credentials.
+Repeat for each profile. Each gets its own bot-token field and references the same shared allowed-user field. Mapping changes and gateway restarts remain approval-gated; see [Credential Management](15-credential-management.md).
 
 ### 4.5 Per-agent config
 
@@ -102,7 +98,7 @@ gateway:
         disable_link_previews: true   # cleaner output for agents that share links
 ```
 
-The token and allowed-users values are read from `.env` automatically — they don't need to be repeated here.
+The token and allowed-users values are resolved from 1Password automatically — they don't need to be repeated here.
 
 **Streaming responses (enabled fleet-wide).** `gateway.streaming.enabled: true` makes replies stream into Telegram as they generate instead of landing as one block at the end — a big UX win for long answers. `transport: auto` lets Hermes pick the delivery method (`edit` = progressively edits one message; `draft` = Telegram's draft channel; `off` = disable). Set on all nine profiles via `hermes -p <slug> config set gateway.streaming.enabled true`, then restart the gateway. (Verified v0.16.0.)
 
@@ -110,20 +106,11 @@ The token and allowed-users values are read from `.env` automatically — they d
 
 Hermes detects if two agents accidentally use the same bot token and refuses to start the second one. *"If two profiles accidentally use the same bot token, the second gateway will be blocked with a clear error naming the conflicting profile."* Same protection applies across profiles — first-write wins on a shared token, second one gets an explicit failure rather than silently competing.
 
-If you ever see `Token already in use by hermes-<other>` in logs, two of your agents have the same token. Most common cause: copy-paste error in step 4.4. Re-issue a fresh token for one bot via `/revoke` in BotFather and update the right `.env`.
+If you ever see `Token already in use by hermes-<other>` in logs, two profiles point to the same token field. Re-issue a fresh token for one bot via `/revoke` in BotFather, update the correct 1Password field/reference, then restart only the affected gateway after approval.
 
 ### 4.7 Verify each bot before starting the agent
 
-Before starting the gateway, sanity-check the bot exists on Telegram's side:
-
-```bash
-TOKEN="7123456789:AAH..."
-curl -s "https://api.telegram.org/bot${TOKEN}/getMe" | jq
-```
-
-Expected output includes `"ok": true` and the bot's username. If you get `"ok": false` or 401, the token is wrong — re-copy from BotFather.
-
-Do this for each token. Takes 30 seconds total and catches typos before they cause weird gateway startup failures.
+Before starting the gateway, run `hermes -p <profile> secrets onepassword status` and `sync`. After the approved restart, verify the real gateway path by sending `/start` to that bot. Do not place the token in a shell command or print it in diagnostics.
 
 ### 4.8 First contact after bringing the agent up
 
@@ -252,22 +239,8 @@ A few details that matter for our setup:
 
 **Single Telegram account, nine bots, no conflict.** Telegram supports unlimited bots per account. Bots are independent of the account that created them — each has its own identity, its own token, and shows up as a separate chat. Your nine bots will appear as nine separate conversations in your chat list.
 
-### 4.12 Shortcut — automate everything after bot creation
+### 4.12 Retired plaintext shortcut
 
-Bot *creation* (4.3) is the only manual part; Telegram has no API for it. Once the nine bots exist and you have their tokens, `scripts/setup-bots.sh` does the rest in one command — it replaces the hand-work in **4.4** (token → `.env`) and **4.9** (commands, description, about text).
-
-```bash
-# from the repo root
-cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-# edit scripts/bot-tokens.env: paste ALLOWED_USERS (your @userinfobot ID) + the 9 tokens
-# + optionally DEEPSEEK_API_KEY / MINIMAX_API_KEY / OPENROUTER_API_KEY / TINYFISH_API_KEY (docs/04 §5.8)
-./scripts/setup-bots.sh
-```
-
-For each bot it calls the Bot API (`setMyName`, `setMyShortDescription`, `setMyDescription`, `setMyCommands`) with the names and profile text from 4.10, then writes `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` into `~/.hermes/profiles/<slug>/.env` — **non-destructive** (preserves any model-provider keys already in the file), `chmod 600` — and verifies each token with `getMe`. Model-provider keys in `bot-tokens.env` are fanned out the same way (`DEEPSEEK_API_KEY`/`MINIMAX_API_KEY`/`OPENROUTER_API_KEY` → all nine profiles; `TINYFISH_API_KEY` → all nine, though TinyFish authenticates via OAuth so the key is optional — docs/08), making it the single entry point for fleet secrets. Idempotent: rerun anytime to update the profile text or rotate keys.
-
-Still manual afterward (BotFather-only, ~10 s per bot): `/setprivacy` → Disable and `/setjoingroups` → Disable (the hardening from 4.3).
-
-The token you paste into `scripts/bot-tokens.env` is the same value each agent's `.env` needs — the script wires both Telegram's side and the agents' side from that one entry, so you never paste a token twice.
+`scripts/setup-bots.sh` and `scripts/bot-tokens.env.example` are retained only as historical migration artifacts and now fail closed. They must not be used for new setup, rotation, or recovery. Bot profile text can be managed through BotFather; credential wiring follows Section 4.4 and [Credential Management](15-credential-management.md).
 
 ---

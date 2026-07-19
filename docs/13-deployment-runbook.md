@@ -8,6 +8,8 @@ The concern docs (01–12) explain *why*; this is the *what, in order*. Follow t
 
 > **Current stack (2026-07-05):** primary model = **GPT-5.6 (sol/terra/luna tiers, since 2026-07-12) via Codex OAuth on all nine agents + crons** (centralized root auth, effort tiers), **DeepSeek V4 Flash fallback** everywhere ([docs/04](04-models.md)); web = TinyFish MCP + SearXNG, no extract backend ([docs/08 §10.6a](08-web-search.md)); OrbStack VM capped 4 GB (Honcho ×4 + SearXNG); all 9 gateways 24/7 under launchd; approvals off fleet-wide ([docs/09 §13](09-security.md)). Dated checklist entries below are the build log as it happened.
 
+> **Credential policy (2026-07-19):** 1Password is canonical for all static service and integration credentials. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md). Bootstrap identity and writable OAuth stores are the only local `0600` exceptions.
+
 > ⚠️ = a **verify-gate**: the plan makes an assumption about native Hermes that hasn't been tested against a live install. Confirm it before trusting it, and adjust the runbook if reality differs.
 
 ```mermaid
@@ -25,7 +27,7 @@ flowchart LR
 ## Step 0 — Accounts & keys (before anything)
 
 - [ ] **MiniMax $20 Token Plan** — platform.minimax.io. ⚠️ Confirm **M3 is included at the $20 tier**. Endpoint/model verified in v0.16.0 source: provider `minimax` reads `MINIMAX_API_KEY`, defaults to `https://api.minimax.io/anthropic` (override `MINIMAX_BASE_URL`; China: `api.minimaxi.com/anthropic`), model id `MiniMax-M3`. A `minimax-oauth` provider (account login, no key) also exists — if the Token Plan turns out to be subscription-style, use that instead ([docs/04 §5.2](04-models.md)).
-- [~] **OpenRouter key** — **DEFERRED by decision (2026-06-07): start MiniMax-only.** Aux rides the MiniMax quota (provider aux default = M3); no fallback chain — a MiniMax outage silences the fleet until it passes. Revisit when: the 5h quota pinches, an always-on cron lands, or the first outage hurts. To add later: ~$10 one-time at openrouter.ai (also unlocks the 1000/day `:free` tier), fill `OPENROUTER_API_KEY` in bot-tokens.env, rerun setup-bots.sh, wire §5.5 + §5.7.
+- [~] **OpenRouter key** — **historical deferred decision (2026-06-07).** Any future OpenRouter credential is created/rotated in 1Password, mapped only to profiles that require it, and enabled through the approved mapping → `status`/`sync` → restart → smoke-test flow. Do not revive `bot-tokens.env` or `setup-bots.sh`.
 - [ ] **Codex creds** — existing `~/.codex/auth.json` (ChatGPT Desktop / Codex CLI) or be ready for device-code login (coder + writer — §5.3). ⚠️ Accepted-risk — read §5.0 first.
 - [ ] **TinyFish key** — web research ([docs/08](08-web-search.md)).
 - [ ] **Mac Mini M4** — macOS current; **auto-login enabled** so launchd agents survive reboot ([docs/01 §11](01-architecture.md)); Docker/OrbStack installed (for Honcho + SearXNG **only**).
@@ -92,8 +94,8 @@ fallback chains live. Host monitoring is the watchdog's job — no ops agent by 
 **Operational reminders:** maintenance mute = `touch /tmp/hermes-watchdog/mute` before
 deliberate restarts. After `brew upgrade hermes-agent`, re-pip the venv extras
 (python-telegram-bot ddgs websockets mcp honcho-ai) + `docker compose up -d --build`
-Honcho if its config changed. `bot-tokens.env` is the rebuild source — keep it 600 and
-don't edit it in a stale GUI buffer.
+Honcho if its config changed. 1Password items are the only rebuild/rotation source for
+static credentials; verify profile references with `hermes -p <profile> secrets onepassword status`.
 
 ## Step 7 — Phase C: game-dev (when you start a real game)
 

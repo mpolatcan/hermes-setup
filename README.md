@@ -211,7 +211,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 
 1. [Architecture & Isolation](docs/01-architecture.md) — native single-install multi-profile; what isolation we keep and give up
 2. [Agents — Roster, Specs & SOULs](docs/02-agents.md) — the nine agents, dual-use vs studio + personal tier, comic SOULs
-3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, the `setup-bots.sh` shortcut
+3. [Telegram Bots](docs/03-telegram-bots.md) — bots, names, and 1Password-backed token wiring
 4. [Model Providers](docs/04-models.md) — DeepSeek + Codex routing, fallback chains
 5. [Deployment](docs/05-deployment.md) — directories, profiles, phases, toolset hygiene, launchd
 6. [Networking](docs/06-networking.md) — Telegram needs no ports; Tailscale optional for the dashboard
@@ -225,6 +225,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
 15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
 16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
+17. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
 
 ---
 
@@ -232,11 +233,10 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 
 ```bash
 # 1. Telegram: @BotFather → /newbot ×9   (general_<you>_bot … health_<you>_bot; slug-based, rename-safe)
-# 2. wire the bots + keys (creation is the only manual Telegram step):
-cp scripts/bot-tokens.env.example scripts/bot-tokens.env && chmod 600 scripts/bot-tokens.env
-#    fill ALLOWED_USERS (from @userinfobot) + the 9 tokens + DEEPSEEK/OPENROUTER keys, then:
-#    (TinyFish needs no key — it authenticates via OAuth in step 4)
-./scripts/setup-bots.sh        # sets bot profiles + fans tokens & keys into ~/.hermes/profiles/<slug>/.env
+# 2. store each bot/provider credential in the correct 1Password item and map it by ID:
+hermes -p <profile> secrets onepassword set TELEGRAM_BOT_TOKEN 'op://<vault-id>/<item-id>/<field-id>'
+hermes -p <profile> secrets onepassword status
+#    repeat only for credentials that profile needs; see docs/15-credential-management.md
 # 3. install Hermes natively + bring up one profile, then the rest:
 #    follow docs/13-deployment-runbook.md  (keys → install → bots → Phase A/B/C)
 # 4. web stack — TinyFish (primary, OAuth) + SearXNG (fallback), all agents:
@@ -246,7 +246,7 @@ python3 integrations/codex-usage/install.py
 python3 integrations/codex-usage/install.py --apply
 ```
 
-`bot-tokens.env` is the **single entry point for all secrets** — the script fans them out per profile. It's gitignored; keep it `chmod 600` and don't edit it in a stale GUI buffer.
+**1Password is the single source of truth for static credentials.** Profile configs contain only ID-based `op://` references. Bootstrap identity and writable OAuth stores are the documented local `0600` exceptions; see [Credential Management](docs/15-credential-management.md).
 
 ---
 
@@ -280,24 +280,24 @@ flowchart TB
     root --> integrations["integrations/<br/>Linear adapter + Codex usage command"]:::svc
     integrations --> lin["linear-hermes-platform/<br/>native Linear platform adapter"]:::svc
     integrations --> cu["codex-usage/<br/>fleet-wide /codex_usage plugin + installer"]:::svc
-    scripts --> sb["setup-bots.sh<br/>configure 9 bots + fan secrets to .env"]:::svc
+    scripts --> sb["setup-bots.sh<br/>retired plaintext fan-out path"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
     scripts --> bs["backup-state.sh<br/>git snapshot of all 9 profiles' text state (secrets excluded)"]:::svc
     scripts --> bh["backup-honcho.sh<br/>weekly Honcho pg_dump → ~/backups"]:::svc
-    scripts --> ex["bot-tokens.env.example<br/>(real bot-tokens.env is gitignored)"]:::svc
+    scripts --> ex["bot-tokens.env.example<br/>retired migration reference"]:::svc
     classDef root fill:#303F9F,stroke:#1A237E,color:#fff
     classDef doc fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: `~/.hermes/profiles/<slug>/` (each agent's config, SOUL, sessions, memory, `.env`), Derya's deployed Linear plugin + OAuth/signing credentials + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/` (deployed `watchdog.sh` + `notify-online.sh` + `backup-state.sh`), `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*` (incl. `ai.hermes.fleet-online`, `ai.hermes.backup-state`, `ai.hermes.backup-honcho`).
+State that lives **outside** the repo: 1Password vault items (canonical static credentials), `~/.hermes/profiles/<slug>/` (each agent's config with `op://` references, SOUL, sessions, memory, bootstrap `.op.env` where required, and writable OAuth stores), Derya's deployed Linear plugin + native OAuth store + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/`, `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*`.
 
 ---
 
 ## 10 · Security notes
 
-- **Never commit real tokens.** `*.env` is gitignored; only `*.env.example` ships. `scripts/bot-tokens.env` and every `~/.hermes/profiles/<slug>/.env` stay local, `chmod 600`.
+- **1Password is canonical.** Never put real credentials in the repository, chat, clipboard, Notion, Linear, `config.yaml`, `bot-tokens.env`, or profile `.env` files. Hermes resolves ID-based `op://` references at startup. Only the 1Password bootstrap identity and refresh/writeback OAuth stores remain local `0600` exceptions ([details](docs/15-credential-management.md)).
 - **Native = no container boundary.** A `terminal`/`code_execution` command runs on your real Mac. **Three agents can run code:** `coder` (game-dev shell), `general`/Derya (terminal + Python + `file` — the **fleet admin**, highest-privilege: always-on, web-facing, shell), and `finance` (fenced Python). Each is fenced with `approvals: manual`, credential stripping, Tirith ([details](docs/09-security.md)). ⚠️ Derya's approval on routine `hermes`/`launchctl` commands is **behavioral (her SOUL), not enforced** — see docs/09 §13.7a.
 - **Telegram is the default front door** and needs no open ports (gateways connect outbound). Derya additionally accepts Linear Agent Session webhooks through a dedicated Tailscale Funnel route; the native adapter still binds only `127.0.0.1:8787` and validates HMAC, replay age, organization identity and rate limits. Don't expose the optional Hermes HTTP API/dashboard publicly ([details](docs/06-networking.md)).
 - **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`, Linear adapter `127.0.0.1:8787`; Funnel is the narrow authenticated exception, not a LAN listener.

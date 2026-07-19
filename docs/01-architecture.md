@@ -52,18 +52,18 @@ What dropping containers buys us:
 
 ## 1.1 What isolation we keep, and what we give up
 
-Be honest about the trade. Profiles are **not filesystem sandboxes** — Hermes is explicit: a shell in one profile can read another profile's `.env` (its bot token and API keys). With one native install, that boundary is gone by design.
+Be honest about the trade. Profiles are **not filesystem sandboxes** — a shell-capable profile can read sibling profile state. Static provider, Telegram, webhook and integration credentials no longer live in profile `.env` files: 1Password is canonical and each config contains only ID-based `op://` references. The residual on-disk credential surface is limited to the unavoidable 1Password bootstrap identity and writable OAuth stores, all mode `0600` ([Section 15](15-credential-management.md)).
 
 | Layer | Native single-install reality |
 |---|---|
 | **Per-profile data** | Each agent still gets its own `~/.hermes/profiles/<profile>/` — sessions, memories, skills, config are separate. Built-in session search never crosses profiles. |
-| **Filesystem sandbox** | **None between profiles.** A shell-capable profile can read any sibling's files, including `.env`. |
+| **Filesystem sandbox** | **None between profiles.** A shell-capable profile can read sibling config references, bootstrap identity and writable OAuth stores; static service credentials remain canonical in scoped 1Password vaults. |
 | **Process isolation** | None — all gateways run under your macOS user. launchd supervises each; one crash doesn't take the others, but there is no resource cap per profile. |
 | **Host sandbox** | **None.** A shell or code-exec on the `local` backend runs directly on macOS with your user's access. The container that used to be the boundary is gone. |
 
 So isolation is no longer *structural*. It comes from three things instead:
 
-1. **Single tenant.** Every agent, token, and file is yours. Cross-profile reads are you reading your own data — not a confidentiality breach. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another.
+1. **Single tenant.** Every agent, token, and file is yours. The real threat is **prompt-injection-driven exfiltration**, not one agent spying on another. 1Password reduces persistent plaintext sprawl but does not make a credential invisible after Hermes resolves it into a running process.
 2. **Toolset hygiene.** Three agents can run code: `coder` (`terminal` + `code_execution`, game dev), `general`/Derya (same + `file` — the **fleet admin**), and `finance` (fenced Python). The other six have no shell to escape with; their surface is the scoped `file` tool plus web. Pruning toolsets per agent ([Section 6.6](05-deployment.md)) is now a primary security control, not just a token-cost lever — and Derya, the always-on web-facing admin, is the highest-privilege agent ([docs/09 §13.7a](09-security.md)).
 3. **Code-runner guardrails.** `coder` is a primary arbitrary-code agent sharing the install (the always-on `general`/Derya admin shell is the other — §13.7a), so they carry the residual risk. Each is fenced with `approvals: manual`/`smart`, default credential redaction, a website blocklist, and — optionally — a `docker` code-execution backend for untrusted code. Full treatment in [Section 13](09-security.md).
 

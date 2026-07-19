@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# RETIRED 2026-07-19: this script reads plaintext fleet credentials and fans them
+# into profile .env files. The fleet now uses Hermes' native 1Password integration.
+# See ../docs/15-credential-management.md. Fail closed so the legacy path cannot be
+# used accidentally.
+echo "Retired: plaintext bot/provider secret fan-out is disabled. Use docs/15-credential-management.md and hermes secrets onepassword set." >&2
+exit 1
+
 # setup-bots.sh — apply name, about text, description, and command menu to the
 # nine Hermes Telegram bots via the Bot API.
 #

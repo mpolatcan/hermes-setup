@@ -38,8 +38,9 @@ Each profile directory holds the full state for that agent:
 
 | Path | Contents |
 |---|---|
-| `.env` | API keys and bot token |
-| `config.yaml` | Hermes configuration |
+| `config.yaml` | Hermes configuration plus ID-based `op://` secret references |
+| `.op.env` | Optional `0600` 1Password bootstrap token only; no service credentials |
+| `auth.json`, `mcp-tokens/` | Writable OAuth state only; mode `0600` |
 | `SOUL.md` | Agent personality and instructions |
 | `sessions/` | Conversation history |
 | `memories/` | Persistent memory store (USER.md, MEMORY.md) |
@@ -59,7 +60,7 @@ If you do expose any port, bind it to the Tailscale interface only and key it �
 
 Do not stand up all agents at once. Build in three phases so problems get isolated as they arise.
 
-**Prerequisites:** Section 4 done (bots exist, tokens saved, your Telegram user ID in hand) and Section 5 done (API keys from DeepSeek, OpenRouter, and Codex credentials available). Keys and tokens get pasted during per-profile setup.
+**Prerequisites:** Section 4 done (bots exist, tokens stored in the correct 1Password items, your Telegram user ID known) and Section 5 done (provider credentials stored in 1Password; native OAuth completed where required). No credential is pasted into chat, clipboard, `config.yaml`, or profile `.env` files.
 
 ### Phase 1 — native install + first profile (day 1)
 
@@ -83,7 +84,7 @@ hermes -p researcher setup        # verified v0.16.0: global -p/--profile flag, 
                                 # (or use the wrapper: `researcher setup`)
 ```
 
-Configure: the model provider (`researcher` uses DeepSeek V4 Flash — docs/04 live-stack note), the relevant API keys, and the Telegram bot token. The wizard writes to `~/.hermes/profiles/researcher/.env`.
+Configure the model provider, then map only the required credentials with `hermes -p researcher secrets onepassword set …` using ID-based `op://` references. Verify with `status` and `sync` before starting the gateway ([Section 15](15-credential-management.md)).
 
 **Step 1.3: Edit the SOUL.md**
 

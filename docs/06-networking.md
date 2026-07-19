@@ -113,6 +113,6 @@ If that succeeds, you have a public-facing agent — stop and fix the `host` bin
 - **The default (Telegram only) exposes nothing** — the safest posture. Prefer it; enable listeners only when you actually want the dashboard.
 - **Tailscale ACLs are off by default** ("all tailnet members reach all ports"). Fine for a personal tailnet; tighten in the admin console for a shared one (work/family).
 - **Tailscale IP can change** if you remove/rejoin the tailnet. MagicDNS hostnames are more stable than raw IPs; re-bind config if it changes.
-- **Telegram bot tokens are the real perimeter.** Since Telegram is the front door, a leaked bot token = a path to that agent. Keep `.env` files locked down (Section 9) and restrict each bot to your user ID (Section 4).
+- **Telegram bot tokens are the real perimeter.** Since Telegram is the front door, a leaked bot token = a path to that agent. Keep each token canonical in its persona-scoped 1Password item, map it only to that profile, and restrict each bot to your user ID (Sections 4, 9 and 15).
 
 ---

@@ -50,23 +50,24 @@ flowchart LR
 | `scripts/install_linear_oauth.py` | PKCE S256 app-user OAuth installer |
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 
-## Credential files
+## Credential architecture
 
-Real credentials stay outside the repository and must use mode `0600`:
+1Password is canonical for static Linear credentials. The webhook signing secret and any static client secret live in Derya's 1Password item and are resolved through Hermes' native `secrets.onepassword` mappings. They are never copied through chat, clipboard, the repository, or a plaintext env file.
+
+The OAuth file is a necessary native `0600` exception because refresh-token rotation requires atomic writeback:
 
 ```text
-/Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-bridge.env
 /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-oauth.json
 ```
 
-Signing-secret file:
+Runtime variable names mapped to 1Password:
 
 ```dotenv
 LINEAR_WEBHOOK_SECRET=<current-secret>
 LINEAR_WEBHOOK_SECRET_PREVIOUS=<previous-secret-during-rotation-only>
 ```
 
-The installer writes the OAuth file atomically. Never log access or refresh tokens, and never copy them into the repository.
+The installer writes the OAuth file atomically. Never log access or refresh tokens, and never copy them into the repository, chat, clipboard, Notion, or Linear.
 
 ## OAuth setup
 
@@ -76,15 +77,15 @@ Configure this redirect URI in the Linear application:
 http://localhost:3000/oauth/callback
 ```
 
-Copy the Client ID to the clipboard, then run:
+Read the public Client ID from its approved source or 1Password reference without placing it on the clipboard, then run the installer through its non-clipboard input path. The client secret and webhook signing secret remain 1Password-backed.
 
 ```bash
 /opt/homebrew/Cellar/hermes-agent/2026.7.1/libexec/bin/python \
   integrations/linear-hermes-platform/scripts/install_linear_oauth.py \
-  --client-id-from-clipboard
+  --client-id "$LINEAR_CLIENT_ID"
 ```
 
-The installer uses PKCE S256, opens browser consent, clears the clipboard, verifies the app-user identity, and writes the OAuth JSON file with mode `0600`.
+The installer uses PKCE S256, opens browser consent, verifies the app-user identity, and writes the OAuth JSON file with mode `0600`. Do not pass a secret through command-line arguments; the Client ID is public metadata.
 
 ## Hermes configuration
 
