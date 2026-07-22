@@ -76,10 +76,12 @@ async def main():
 
     agent=DialecticAgent(ws,sess,observer,subject,reasoning_level="low")
     query=(
-        f"Use the grep_messages tool to find the exact canary phrase {phrase}. "
-        "Then answer with only that phrase. Do not guess."
+        f"On the first tool-calling iteration, call both grep_messages and search_messages "
+        f"to independently find the exact canary phrase {phrase}. "
+        "Then answer with only that phrase. Do not guess or call only one of the two tools."
     )
     executor, task_name, run_id, started=await agent._prepare_query(query)
+    iteration_data=[]
     response=await honcho_llm_call(
         model_config=low.MODEL_CONFIG,
         prompt="",
@@ -92,13 +94,105 @@ async def main():
         track_name="Dialectic Low Canary",
         max_input_tokens=settings.DIALECTIC.MAX_INPUT_TOKENS,
         trace_name="dialectic_low_canary",
+        iteration_callback=iteration_data.append,
         telemetry=agent._telemetry_context(),
     )
     if phrase not in response.content:
         raise RuntimeError("non-stream response omitted canary phrase")
     tool_names=[call.get("tool_name") for call in response.tool_calls_made]
-    if "grep_messages" not in tool_names:
-        raise RuntimeError(f"expected grep_messages tool call, got {tool_names}")
+    iteration_tool_calls=[data.tool_calls for data in iteration_data]
+    first_iteration_tools=set(iteration_tool_calls[0]) if iteration_tool_calls else set()
+    expected_first_iteration_tools={"grep_messages", "search_messages"}
+    if not expected_first_iteration_tools.issubset(first_iteration_tools):
+        raise RuntimeError(
+            "expected parallel grep_messages and search_messages calls in the first iteration, "
+            f"got {iteration_tool_calls}"
+        )
+
+    iteration_scenarios=[]
+    advance_tool={
+        "name":"advance_canary",
+        "description":"Advance exactly one step in a deterministic protocol canary.",
+        "input_schema":{
+            "type":"object",
+            "properties":{"step":{"type":"integer","minimum":1,"maximum":5}},
+            "required":["step"],
+            "additionalProperties":False,
+        },
+    }
+    for target_iterations in range(2, 7):
+        final_phrase=f"ITERATION-{target_iterations}-OK"
+        expected_tool_calls=target_iterations-1
+        executed_steps=[]
+        scenario_iteration_data=[]
+
+        async def advance_executor(tool_name, tool_input):
+            if tool_name != "advance_canary":
+                raise RuntimeError(f"unexpected tool {tool_name}")
+            expected_step=len(executed_steps)+1
+            actual_step=tool_input.get("step")
+            if actual_step != expected_step:
+                raise RuntimeError(
+                    f"expected advance_canary step {expected_step}, got {actual_step}"
+                )
+            executed_steps.append(actual_step)
+            if actual_step < expected_tool_calls:
+                return json.dumps({
+                    "accepted_step":actual_step,
+                    "next_step":actual_step+1,
+                    "instruction":(
+                        "Call advance_canary exactly once in the next assistant turn "
+                        f"with step {actual_step+1}. Do not answer yet."
+                    ),
+                })
+            return json.dumps({
+                "accepted_step":actual_step,
+                "complete":True,
+                "final_answer":final_phrase,
+                "instruction":f"Answer with exactly {final_phrase} and no tool call.",
+            })
+
+        scenario_response=await honcho_llm_call(
+            model_config=low.MODEL_CONFIG,
+            prompt=(
+                "This is a deterministic protocol canary. Call advance_canary exactly once "
+                "per assistant turn, starting with step 1. Follow each tool result's next-step "
+                f"instruction. After completion, answer with exactly {final_phrase}."
+            ),
+            max_tokens=512,
+            tools=[advance_tool],
+            tool_choice="required",
+            tool_executor=advance_executor,
+            max_tool_iterations=expected_tool_calls,
+            track_name=f"Dialectic Iteration Canary {target_iterations}",
+            max_input_tokens=settings.DIALECTIC.MAX_INPUT_TOKENS,
+            trace_name=f"dialectic_iteration_canary_{target_iterations}",
+            iteration_callback=scenario_iteration_data.append,
+        )
+        scenario_tool_calls=[data.tool_calls for data in scenario_iteration_data]
+        if executed_steps != list(range(1, expected_tool_calls+1)):
+            raise RuntimeError(
+                f"iteration scenario {target_iterations} executed steps {executed_steps}"
+            )
+        if scenario_tool_calls != [["advance_canary"]] * expected_tool_calls:
+            raise RuntimeError(
+                f"iteration scenario {target_iterations} tool calls {scenario_tool_calls}"
+            )
+        if scenario_response.iterations != target_iterations:
+            raise RuntimeError(
+                f"iteration scenario {target_iterations} returned "
+                f"{scenario_response.iterations} iterations"
+            )
+        if final_phrase not in scenario_response.content:
+            raise RuntimeError(
+                f"iteration scenario {target_iterations} omitted {final_phrase}"
+            )
+        iteration_scenarios.append({
+            "target_iterations":target_iterations,
+            "actual_iterations":scenario_response.iterations,
+            "tool_iterations":len(scenario_iteration_data),
+            "tool_calls":len(scenario_response.tool_calls_made),
+        })
 
     stream_agent=DialecticAgent(ws,sess,observer,subject,reasoning_level="low")
     chunks=[]
@@ -116,8 +210,10 @@ async def main():
         "nonstream_iterations":response.iterations,
         "nonstream_tool_calls":len(response.tool_calls_made),
         "nonstream_tool_names":tool_names,
+        "nonstream_iteration_tool_calls":iteration_tool_calls,
         "nonstream_input_tokens":response.input_tokens,
         "nonstream_output_tokens":response.output_tokens,
+        "iteration_scenarios":iteration_scenarios,
         "stream_chunks":len(chunks),
         "stream_chars":len(streamed),
     }))

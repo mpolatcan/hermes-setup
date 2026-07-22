@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -9,10 +10,12 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
+import tiktoken
 
 from .models import ChatCompletionRequest
 
 UPSTREAM_MODEL = "gpt-5.6-luna"
+OUTPUT_ENCODING = tiktoken.get_encoding("o200k_base")
 MODEL_ALIASES = {
     "gpt-5.6-luna": UPSTREAM_MODEL,
     "honcho-deriver-luna": UPSTREAM_MODEL,
@@ -256,24 +259,83 @@ def _usage_dict(final: Any) -> dict[str, int]:
     return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
 
 
+def enforce_output_limit(
+    result: DriverResult,
+    request: ChatCompletionRequest,
+) -> DriverResult:
+    """Enforce the caller's visible-output cap without corrupting contracts."""
+    requested_cap = request.max_completion_tokens or request.max_tokens
+    if requested_cap is None:
+        return result
+
+    content_tokens = OUTPUT_ENCODING.encode(result.content or "", disallowed_special=())
+    tool_tokens = OUTPUT_ENCODING.encode(
+        json.dumps(result.tool_calls, ensure_ascii=False, separators=(",", ":"))
+        if result.tool_calls
+        else "",
+        disallowed_special=(),
+    )
+    if len(content_tokens) + len(tool_tokens) <= requested_cap:
+        return result
+
+    response_format_type = (request.response_format or {}).get("type")
+    if result.tool_calls or response_format_type in {"json_object", "json_schema"}:
+        raise AdapterError(
+            "Codex output exceeded the requested token limit and cannot be safely truncated",
+            status_code=502,
+            code="output_limit_exceeded",
+        )
+
+    result.content = OUTPUT_ENCODING.decode(content_tokens[:requested_cap])
+    result.finish_reason = "length"
+    return result
+
+
 class HermesCodexDriver:
     """One-request-at-a-time driver over Hermes-managed Codex OAuth."""
 
-    def __init__(self, *, allow_unbounded_output: bool | None = None) -> None:
-        if allow_unbounded_output is None:
-            raw = os.getenv("HONCHO_CODEX_ALLOW_UNBOUNDED_OUTPUT", "")
-            allow_unbounded_output = raw.strip().lower() in {"1", "true", "yes"}
-        self.allow_unbounded_output = allow_unbounded_output
-
-    def complete(self, request: ChatCompletionRequest) -> DriverResult:
-        requested_cap = request.max_completion_tokens or request.max_tokens
-        if requested_cap is not None and not self.allow_unbounded_output:
-            raise AdapterError(
-                "Codex OAuth backend cannot enforce output token limits; "
-                "operator opt-in is required",
-                status_code=400,
-                code="unsupported_parameter",
+    def __init__(
+        self,
+        *,
+        upstream_timeout_seconds: float | None = None,
+        upstream_max_retries: int | None = None,
+    ) -> None:
+        if upstream_timeout_seconds is None:
+            try:
+                upstream_timeout_seconds = float(
+                    os.getenv("HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS", "90")
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    "HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS must be a number"
+                ) from exc
+        if upstream_timeout_seconds <= 0:
+            raise RuntimeError(
+                "HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS must be greater than 0"
             )
+
+        if upstream_max_retries is None:
+            try:
+                upstream_max_retries = int(
+                    os.getenv("HONCHO_CODEX_UPSTREAM_MAX_RETRIES", "0")
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    "HONCHO_CODEX_UPSTREAM_MAX_RETRIES must be an integer"
+                ) from exc
+        if upstream_max_retries < 0:
+            raise RuntimeError(
+                "HONCHO_CODEX_UPSTREAM_MAX_RETRIES must be at least 0"
+            )
+
+        self.upstream_timeout_seconds = upstream_timeout_seconds
+        self.upstream_max_retries = upstream_max_retries
+
+    def complete(
+        self,
+        request: ChatCompletionRequest,
+        cancel_event: threading.Event | None = None,
+    ) -> DriverResult:
         request_id = f"honcho-{uuid.uuid4()}"
         kwargs = build_upstream_kwargs(request, request_id)
         client = None
@@ -295,11 +357,21 @@ class HermesCodexDriver:
                 api_key=token,
                 base_url=base_url,
                 default_headers=_codex_cloudflare_headers(token),
-                timeout=120.0,
-                max_retries=1,
+                timeout=self.upstream_timeout_seconds,
+                max_retries=self.upstream_max_retries,
             )
             event_stream = client.responses.create(**kwargs, stream=True)
-            final = _consume_codex_event_stream(event_stream, model=UPSTREAM_MODEL)
+            final = _consume_codex_event_stream(
+                event_stream,
+                model=UPSTREAM_MODEL,
+                interrupt_check=cancel_event.is_set if cancel_event is not None else None,
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise AdapterError(
+                    "client disconnected",
+                    status_code=499,
+                    code="client_disconnected",
+                )
             if final is None:
                 raise AdapterError("Codex stream ended without a final response")
             normalized = ResponsesApiTransport().normalize_response(final, issuer_kind="codex")
@@ -307,7 +379,7 @@ class HermesCodexDriver:
                 normalized.tool_calls,
                 request.tools,
             )
-            return DriverResult(
+            result = DriverResult(
                 id=f"chatcmpl-{uuid.uuid4().hex}",
                 created=int(time.time()),
                 model=request.model,
@@ -316,6 +388,7 @@ class HermesCodexDriver:
                 finish_reason="tool_calls" if tool_calls else normalized.finish_reason,
                 usage=_usage_dict(final),
             )
+            return enforce_output_limit(result, request)
         except AdapterError:
             raise
         except Exception as exc:

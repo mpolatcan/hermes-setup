@@ -13,6 +13,7 @@ dependencies = [
   "jsonschema>=4.23",
   "openai==2.24.0",
   "pydantic>=2.10",
+  "tiktoken>=0.12",
   "uvicorn>=0.34",
 ]
 
