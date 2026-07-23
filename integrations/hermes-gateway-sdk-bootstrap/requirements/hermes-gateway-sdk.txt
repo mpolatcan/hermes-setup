@@ -1,0 +1,7 @@
+annotated-types==0.7.0
+onepassword-sdk==0.4.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+PyYAML==6.0.3
+typing-inspection==0.4.2
+typing_extensions==4.16.0
