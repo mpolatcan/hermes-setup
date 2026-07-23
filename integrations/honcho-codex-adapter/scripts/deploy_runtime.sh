@@ -5,7 +5,8 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SOURCE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 RUNTIME_ROOT="/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter"
 LAUNCHER_TARGET="/Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh"
-HERMES_PYTHON="/opt/homebrew/opt/hermes-agent/libexec/bin/python"
+HERMES_ROOT="/Users/mutlupolatcan/.hermes/runtime/hermes-agent"
+HERMES_PYTHON="$HERMES_ROOT/venv/bin/python"
 SDK_PYTHON="/opt/homebrew/bin/python3.13"
 
 for executable in "$HERMES_PYTHON" "$SDK_PYTHON" /usr/bin/rsync; do
@@ -49,11 +50,11 @@ env -u PYTHONPATH "$RUNTIME_ROOT/onepassword-sdk-venv/bin/python" -m pip install
   --requirement "$RUNTIME_ROOT/source/requirements/onepassword-sdk.txt"
 
 hermes_site=$("$HERMES_PYTHON" -c 'import site; print(site.getsitepackages()[0])')
-PYTHONPATH="$hermes_site" "$RUNTIME_ROOT/adapter-venv/bin/python" \
+PYTHONPATH="$HERMES_ROOT:$hermes_site" "$RUNTIME_ROOT/adapter-venv/bin/python" \
   -m honcho_codex_adapter.cli \
   --config "$RUNTIME_ROOT/source/config/adapter.toml" \
   --check-config
-PYTHONPATH="$hermes_site" "$RUNTIME_ROOT/adapter-venv/bin/python" \
+PYTHONPATH="$HERMES_ROOT:$hermes_site" "$RUNTIME_ROOT/adapter-venv/bin/python" \
   "$RUNTIME_ROOT/source/scripts/check_hermes_compat.py" --json >/dev/null
 env -u PYTHONPATH "$RUNTIME_ROOT/onepassword-sdk-venv/bin/python" -m pip check
 bash -n "$RUNTIME_ROOT/source/scripts/honcho_codex_adapter_launcher.sh"

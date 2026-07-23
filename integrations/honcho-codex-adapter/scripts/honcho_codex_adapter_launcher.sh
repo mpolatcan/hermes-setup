@@ -5,8 +5,9 @@ umask 077
 RUNTIME="/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter"
 SERVICE="com.polatcangames.hermes.op-service-account"
 REFERENCE="op://xaegpgrxyvqpb7dkrmlxpj2xbe/oe3kgxx7h6fb4axvnnejyw4aoa/jthjqdc63c6svaaiisuz3f3iwm"
-HERMES_PYTHON="/opt/homebrew/opt/hermes-agent/libexec/bin/python"
-ADAPTER_PYTHON="$RUNTIME/adapter-venv/bin/python"
+HERMES_ROOT="${HERMES_ROOT_OVERRIDE:-/Users/mutlupolatcan/.hermes/runtime/hermes-agent}"
+HERMES_PYTHON="${HERMES_PYTHON_OVERRIDE:-$HERMES_ROOT/venv/bin/python}"
+ADAPTER_PYTHON="${ADAPTER_PYTHON_OVERRIDE:-$RUNTIME/adapter-venv/bin/python}"
 SDK_PYTHON="$RUNTIME/onepassword-sdk-venv/bin/python"
 RESOLVER="$RUNTIME/source/scripts/resolve_onepassword_secret.py"
 CONFIG="$RUNTIME/source/config/adapter.toml"
@@ -43,7 +44,8 @@ export HERMES_HOME="/Users/mutlupolatcan/.hermes/profiles/general"
 export HONCHO_CODEX_QUEUE_CAPACITY=8
 export HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS=90
 export HONCHO_CODEX_UPSTREAM_MAX_RETRIES=0
-export PYTHONPATH="$($HERMES_PYTHON -c 'import site; print(site.getsitepackages()[0])')"
+hermes_site="$($HERMES_PYTHON -c 'import site; print(site.getsitepackages()[0])')"
+export PYTHONPATH="${HERMES_ROOT:+$HERMES_ROOT:}$hermes_site"
 
 exec "$ADAPTER_PYTHON" \
   -m honcho_codex_adapter.cli \

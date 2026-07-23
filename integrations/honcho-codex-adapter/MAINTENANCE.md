@@ -66,10 +66,11 @@ fall back to the `op` executable. SDK failure is a fail-closed startup failure.
 
 ## Runtime deployment and 1Password SDK bootstrap
 
-The adapter remains on the Hermes-selected Python 3.14 runtime. The 1Password SDK
-0.4.0 publishes macOS arm64 wheels only through CPython 3.13, so secret resolution
-uses a separate, narrow Python 3.13 venv. Production artifacts live outside Desktop
-to avoid macOS Desktop Folder TCC prompts in the LaunchAgent execution context.
+Hermes and the adapter run on Python 3.13, which satisfies the supported Hermes
+`>=3.11,<3.14` package boundary and the adapter's `>=3.12` boundary. Secret resolution
+uses a separate, narrow Python 3.13 venv so the 1Password SDK remains isolated from
+the model transport. Production artifacts live outside Desktop to avoid macOS Desktop
+Folder TCC prompts in the LaunchAgent execution context.
 
 ```bash
 brew install python@3.13
@@ -79,8 +80,10 @@ bash -n /Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh
 ```
 
 The deploy script copies source into `/Users/mutlupolatcan/.hermes/runtime`, builds
-pinned Python 3.14 and Python 3.13 venvs, validates config and Hermes compatibility,
-and installs the tracked launcher with mode `0700`. It does not restart the service.
+separate pinned Python 3.13 adapter and 1Password SDK venvs, validates config and
+Hermes compatibility against the supported git runtime at
+`/Users/mutlupolatcan/.hermes/runtime/hermes-agent`, and installs the tracked launcher
+with mode `0700`. It does not restart the service.
 Restart only after explicit operator approval:
 
 ```bash
@@ -124,13 +127,14 @@ From the adapter directory:
 
 ```bash
 HERMES_PY=/absolute/path/to/selected/hermes/python
+HERMES_ROOT=/absolute/path/to/selected/hermes/checkout
 HERMES_SITE="$($HERMES_PY -c 'import site; print(site.getsitepackages()[0])')"
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m honcho_codex_adapter.cli \
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python -m honcho_codex_adapter.cli \
   --config config/adapter.toml --check-config
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m ruff check src tests scripts
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m compileall -q src scripts tests
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python -m ruff check src tests scripts
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python -m compileall -q src scripts tests
 bash -n scripts/honcho_codex_soak_cron.sh
 bash -n scripts/run_honcho_guard_tests.sh
 ```
@@ -207,7 +211,10 @@ Follow [the illustrated upgrade lifecycle](docs/upgrade-lifecycle.md). The autom
 non-production gate is:
 
 ```bash
-scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python config/adapter.toml
+scripts/stage_hermes_upgrade.sh \
+  /absolute/path/to/candidate-python \
+  config/adapter.toml \
+  /absolute/path/to/adapter-python
 ```
 
 It validates the typed config, exact eight-symbol compatibility manifest, the complete adapter
