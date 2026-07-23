@@ -37,8 +37,9 @@ flowchart TB
             end
         end
         wd["🐕 watchdog · launchd<br/>15-min health check"]:::wd
-        subgraph svc["Docker · services only (loopback)"]
-            Honcho[("Honcho · :8000<br/>4-container shared memory")]:::infra
+        subgraph svc["local services · loopback"]
+            Honcho[("Honcho · :8000<br/>Docker · shared memory")]:::infra
+            HonchoCodex["Honcho Codex Adapter · :18080<br/>native LaunchAgent · 9 text surfaces"]:::svc
             SearXNG["SearXNG · :8888<br/>search fallback"]:::svc
         end
     end
@@ -58,9 +59,11 @@ flowchart TB
     OnePassword["1Password<br/>canonical static credentials"]:::secret
     ext["☁️ Codex · GPT-5.6 primary<br/>DeepSeek · fallback<br/>TinyFish · OpenRouter"]:::ext
     hermes --> ext
-    Honcho --> ext
+    Honcho -->|"text generation"| HonchoCodex -->|"Codex OAuth"| ext
+    Honcho -->|"embeddings only"| ext
     hermes <--> Notion
     OnePassword -. "op:// resolution<br/>at process startup" .-> hermes
+    OnePassword -. "runtime bearer resolution" .-> HonchoCodex
 
     classDef user fill:#303F9F,stroke:#1A237E,color:#fff
     classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
@@ -191,23 +194,26 @@ flowchart LR
 
 ## 4 · Model routing & fallback
 
-The agent routing is deliberately simple: GPT-5.6 is primary on all nine profiles and DeepSeek is the only profile-level fallback. OpenRouter is used separately for vision fallback and Honcho workers.
+The agent routing is deliberately simple: GPT-5.6 is primary on all nine profiles and DeepSeek is the only profile-level fallback. OpenRouter is used separately for vision fallback and Honcho embeddings; all nine Honcho text-generation surfaces use the local Codex adapter.
 
 ```mermaid
 flowchart LR
     all9["all 9 agents + cron jobs"]:::codex -->|primary| Codex["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · profile-local auth stores"]:::codex
     Codex -. "only agent fallback<br/>(quota window / outage)" .-> DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::fallback
-    Honcho["Honcho memory workers<br/>(separate service path)"]:::infra -->|deriver/dialectic| ORd["OpenRouter<br/>deepseek-v4-flash"]:::ext
+    Honcho["Honcho memory workers"]:::infra -->|"9 text surfaces"| HCA["Honcho Codex Adapter<br/>loopback · typed config"]:::svc
+    HCA -->|"Codex OAuth"| Codex
+    Honcho -->|"embeddings only"| ORd["OpenRouter<br/>text-embedding-3-small"]:::ext
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef fallback fill:#1565C0,stroke:#0D47A1,color:#fff
     classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```
 
 - **GPT-5.6 via Codex OAuth** — **primary for all nine agents and their crons**. Live tiers: `gpt-5.6-sol` for general/coder/researcher/writer · `gpt-5.6-terra` for assistant/finance/health · `gpt-5.6-luna` for marketing/producer. Each profile has its own writable `0600 auth.json` OAuth store; refresh/writeback is profile-local.
 - **Reasoning effort** — `medium` for general/assistant/coder/finance/health/researcher/writer · `low` for marketing/producer. The GPT-5.6 Sol profiles stay at `medium` to control quota and cost.
 - **DeepSeek V4 Flash** (direct API key, pay-per-token, ~$0.14/$0.28 per M) — **the fallback on every profile**: quota-window exhaustion or a Codex outage degrades the fleet to Flash instead of stalling it.
-- **Auxiliary routing** — all text auxiliary tasks use `auto`, inheriting the profile's main GPT-5.6 model with DeepSeek as fallback. Vision also uses GPT-5.6 (`terra` for Derya; otherwise the profile's own tier) with `openrouter:google/gemini-2.5-flash` as fallback. Honcho workers use OpenRouter on their separate service path.
+- **Auxiliary routing** — all Hermes text auxiliary tasks use `auto`, inheriting the profile's main GPT-5.6 model with DeepSeek as fallback. Vision also uses GPT-5.6 (`terra` for Derya; otherwise the profile's own tier) with `openrouter:google/gemini-2.5-flash` as fallback. Honcho's nine text-generation surfaces use the loopback Codex adapter; only embeddings remain on OpenRouter.
 
 Full routing + the per-agent fallback chains: [docs/04](docs/04-models.md).
 
@@ -295,9 +301,10 @@ flowchart TB
     root --> readme["README.md · this file"]:::doc
     root --> docs["docs/ · 01-15<br/>architecture · operations · live runbooks"]:::doc
     root --> scripts["scripts/"]:::svc
-    root --> integrations["integrations/<br/>Linear adapter + Codex usage command"]:::svc
+    root --> integrations["integrations/<br/>native adapters + Codex usage command"]:::svc
     integrations --> lin["linear-hermes-platform/<br/>native Linear platform adapter"]:::svc
     integrations --> cu["codex-usage/<br/>fleet-wide /codex_usage plugin + installer"]:::svc
+    integrations --> hc["honcho-codex-adapter/<br/>typed config + compatibility-gated backend"]:::svc
     scripts --> sb["setup-bots.sh<br/>retired plaintext fan-out path"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
@@ -318,5 +325,5 @@ State that lives **outside** the repo: 1Password vault items (canonical static c
 - **1Password is canonical.** Never put real credentials in the repository, chat, clipboard, Notion, Linear, `config.yaml`, `bot-tokens.env`, or profile `.env` files. Hermes resolves ID-based `op://` references at startup. Only the 1Password bootstrap identity and refresh/writeback OAuth stores remain local `0600` exceptions ([details](docs/15-credential-management.md)).
 - **Native = no container boundary, 9/9 shell-capable by design.** A `terminal`/`execute_code` command runs on your real Mac. All nine profiles resolve both tools; approvals are `off`. The live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` — not a shell-restriction policy ([details](docs/09-security.md)).
 - **Telegram is the default front door** and needs no open ports (gateways connect outbound). Derya additionally accepts Linear Agent Session webhooks through a dedicated Tailscale Funnel route; the native adapter still binds only `127.0.0.1:8787` and validates HMAC, replay age, organization identity and rate limits. Don't expose the optional Hermes HTTP API/dashboard publicly ([details](docs/06-networking.md)).
-- **Services bind loopback only** — Honcho `127.0.0.1:8000`, SearXNG `127.0.0.1:8888`, Linear adapter `127.0.0.1:8787`; Funnel is the narrow authenticated exception, not a LAN listener.
+- **Services bind loopback only** — Honcho `127.0.0.1:8000`, Honcho Codex Adapter `127.0.0.1:18080`, SearXNG `127.0.0.1:8888`, Linear adapter `127.0.0.1:8787`; Funnel is the narrow authenticated exception, not a LAN listener.
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).

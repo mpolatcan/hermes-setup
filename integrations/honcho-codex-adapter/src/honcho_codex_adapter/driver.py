@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 import uuid
@@ -12,19 +11,14 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 import tiktoken
 
+from .backends.hermes import HermesBackend
+from .compat import HermesContract, load_hermes_contract
+from .config import AdapterConfig, DEFAULT_CONFIG, load_config
 from .models import ChatCompletionRequest
 
-UPSTREAM_MODEL = "gpt-5.6-luna"
-OUTPUT_ENCODING = tiktoken.get_encoding("o200k_base")
-MODEL_ALIASES = {
-    "gpt-5.6-luna": UPSTREAM_MODEL,
-    "honcho-deriver-luna": UPSTREAM_MODEL,
-    "honcho-summary-luna": UPSTREAM_MODEL,
-    "honcho-dialectic-minimal-luna": UPSTREAM_MODEL,
-    "honcho-dialectic-luna": UPSTREAM_MODEL,
-    "honcho-dream-deduction-luna": UPSTREAM_MODEL,
-    "honcho-dream-induction-luna": UPSTREAM_MODEL,
-}
+UPSTREAM_MODEL = DEFAULT_CONFIG.upstream.model
+MODEL_ALIASES = {alias: route.upstream_model for alias, route in DEFAULT_CONFIG.models.items()}
+OUTPUT_ENCODING = tiktoken.get_encoding(DEFAULT_CONFIG.output.encoding)
 
 
 class AdapterError(RuntimeError):
@@ -178,18 +172,20 @@ def validate_upstream_tool_calls(
     return validated
 
 
-def build_upstream_kwargs(request: ChatCompletionRequest, request_id: str) -> dict[str, Any]:
+def build_upstream_kwargs(
+    request: ChatCompletionRequest,
+    request_id: str,
+    config: AdapterConfig | None = None,
+    runtime: HermesContract | None = None,
+) -> dict[str, Any]:
+    resolved_config = config or DEFAULT_CONFIG
     try:
-        from agent.codex_responses_adapter import (
-            _chat_messages_to_responses_input,
-            _preflight_codex_api_kwargs,
-            _responses_tools,
-        )
-        from agent.transports.codex import _content_cache_key
+        contract = runtime or load_hermes_contract()
     except Exception as exc:  # pragma: no cover - environment failure
         raise AdapterError("Hermes Codex transport is unavailable", status_code=503, code="transport_unavailable") from exc
 
-    upstream_model = MODEL_ALIASES.get(request.model)
+    route = resolved_config.models.get(request.model)
+    upstream_model = route.upstream_model if route else None
     if upstream_model is None:
         raise AdapterError("model is not allowed", status_code=404, code="model_not_found")
 
@@ -205,7 +201,7 @@ def build_upstream_kwargs(request: ChatCompletionRequest, request_id: str) -> di
             replay_messages.append(message)
     instructions = "\n\n".join(instruction_parts).strip() or "You are a helpful assistant."
     _validate_tool_contract(request.tools, request.tool_choice)
-    converted_tools = _responses_tools(request.tools)
+    converted_tools = contract.responses_tools(request.tools)
     effort = request.reasoning_effort or "medium"
     if effort == "minimal":
         effort = "low"
@@ -213,7 +209,7 @@ def build_upstream_kwargs(request: ChatCompletionRequest, request_id: str) -> di
     kwargs: dict[str, Any] = {
         "model": upstream_model,
         "instructions": instructions,
-        "input": _chat_messages_to_responses_input(
+        "input": contract.chat_messages_to_responses_input(
             replay_messages,
             replay_encrypted_reasoning=True,
             current_issuer_kind="codex_backend",
@@ -228,13 +224,13 @@ def build_upstream_kwargs(request: ChatCompletionRequest, request_id: str) -> di
         kwargs["tools"] = converted_tools
         kwargs["tool_choice"] = _map_tool_choice(request.tool_choice) or "auto"
         kwargs["parallel_tool_calls"] = True if request.parallel_tool_calls is None else request.parallel_tool_calls
-    cache_key = _content_cache_key(instructions, converted_tools)
+    cache_key = contract.content_cache_key(instructions, converted_tools)
     if cache_key:
         kwargs["prompt_cache_key"] = cache_key
 
-    # Validate using Hermes's fail-closed Codex contract before adding the
-    # Responses `text` field, which Hermes 2026.7.7.2 preflight does not yet list.
-    kwargs = _preflight_codex_api_kwargs(kwargs, allow_stream=False)
+    # Validate against the selected Hermes fail-closed Codex contract before
+    # adding the Responses `text` field, which the checked contract does not list.
+    kwargs = contract.preflight_codex_api_kwargs(kwargs, allow_stream=False)
     text_config: dict[str, Any] = {}
     fmt = _map_response_format(request.response_format)
     if fmt:
@@ -262,14 +258,15 @@ def _usage_dict(final: Any) -> dict[str, int]:
 def enforce_output_limit(
     result: DriverResult,
     request: ChatCompletionRequest,
+    encoding: Any = OUTPUT_ENCODING,
 ) -> DriverResult:
     """Enforce the caller's visible-output cap without corrupting contracts."""
     requested_cap = request.max_completion_tokens or request.max_tokens
     if requested_cap is None:
         return result
 
-    content_tokens = OUTPUT_ENCODING.encode(result.content or "", disallowed_special=())
-    tool_tokens = OUTPUT_ENCODING.encode(
+    content_tokens = encoding.encode(result.content or "", disallowed_special=())
+    tool_tokens = encoding.encode(
         json.dumps(result.tool_calls, ensure_ascii=False, separators=(",", ":"))
         if result.tool_calls
         else "",
@@ -286,7 +283,7 @@ def enforce_output_limit(
             code="output_limit_exceeded",
         )
 
-    result.content = OUTPUT_ENCODING.decode(content_tokens[:requested_cap])
+    result.content = encoding.decode(content_tokens[:requested_cap])
     result.finish_reason = "length"
     return result
 
@@ -297,39 +294,31 @@ class HermesCodexDriver:
     def __init__(
         self,
         *,
+        config: AdapterConfig | None = None,
+        backend: HermesBackend | None = None,
         upstream_timeout_seconds: float | None = None,
         upstream_max_retries: int | None = None,
     ) -> None:
-        if upstream_timeout_seconds is None:
-            try:
-                upstream_timeout_seconds = float(
-                    os.getenv("HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS", "90")
-                )
-            except ValueError as exc:
-                raise RuntimeError(
-                    "HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS must be a number"
-                ) from exc
-        if upstream_timeout_seconds <= 0:
-            raise RuntimeError(
-                "HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS must be greater than 0"
-            )
-
-        if upstream_max_retries is None:
-            try:
-                upstream_max_retries = int(
-                    os.getenv("HONCHO_CODEX_UPSTREAM_MAX_RETRIES", "0")
-                )
-            except ValueError as exc:
-                raise RuntimeError(
-                    "HONCHO_CODEX_UPSTREAM_MAX_RETRIES must be an integer"
-                ) from exc
-        if upstream_max_retries < 0:
-            raise RuntimeError(
-                "HONCHO_CODEX_UPSTREAM_MAX_RETRIES must be at least 0"
-            )
-
-        self.upstream_timeout_seconds = upstream_timeout_seconds
-        self.upstream_max_retries = upstream_max_retries
+        try:
+            self.config = config or load_config()
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        self.backend = backend or HermesBackend()
+        self.upstream_timeout_seconds = (
+            upstream_timeout_seconds
+            if upstream_timeout_seconds is not None
+            else self.config.upstream.timeout_seconds
+        )
+        self.upstream_max_retries = (
+            upstream_max_retries
+            if upstream_max_retries is not None
+            else self.config.upstream.max_retries
+        )
+        if self.upstream_timeout_seconds <= 0:
+            raise RuntimeError("upstream timeout must be greater than 0")
+        if self.upstream_max_retries < 0:
+            raise RuntimeError("upstream max retries must be at least 0")
+        self.output_encoding = tiktoken.get_encoding(self.config.output.encoding)
 
     def complete(
         self,
@@ -337,34 +326,17 @@ class HermesCodexDriver:
         cancel_event: threading.Event | None = None,
     ) -> DriverResult:
         request_id = f"honcho-{uuid.uuid4()}"
-        kwargs = build_upstream_kwargs(request, request_id)
-        client = None
-        event_stream = None
+        kwargs = build_upstream_kwargs(request, request_id, self.config)
         try:
-            from openai import OpenAI
-            from hermes_cli.auth import resolve_codex_runtime_credentials
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            from agent.codex_runtime import _consume_codex_event_stream
-            from agent.transports.codex import ResponsesApiTransport
-
-            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-            token = str(creds.get("api_key") or "").strip()
-            base_url = str(creds.get("base_url") or "").strip().rstrip("/")
-            if not token or not base_url:
-                raise AdapterError("Codex credentials are unavailable", status_code=401, code="authentication_error")
-
-            client = OpenAI(
-                api_key=token,
-                base_url=base_url,
-                default_headers=_codex_cloudflare_headers(token),
-                timeout=self.upstream_timeout_seconds,
+            route = self.config.models.get(request.model)
+            if route is None:
+                raise AdapterError("model is not allowed", status_code=404, code="model_not_found")
+            backend_result = self.backend.invoke(
+                kwargs,
+                model=route.upstream_model,
+                timeout_seconds=self.upstream_timeout_seconds,
                 max_retries=self.upstream_max_retries,
-            )
-            event_stream = client.responses.create(**kwargs, stream=True)
-            final = _consume_codex_event_stream(
-                event_stream,
-                model=UPSTREAM_MODEL,
-                interrupt_check=cancel_event.is_set if cancel_event is not None else None,
+                cancel_event=cancel_event,
             )
             if cancel_event is not None and cancel_event.is_set():
                 raise AdapterError(
@@ -372,13 +344,11 @@ class HermesCodexDriver:
                     status_code=499,
                     code="client_disconnected",
                 )
-            if final is None:
+            final = backend_result.final
+            normalized = backend_result.normalized
+            if final is None or normalized is None:
                 raise AdapterError("Codex stream ended without a final response")
-            normalized = ResponsesApiTransport().normalize_response(final, issuer_kind="codex")
-            tool_calls = validate_upstream_tool_calls(
-                normalized.tool_calls,
-                request.tools,
-            )
+            tool_calls = validate_upstream_tool_calls(normalized.tool_calls, request.tools)
             result = DriverResult(
                 id=f"chatcmpl-{uuid.uuid4().hex}",
                 created=int(time.time()),
@@ -388,7 +358,7 @@ class HermesCodexDriver:
                 finish_reason="tool_calls" if tool_calls else normalized.finish_reason,
                 usage=_usage_dict(final),
             )
-            return enforce_output_limit(result, request)
+            return enforce_output_limit(result, request, self.output_encoding)
         except AdapterError:
             raise
         except Exception as exc:
@@ -411,16 +381,3 @@ class HermesCodexDriver:
             if isinstance(status, int) and 400 <= status < 500:
                 raise AdapterError("Codex rejected the request", status_code=status, code="upstream_request_error") from exc
             raise AdapterError("Codex upstream request failed") from exc
-        finally:
-            if event_stream is not None:
-                close = getattr(event_stream, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-            if client is not None:
-                try:
-                    client.close()
-                except Exception:
-                    pass

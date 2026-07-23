@@ -9,22 +9,19 @@ from typing import Callable
 
 
 _QUEUE_CLASSES = ("dialectic", "summary", "deriver", "dream")
-_WEIGHTED_CYCLE = (
-    *("dialectic",) * 8,
-    *("summary",) * 4,
-    *("deriver",) * 2,
-    "dream",
-)
+_DEFAULT_MODEL_CLASSES = {
+    "gpt-5.6-luna": "deriver",
+    "honcho-deriver-luna": "deriver",
+    "honcho-summary-luna": "summary",
+    "honcho-dialectic-minimal-luna": "dialectic",
+    "honcho-dialectic-luna": "dialectic",
+    "honcho-dream-deduction-luna": "dream",
+    "honcho-dream-induction-luna": "dream",
+}
 
 
-def queue_class_for_model(model: str) -> str:
-    if model.startswith("honcho-dialectic-"):
-        return "dialectic"
-    if model == "honcho-summary-luna":
-        return "summary"
-    if model.startswith("honcho-dream-"):
-        return "dream"
-    return "deriver"
+def queue_class_for_model(model: str, model_classes: dict[str, str] | None = None) -> str:
+    return (model_classes or _DEFAULT_MODEL_CLASSES).get(model, "deriver")
 
 
 @dataclass(slots=True)
@@ -71,14 +68,25 @@ class WeightedPriorityScheduler:
         capacity: int,
         *,
         aging_seconds: float = 30.0,
+        weights: dict[str, int] | None = None,
+        model_classes: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
         if aging_seconds <= 0:
             raise ValueError("aging_seconds must be greater than 0")
+        resolved_weights = weights or {"dialectic": 8, "summary": 4, "deriver": 2, "dream": 1}
+        if set(resolved_weights) != set(_QUEUE_CLASSES) or any(value < 1 for value in resolved_weights.values()):
+            raise ValueError("weights must define every queue class with positive integers")
         self.capacity = capacity
         self.aging_seconds = aging_seconds
+        self._weighted_cycle = tuple(
+            queue_class
+            for queue_class in _QUEUE_CLASSES
+            for _ in range(resolved_weights[queue_class])
+        )
+        self._model_classes = dict(model_classes or _DEFAULT_MODEL_CLASSES)
         self._clock = clock
         self._lock = asyncio.Lock()
         self._active = False
@@ -90,7 +98,7 @@ class WeightedPriorityScheduler:
         }
 
     async def try_acquire(self, model: str) -> QueueLease | None:
-        queue_class = queue_class_for_model(model)
+        queue_class = queue_class_for_model(model, self._model_classes)
         enqueued_at = self._clock()
         async with self._lock:
             if self._admitted >= self.capacity:
@@ -162,11 +170,11 @@ class WeightedPriorityScheduler:
             selected = min(aged, key=lambda waiter: (waiter.enqueued_at, waiter.sequence))
             return self._waiters[selected.queue_class].popleft()
 
-        for offset in range(len(_WEIGHTED_CYCLE)):
-            index = (self._cycle_index + offset) % len(_WEIGHTED_CYCLE)
-            queue_class = _WEIGHTED_CYCLE[index]
+        for offset in range(len(self._weighted_cycle)):
+            index = (self._cycle_index + offset) % len(self._weighted_cycle)
+            queue_class = self._weighted_cycle[index]
             queue = self._waiters[queue_class]
             if queue:
-                self._cycle_index = (index + 1) % len(_WEIGHTED_CYCLE)
+                self._cycle_index = (index + 1) % len(self._weighted_cycle)
                 return queue.popleft()
         raise RuntimeError("scheduler waiters exist outside the weighted cycle")

@@ -1,0 +1,45 @@
+schema_version = 1
+
+[server]
+host = "127.0.0.1"
+port = 18080
+access_log = false
+
+[upstream]
+model = "gpt-5.6-luna"
+timeout_seconds = 90.0
+max_retries = 0
+
+[admission]
+capacity = 8
+aging_seconds = 30.0
+
+[admission.weights]
+dialectic = 8
+summary = 4
+deriver = 2
+dream = 1
+
+[output]
+encoding = "o200k_base"
+
+[models."gpt-5.6-luna"]
+queue_class = "deriver"
+
+[models."honcho-deriver-luna"]
+queue_class = "deriver"
+
+[models."honcho-summary-luna"]
+queue_class = "summary"
+
+[models."honcho-dialectic-minimal-luna"]
+queue_class = "dialectic"
+
+[models."honcho-dialectic-luna"]
+queue_class = "dialectic"
+
+[models."honcho-dream-deduction-luna"]
+queue_class = "dream"
+
+[models."honcho-dream-induction-luna"]
+queue_class = "dream"

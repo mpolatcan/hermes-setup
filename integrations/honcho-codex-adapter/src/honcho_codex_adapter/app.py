@@ -9,7 +9,8 @@ from typing import Any, Protocol
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .driver import AdapterError, DriverResult, HermesCodexDriver, MODEL_ALIASES
+from .config import AdapterConfig, load_config
+from .driver import AdapterError, DriverResult, HermesCodexDriver
 from .models import ChatCompletionRequest
 from .scheduler import WeightedPriorityScheduler
 
@@ -51,29 +52,28 @@ def create_app(
     api_key: str | None = None,
     queue_capacity: int | None = None,
     queue_aging_seconds: float | None = None,
+    config: AdapterConfig | None = None,
 ) -> FastAPI:
+    resolved_config = config or load_config()
     resolved_key = api_key if api_key is not None else os.getenv("HONCHO_CODEX_ADAPTER_API_KEY", "")
     if not resolved_key:
         raise RuntimeError("HONCHO_CODEX_ADAPTER_API_KEY is required")
-    if queue_capacity is None:
-        try:
-            queue_capacity = int(os.getenv("HONCHO_CODEX_QUEUE_CAPACITY", "8"))
-        except ValueError as exc:
-            raise RuntimeError("HONCHO_CODEX_QUEUE_CAPACITY must be an integer") from exc
+    queue_capacity = queue_capacity if queue_capacity is not None else resolved_config.admission.capacity
+    queue_aging_seconds = (
+        queue_aging_seconds if queue_aging_seconds is not None else resolved_config.admission.aging_seconds
+    )
     if queue_capacity < 1:
-        raise RuntimeError("HONCHO_CODEX_QUEUE_CAPACITY must be at least 1")
-    if queue_aging_seconds is None:
-        try:
-            queue_aging_seconds = float(os.getenv("HONCHO_CODEX_QUEUE_AGING_SECONDS", "30"))
-        except ValueError as exc:
-            raise RuntimeError("HONCHO_CODEX_QUEUE_AGING_SECONDS must be a number") from exc
+        raise RuntimeError("queue capacity must be at least 1")
     if queue_aging_seconds <= 0:
-        raise RuntimeError("HONCHO_CODEX_QUEUE_AGING_SECONDS must be greater than 0")
+        raise RuntimeError("queue aging seconds must be greater than 0")
     app = FastAPI(title="Honcho Codex Adapter", version="0.1.0", docs_url=None, redoc_url=None)
-    app.state.driver = driver or HermesCodexDriver()
+    app.state.config = resolved_config
+    app.state.driver = driver or HermesCodexDriver(config=resolved_config)
     app.state.scheduler = WeightedPriorityScheduler(
         queue_capacity,
         aging_seconds=queue_aging_seconds,
+        weights=resolved_config.admission.weights,
+        model_classes={alias: route.queue_class for alias, route in resolved_config.models.items()},
     )
 
     async def require_auth(authorization: str | None = Header(default=None)) -> None:
@@ -86,7 +86,13 @@ def create_app(
 
     @app.get("/v1/models", dependencies=[Depends(require_auth)])
     async def models() -> dict[str, Any]:
-        return {"object": "list", "data": [{"id": model, "object": "model", "owned_by": "honcho-codex-adapter"} for model in MODEL_ALIASES]}
+        return {
+            "object": "list",
+            "data": [
+                {"id": model, "object": "model", "owned_by": "honcho-codex-adapter"}
+                for model in resolved_config.models
+            ],
+        }
 
     @app.post("/v1/chat/completions", dependencies=[Depends(require_auth)])
     async def completions(payload: ChatCompletionRequest, http_request: Request):

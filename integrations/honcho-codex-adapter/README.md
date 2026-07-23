@@ -12,14 +12,59 @@ Honcho-only OpenAI Chat Completions façade over Hermes-managed `openai-codex` O
 - Transport: Hermes `ResponsesApiTransport` plus its event-stream assembler
 - Embeddings: remain on OpenRouter
 
-The adapter deliberately runs with the Hermes Homebrew Python so imports are pinned to the installed Hermes release.
+Hermes private imports are isolated in `compat.py`; the HTTP, scheduler, validation,
+and model contracts remain backend-independent. See [Architecture](docs/architecture.md)
+for the runtime, configuration, and replacement boundaries.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    H["Honcho<br/>9 text surfaces"]:::infra
+    A["OpenAI-compatible façade<br/>stable contract"]:::svc
+    C["Typed TOML config"]:::config
+    B["Hermes compatibility backend<br/>8-symbol manifest"]:::compat
+    R["Selected Hermes runtime"]:::hermes
+    O["Codex OAuth / Responses API"]:::ext
+    E["OpenRouter embeddings"]:::ext
+
+    H -->|"text generation"| A --> B --> R --> O
+    H -->|"embeddings only"| E
+    C --> A
+
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
+    classDef config fill:#455A64,stroke:#263238,color:#fff
+    classDef compat fill:#D32F2F,stroke:#B71C1C,color:#fff
+    classDef hermes fill:#EF6C00,stroke:#E65100,color:#fff
+    classDef ext fill:#00796B,stroke:#004D40,color:#fff
+```
+
+## Configuration
+
+`config/adapter.toml` is the canonical non-secret configuration. It controls the
+loopback listener, upstream timeout/retry policy, admission capacity, queue weights,
+model aliases/classes, and output tokenizer. Environment variables remain typed,
+machine-specific overrides; the bearer key remains runtime-only.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m honcho_codex_adapter.cli \
+  --config config/adapter.toml --check-config
+PYTHONPATH=src .venv/bin/python -m honcho_codex_adapter.cli \
+  --config config/adapter.toml --print-effective-config
+```
+
+The effective output is secret-free. Invalid types, unknown top-level sections,
+non-loopback hosts, incomplete queue weights, and invalid aliases fail closed.
 
 ## Development
 
 ```bash
-HERMES_PY=/opt/homebrew/Cellar/hermes-agent/2026.7.7.2/libexec/bin/python
-PYTHONPATH=src "$HERMES_PY" -m unittest discover -s tests -v
-PYTHONPATH=src "$HERMES_PY" scripts/live_probe.py
+HERMES_PY=/absolute/path/to/selected/hermes/python
+HERMES_SITE="$($HERMES_PY -c 'import site; print(site.getsitepackages()[0])')"
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/live_probe.py
 PYTHONPATH=src "$HERMES_PY" scripts/honcho_dream_tool_canary.py \
   --honcho-root /absolute/path/to/honcho-stack/server
 docker compose -f /absolute/path/to/honcho-stack/server/docker-compose.yml \
@@ -45,17 +90,23 @@ Provide the local bearer key via the process environment or the studio vault; ne
 
 ```bash
 export HONCHO_CODEX_ADAPTER_API_KEY='[FROM VAULT]'
-PYTHONPATH=src /opt/homebrew/Cellar/hermes-agent/2026.7.7.2/libexec/bin/python \
-  -m honcho_codex_adapter.cli
+export HONCHO_CODEX_CONFIG="$PWD/config/adapter.toml"
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m honcho_codex_adapter.cli \
+  --config "$HONCHO_CODEX_CONFIG"
 ```
 
-`HONCHO_CODEX_QUEUE_CAPACITY` bounds active plus waiting requests (default `8`); overflow fails immediately with HTTP `503` / `queue_full`. The single-worker scheduler uses weighted priority (`Dialectic 8 : Summary 4 : Deriver 2 : Dream 1`), FIFO within each class, and a starvation override after `HONCHO_CODEX_QUEUE_AGING_SECONDS` (default `30`). Upstream calls default to a `90` second timeout with automatic SDK retries disabled so one stalled request cannot occupy the sole worker for multiple timeout windows; `HONCHO_CODEX_UPSTREAM_TIMEOUT_SECONDS` and `HONCHO_CODEX_UPSTREAM_MAX_RETRIES` provide explicit operator overrides.
+Admission overflow fails immediately with HTTP `503` / `queue_full`. Defaults remain
+Dialectic 8 : Summary 4 : Deriver 2 : Dream 1, FIFO within each class, 30-second aging,
+a 90-second upstream timeout, and zero SDK retries. Change them in TOML rather than
+editing Python.
 
 Active adapter base URL: `http://host.docker.internal:18080/v1`. All nine Honcho text-generation surfaces resolve through this adapter: Deriver, Summary, five Dialectic levels, and both Dream specialists. The seven advertised model IDs collapse those surfaces onto `gpt-5.6-luna`; embeddings remain on OpenRouter and are intentionally outside this adapter.
 
 ## Operations
 
-See [MAINTENANCE.md](MAINTENANCE.md) for the production route matrix, health checks, test and canary sequence, LaunchAgent lifecycle, soak monitoring, Hermes-upgrade gate, and rollback procedure.
+See [MAINTENANCE.md](MAINTENANCE.md) for routine operations and
+[Hermes Upgrade Lifecycle](docs/upgrade-lifecycle.md) for side-by-side staging,
+compatibility gates, promotion approval, and rollback.
 
 ## Current limitations
 
@@ -63,7 +114,7 @@ See [MAINTENANCE.md](MAINTENANCE.md) for the production route matrix, health che
 - Client disconnect propagates through Hermes' `interrupt_check`; partial output is rejected and stream/client resources are closed.
 - Non-empty `stop` fails closed. Codex OAuth rejects Responses `max_output_tokens`, so the adapter enforces caller limits on visible output with the `o200k_base` tokenizer: plain text is truncated with `finish_reason=length`, while over-limit structured JSON or tool calls fail closed with `output_limit_exceeded` instead of returning corrupted contracts. Upstream usage remains unmodified for honest quota telemetry.
 - Tool calls are fail-closed: returned names and JSON arguments are validated against the caller's schema before Honcho can execute them.
-- Hermes transport imports are private and must be protected by contract tests on every Hermes upgrade.
+- Hermes transport imports remain private but are isolated in one compatibility module and protected by a checked signature manifest on every Hermes upgrade.
 - If the private contract fails, retain the HTTP façade and replace the driver with the official Codex App Server fallback.
 
 ## Official references

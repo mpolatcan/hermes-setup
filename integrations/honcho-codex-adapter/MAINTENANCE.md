@@ -41,6 +41,8 @@ Runtime invariants:
 | Purpose | Path |
 |---|---|
 | Tracked adapter | `/Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter` |
+| Non-secret adapter config | `config/adapter.toml` |
+| Hermes compatibility manifest | `compatibility/hermes-current.json` |
 | Honcho checkout | `/Users/mutlupolatcan/honcho-stack/server` |
 | Credential-resolving launcher | `/Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh` |
 | LaunchAgent | `/Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.honcho-codex-adapter.plist` |
@@ -83,7 +85,11 @@ Deriver output, Dialectic text/tool behavior, and both Dream tool envelopes.
 From the adapter directory:
 
 ```bash
-HERMES_SITE=/opt/homebrew/Cellar/hermes-agent/2026.7.7.2/libexec/lib/python3.14/site-packages
+HERMES_PY=/absolute/path/to/selected/hermes/python
+HERMES_SITE="$($HERMES_PY -c 'import site; print(site.getsitepackages()[0])')"
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m honcho_codex_adapter.cli \
+  --config config/adapter.toml --check-config
+PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
 PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
 PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m ruff check src tests scripts
 PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m compileall -q src scripts tests
@@ -91,9 +97,9 @@ bash -n scripts/honcho_codex_soak_cron.sh
 bash -n scripts/run_honcho_guard_tests.sh
 ```
 
-The pinned `HERMES_SITE` path is intentional: the adapter imports Hermes private
-transport contracts but needs dependencies such as `tiktoken` from its own `.venv`.
-Update the path only after the upgrade gate below passes.
+The selected site-packages path is discovered from its Python executable; no versioned
+Cellar path is tracked. Private imports are confined to `compat.py` and must match the
+reviewed signature manifest before behavioral tests run.
 
 Then validate the Honcho completion guard in its checkout:
 
@@ -159,21 +165,22 @@ final delivery are verified; scheduling it is not completion evidence.
 
 ## Hermes upgrade gate
 
-The driver imports private Hermes symbols. Before changing the pinned Hermes path or
-deploying a Hermes upgrade:
+Follow [the illustrated upgrade lifecycle](docs/upgrade-lifecycle.md). The automated
+non-production gate is:
 
-1. Install or stage the new Hermes release without replacing the running launcher.
-2. Run the complete adapter unit/contract suite with the new Hermes interpreter.
-3. Run the authenticated deterministic probe against a temporary loopback listener.
-4. Run Dream envelope, effect, and full E2E canaries.
-5. Confirm timeout, cancellation, stream/client cleanup, structured-output limits,
-   and model aliases still pass.
-6. Show the launcher edit and restart command; obtain explicit approval.
-7. Restart, verify one production listener, then repeat health and canary checks.
+```bash
+scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python config/adapter.toml
+```
+
+It validates the typed config, exact eight-symbol compatibility manifest, the complete adapter
+and contract suite, and Python compilation without editing the production launcher.
+Authenticated `:18081` probes, Dream effect/E2E canaries, the 11 Honcho guard tests,
+production promotion, and restart remain separate approval gates.
 
 If the private transport contract breaks, keep the OpenAI-compatible HTTP façade and
-replace only the driver with the official Codex App Server path. Do not weaken schema,
-tool, authentication, output-limit, or loopback controls to make an upgrade pass.
+replace only `backends/hermes.py` with the official Codex App Server backend. Do not
+weaken schema, tool, authentication, output-limit, cancellation, or loopback controls
+to make an upgrade pass.
 
 ## Rollback
 
