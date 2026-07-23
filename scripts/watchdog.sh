@@ -5,7 +5,7 @@
 STATUS_FILE="/tmp/hermes-watchdog-last"
 PREV_FILE="/tmp/hermes-watchdog-prev"
 LOG_FILE="/tmp/hermes-watchdog.log"
-HERMES="/opt/homebrew/bin/hermes"
+HERMES="/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
 NOW=$(date "+%H:%M")
 NOW_LOG=$(date "+%Y-%m-%d %H:%M:%S")
 

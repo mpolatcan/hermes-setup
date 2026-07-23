@@ -7,7 +7,7 @@ mkdir -p "$BACKUP_DIR"
 ts="$(date +%Y-%m-%d)"
 
 # curator-managed (hub) skills registry — currently empty, kept for future hub installs
-/opt/homebrew/bin/hermes skills snapshot export "$BACKUP_DIR/skills-$ts.json"
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes skills snapshot export "$BACKUP_DIR/skills-$ts.json"
 
 # the real skills: local external-dir content (not covered by snapshot export)
 tar czf "$BACKUP_DIR/shared-skills-$ts.tar.gz" \

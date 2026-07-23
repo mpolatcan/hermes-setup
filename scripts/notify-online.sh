@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fleet online notification — runs at login via launchd RunAtLoad
 PROFILES="general assistant coder finance health marketing producer researcher writer"
-HERMES="/opt/homebrew/bin/hermes"
+HERMES="/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
 LOG_FILE="/tmp/hermes-fleet-online.log"
 
 sleep 15  # wait for all gateways to start
