@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-onepassword-sdk/
 .env
 .coverage
 .pytest_cache/

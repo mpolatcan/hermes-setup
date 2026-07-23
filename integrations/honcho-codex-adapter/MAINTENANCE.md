@@ -45,6 +45,13 @@ Runtime invariants:
 | Hermes compatibility manifest | `compatibility/hermes-current.json` |
 | Honcho checkout | `/Users/mutlupolatcan/honcho-stack/server` |
 | Credential-resolving launcher | `/Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh` |
+| Tracked launcher source | `scripts/honcho_codex_adapter_launcher.sh` |
+| Production runtime | `/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter` |
+| Runtime deployment | `scripts/deploy_runtime.sh` |
+| 1Password SDK resolver | `scripts/resolve_onepassword_secret.py` |
+| 1Password SDK venv | `onepassword-sdk-venv` under the production runtime (Python 3.13) |
+| 1Password SDK lock | `requirements/onepassword-sdk.txt` |
+| Adapter runtime constraints | `requirements/runtime-constraints.txt` |
 | LaunchAgent | `/Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.honcho-codex-adapter.plist` |
 | Standard log | `/Users/mutlupolatcan/.hermes/logs/honcho-codex-adapter.log` |
 | Error log | `/Users/mutlupolatcan/.hermes/logs/honcho-codex-adapter.error.log` |
@@ -54,6 +61,37 @@ Runtime invariants:
 Credentials are resolved at runtime from macOS Keychain and 1Password. Never copy
 the bearer value into this repository, a command line, logs, chat, or a rollback
 snapshot. The launcher may contain a 1Password item URI; the secret value must not.
+The production and soak paths must use the official 1Password SDK and must never
+fall back to the `op` executable. SDK failure is a fail-closed startup failure.
+
+## Runtime deployment and 1Password SDK bootstrap
+
+The adapter remains on the Hermes-selected Python 3.14 runtime. The 1Password SDK
+0.4.0 publishes macOS arm64 wheels only through CPython 3.13, so secret resolution
+uses a separate, narrow Python 3.13 venv. Production artifacts live outside Desktop
+to avoid macOS Desktop Folder TCC prompts in the LaunchAgent execution context.
+
+```bash
+brew install python@3.13
+cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+./scripts/deploy_runtime.sh
+bash -n /Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh
+```
+
+The deploy script copies source into `/Users/mutlupolatcan/.hermes/runtime`, builds
+pinned Python 3.14 and Python 3.13 venvs, validates config and Hermes compatibility,
+and installs the tracked launcher with mode `0700`. It does not restart the service.
+Restart only after explicit operator approval:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/ai.hermes.honcho-codex-adapter
+```
+
+Do not add the service-account token or resolved bearer to a venv, repository,
+plist, or shell history. The launcher reads the bootstrap token from macOS Keychain,
+passes it only to the resolver process, and removes it before starting the adapter.
+The resolver writes only the requested secret to stdout for immediate capture; all
+error messages are sanitized and resolution has a bounded timeout.
 
 ## Routine health check
 

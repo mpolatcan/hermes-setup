@@ -17,6 +17,22 @@ HONCHO_HEALTH_URL = "http://127.0.0.1:8000/health"
 OP_TOKEN_SERVICE = "com.polatcangames.hermes.op-service-account"
 OP_TOKEN_ACCOUNT = "general"
 OP_API_KEY_URI = "op://xaegpgrxyvqpb7dkrmlxpj2xbe/oe3kgxx7h6fb4axvnnejyw4aoa/jthjqdc63c6svaaiisuz3f3iwm"
+INTEGRATION_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_RUNTIME = Path(
+    os.getenv(
+        "HONCHO_CODEX_ADAPTER_RUNTIME_ROOT",
+        "/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter",
+    )
+)
+LOCAL_SDK_PYTHON = INTEGRATION_ROOT / ".venv-onepassword-sdk" / "bin" / "python"
+PRODUCTION_SDK_PYTHON = PRODUCTION_RUNTIME / "onepassword-sdk-venv" / "bin" / "python"
+OP_SDK_PYTHON = PRODUCTION_SDK_PYTHON if PRODUCTION_SDK_PYTHON.is_file() else LOCAL_SDK_PYTHON
+PRODUCTION_SDK_RESOLVER = PRODUCTION_RUNTIME / "source" / "scripts" / "resolve_onepassword_secret.py"
+OP_SDK_RESOLVER = (
+    PRODUCTION_SDK_RESOLVER
+    if PRODUCTION_SDK_RESOLVER.is_file()
+    else Path(__file__).with_name("resolve_onepassword_secret.py")
+)
 EXPECTED_MODELS = {
     "gpt-5.6-luna",
     "honcho-deriver-luna",
@@ -75,7 +91,10 @@ def resolve_api_key() -> str:
     )
     env = os.environ.copy()
     env["OP_SERVICE_ACCOUNT_TOKEN"] = token
-    return run_secret_command(["/opt/homebrew/bin/op", "read", OP_API_KEY_URI], env=env)
+    return run_secret_command(
+        [str(OP_SDK_PYTHON), str(OP_SDK_RESOLVER), OP_API_KEY_URI],
+        env=env,
+    )
 
 
 def request_json(
