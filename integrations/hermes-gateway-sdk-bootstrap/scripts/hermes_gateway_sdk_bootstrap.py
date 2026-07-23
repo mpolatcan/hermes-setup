@@ -151,7 +151,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", choices=sorted(ALLOWED_PROFILES))
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--hermes-python", type=Path)
+    parser.add_argument("--hermes-executable", type=Path)
     parser.add_argument("--legacy-hermes", type=Path)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--check-only", action="store_true")
@@ -168,8 +168,8 @@ def run(
     base = dict(os.environ if environment is None else environment)
     profile_home = Path(f"/Users/mutlupolatcan/.hermes/profiles/{args.profile}")
     config_path = args.config or profile_home / "config.yaml"
-    hermes_python = args.hermes_python or Path(
-        "/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python"
+    hermes_executable = args.hermes_executable or Path(
+        "/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
     )
 
     references, token_env, provider_enabled = load_reference_map(
@@ -234,15 +234,13 @@ def run(
         return 0
 
     if (
-        not hermes_python.is_absolute()
-        or not hermes_python.is_file()
-        or not os.access(hermes_python, os.X_OK)
+        not hermes_executable.is_absolute()
+        or not hermes_executable.is_file()
+        or not os.access(hermes_executable, os.X_OK)
     ):
-        raise BootstrapError("Hermes Python is not an absolute executable file")
+        raise BootstrapError("Hermes console executable is unavailable")
     argv = [
-        str(hermes_python),
-        "-m",
-        "hermes_cli.main",
+        str(hermes_executable),
         "--profile",
         args.profile,
         "gateway",
@@ -250,7 +248,7 @@ def run(
         "--replace",
     ]
     try:
-        execve(str(hermes_python), argv, child)
+        execve(str(hermes_executable), argv, child)
     except OSError as exc:
         raise BootstrapError("Hermes exec failed") from exc
     raise BootstrapError("Hermes exec unexpectedly returned")

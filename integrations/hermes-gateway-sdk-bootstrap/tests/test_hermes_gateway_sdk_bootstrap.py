@@ -177,7 +177,7 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
             args = argparse.Namespace(
                 profile="assistant",
                 config=config,
-                hermes_python=None,
+                hermes_executable=None,
                 legacy_hermes=None,
                 timeout_seconds=30.0,
                 check_only=True,
@@ -210,13 +210,13 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = write_config(root)
-            hermes_python = root / "python"
-            hermes_python.write_text("", encoding="utf-8")
-            hermes_python.chmod(0o700)
+            hermes_executable = root / "hermes"
+            hermes_executable.write_text("", encoding="utf-8")
+            hermes_executable.chmod(0o700)
             args = argparse.Namespace(
                 profile="assistant",
                 config=config,
-                hermes_python=hermes_python,
+                hermes_executable=hermes_executable,
                 legacy_hermes=None,
                 timeout_seconds=30.0,
                 check_only=False,
@@ -228,13 +228,11 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
                     client_type=FakeClient,
                     execve=fake_execve,
                 )
-        self.assertEqual(captured["path"], str(hermes_python))
+        self.assertEqual(captured["path"], str(hermes_executable))
         self.assertEqual(
             captured["argv"],
             [
-                str(hermes_python),
-                "-m",
-                "hermes_cli.main",
+                str(hermes_executable),
                 "--profile",
                 "assistant",
                 "gateway",
@@ -266,7 +264,7 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
             args = argparse.Namespace(
                 profile="assistant",
                 config=config,
-                hermes_python=None,
+                hermes_executable=None,
                 legacy_hermes=legacy,
                 timeout_seconds=30.0,
                 check_only=False,
