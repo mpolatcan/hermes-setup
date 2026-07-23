@@ -25,5 +25,4 @@ bootstrap_script="$bootstrap_root/hermes_gateway_sdk_bootstrap.py"
   exit 66
 }
 
-exec "$bootstrap_python" "$bootstrap_script" "$profile" \
-  --legacy-hermes /opt/homebrew/bin/hermes
+exec "$bootstrap_python" "$bootstrap_script" "$profile"
