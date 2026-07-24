@@ -15,8 +15,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TextIO
 
 import yaml
 
@@ -24,6 +25,19 @@ INTEGRATION_NAME = "Hermes Gateway SDK Bootstrap"
 INTEGRATION_VERSION = "v0.1.0"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
+SEND_ENV_ALLOWLIST = {
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TMPDIR",
+    "TZ",
+    "USER",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+}
 ALLOWED_PROFILES = frozenset(
     {
         "general",
@@ -147,7 +161,84 @@ def build_child_environment(
     return child
 
 
+def parse_maintenance_send_args(command_args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        add_help=False,
+        allow_abbrev=False,
+        exit_on_error=False,
+    )
+    parser.add_argument("-t", "--to", action="append")
+    parser.add_argument("-f", "--file")
+    parser.add_argument("-s", "--subject")
+    parser.add_argument("-q", "--quiet", action="store_true")
+    parser.add_argument("-l", "--list", dest="list_targets", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("message", nargs="?")
+    try:
+        parsed, unknown = parser.parse_known_args(command_args)
+    except (argparse.ArgumentError, SystemExit) as exc:
+        raise BootstrapError("unsupported maintenance send arguments") from exc
+    if unknown:
+        raise BootstrapError("unsupported maintenance send arguments")
+    if parsed.list_targets:
+        raise BootstrapError("send command is restricted to message delivery")
+    targets = parsed.to or []
+    if len(targets) != 1:
+        raise BootstrapError("send command requires exactly one target")
+    target = targets[0]
+    if target != "telegram":
+        raise BootstrapError("send command is restricted to the Telegram home target")
+    if parsed.file not in {None, "-"}:
+        raise BootstrapError("send command can read only piped stdin")
+    if parsed.message is None and parsed.file != "-":
+        raise BootstrapError("send command requires literal text or explicit piped stdin")
+    if parsed.message == "-":
+        raise BootstrapError("send command requires --file - for piped stdin")
+    if parsed.message and "MEDIA:" in parsed.message:
+        raise BootstrapError("send command does not permit media attachments")
+    if parsed.subject and "MEDIA:" in parsed.subject:
+        raise BootstrapError("send command does not permit media attachments")
+    return parsed
+
+
+def select_references_for_command(
+    command: str,
+    command_args: list[str],
+    references: Mapping[str, str],
+) -> dict[str, str]:
+    if command == "gateway":
+        if command_args:
+            raise BootstrapError("gateway command does not accept passthrough arguments")
+        return dict(references)
+
+    parse_maintenance_send_args(command_args)
+
+    selected = {
+        name: reference
+        for name, reference in references.items()
+        if name.startswith("TELEGRAM_")
+    }
+    if "TELEGRAM_BOT_TOKEN" not in selected:
+        raise BootstrapError("missing Telegram secret mapping")
+    return selected
+
+
+def build_send_base_environment(base: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in base.items()
+        if name in SEND_ENV_ALLOWLIST
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    command_args: list[str] = []
+    if "--" in raw:
+        separator = raw.index("--")
+        command_args = raw[separator + 1 :]
+        raw = raw[:separator]
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", choices=sorted(ALLOWED_PROFILES))
     parser.add_argument("--config", type=Path)
@@ -155,7 +246,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--legacy-hermes", type=Path)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--check-only", action="store_true")
-    return parser.parse_args(argv)
+    parser.add_argument("--command", choices=("gateway", "send"), default="gateway")
+    args = parser.parse_args(raw)
+    args.command_args = command_args
+    return args
 
 
 def run(
@@ -164,6 +258,7 @@ def run(
     environment: Mapping[str, str] | None = None,
     client_type: Any | None = None,
     execve: Any = os.execve,
+    stdin_stream: TextIO | None = None,
 ) -> int:
     base = dict(os.environ if environment is None else environment)
     profile_home = Path(f"/Users/mutlupolatcan/.hermes/profiles/{args.profile}")
@@ -171,11 +266,19 @@ def run(
     hermes_executable = args.hermes_executable or Path(
         "/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
     )
+    command = getattr(args, "command", "gateway")
+    command_args = list(getattr(args, "command_args", []))
+    if command_args[:1] == ["--"]:
+        command_args = command_args[1:]
 
     references, token_env, provider_enabled = load_reference_map(
         config_path, allow_enabled=args.legacy_hermes is not None
     )
     if provider_enabled:
+        if command != "gateway" or command_args:
+            raise BootstrapError(
+                "legacy transition supports only gateway execution"
+            )
         legacy_hermes = args.legacy_hermes
         if (
             legacy_hermes is None
@@ -198,6 +301,17 @@ def run(
             raise BootstrapError("legacy Hermes transition exec failed") from exc
         raise BootstrapError("legacy Hermes transition exec unexpectedly returned")
 
+    references = select_references_for_command(command, command_args, references)
+
+    stdin_message: str | None = None
+    if command == "send":
+        parsed_send = parse_maintenance_send_args(command_args)
+        if parsed_send.file == "-":
+            source = stdin_stream if stdin_stream is not None else sys.stdin
+            stdin_message = source.read()
+            if "MEDIA:" in stdin_message:
+                raise BootstrapError("send command does not permit media attachments")
+
     token = base.pop(token_env, "")
     try:
         resolved = asyncio.run(
@@ -211,6 +325,8 @@ def run(
     finally:
         token = ""
 
+    if command == "send":
+        base = build_send_base_environment(base)
     child = build_child_environment(
         base,
         resolved,
@@ -239,16 +355,32 @@ def run(
         or not os.access(hermes_executable, os.X_OK)
     ):
         raise BootstrapError("Hermes console executable is unavailable")
-    argv = [
-        str(hermes_executable),
-        "--profile",
-        args.profile,
-        "gateway",
-        "run",
-        "--replace",
-    ]
+    if command == "send":
+        argv = [
+            str(hermes_executable),
+            "--profile",
+            args.profile,
+            "send",
+            *command_args,
+        ]
+    else:
+        argv = [
+            str(hermes_executable),
+            "--profile",
+            args.profile,
+            "gateway",
+            "run",
+            "--replace",
+        ]
     try:
-        execve(str(hermes_executable), argv, child)
+        if stdin_message is None:
+            execve(str(hermes_executable), argv, child)
+        else:
+            with tempfile.TemporaryFile(mode="w+b") as validated_stdin:
+                validated_stdin.write(stdin_message.encode("utf-8"))
+                validated_stdin.seek(0)
+                os.dup2(validated_stdin.fileno(), 0)
+                execve(str(hermes_executable), argv, child)
     except OSError as exc:
         raise BootstrapError("Hermes exec failed") from exc
     raise BootstrapError("Hermes exec unexpectedly returned")
@@ -259,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(args)
     except BootstrapError as exc:
-        print(f"gateway bootstrap failed: {exc}", file=sys.stderr)
+        print(f"Hermes SDK bootstrap failed: {exc}", file=sys.stderr)
         return 1
 
 

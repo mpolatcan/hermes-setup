@@ -205,7 +205,7 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
 | `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; canonical pipeline rows in Notion |
 
-All nine use Honcho. The fleet configuration lives once in shared `~/.hermes/honcho.json`; per-profile duplicates are unnecessary. Host-key resolution and peer separation were re-verified operationally on v0.18.2.
+All nine use Honcho. The fleet configuration lives once in shared `~/.hermes/honcho.json`; per-profile duplicates are unnecessary. Host-key resolution and peer separation were re-verified operationally on v0.19.0.
 
 Create one per agent. Example for `coder`:
 

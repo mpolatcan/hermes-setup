@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fleet online notification — runs at login via launchd RunAtLoad
 PROFILES="general assistant coder finance health marketing producer researcher writer"
-HERMES="/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
+HERMES_SEND="/Users/mutlupolatcan/.hermes/scripts/hermes-send-keychain.sh"
 LOG_FILE="/tmp/hermes-fleet-online.log"
 
 sleep 15  # wait for all gateways to start
@@ -23,7 +23,7 @@ TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 echo "[$TIMESTAMP] Online:$ONLINE | Offline:$OFFLINE" >> "$LOG_FILE"
 
 if [ -z "$OFFLINE" ]; then
-    $HERMES -p general send --to telegram "🚀 **Fleet ready:** all 9 profile gateways are running ✅"
+    "$HERMES_SEND" general --to telegram "🚀 **Fleet ready:** all 9 profile gateways are running ✅"
 else
-    $HERMES -p general send --to telegram "⚠️ **Fleet boot:** Offline:$OFFLINE — check required"
+    "$HERMES_SEND" general --to telegram "⚠️ **Fleet boot:** Offline:$OFFLINE — check required"
 fi

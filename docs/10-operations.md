@@ -104,67 +104,11 @@ Per-profile logs live at `~/.hermes/logs/gateways/<name>/current` (Hermes rotate
 
 ## 14.5 Fleet health alerting — a dumb watchdog (no agent needed)
 
-There is **no dedicated ops agent for host monitoring** — that's deliberately not an LLM's job. Config/fleet administration belongs to `general`/Derya, with an explicit show-then-confirm behavioral rule; approvals are `off`. All nine profiles are shell-capable by design, so there is no "ops is the only extra shell risk" concern. The health path remains a **dumb watchdog**: a launchd job that checks the fleet every 15 minutes and messages through the raw Telegram API on failure.
+There is **no dedicated ops agent for host monitoring** — that is deliberately not an LLM's job. Config/fleet administration belongs to `general`/Derya, with an explicit show-then-confirm behavioral rule. The health path remains a **dumb watchdog**: a launchd job checks all nine gateway labels and the four Honcho containers every five minutes, tracks PID changes, and sends only when state changes.
 
-`~/.hermes/scripts/watchdog.sh`:
+The canonical script is [`scripts/watchdog.sh`](../scripts/watchdog.sh), deployed at `~/.hermes/scripts/watchdog.sh`. It never reads `.env` files or calls the raw Telegram Bot API. Delivery goes through `~/.hermes/scripts/hermes-send-keychain.sh general --to telegram`, which sanitizes its environment before Keychain lookup, obtains the profile-scoped 1Password service-account token, resolves only `TELEGRAM_*` references through the Quicksilver SDK bootstrap, removes the bootstrap token, and execs managed Hermes `send`. The maintenance boundary accepts only the configured Telegram home target and piped stdin or literal text; arbitrary chat IDs, local files, and media attachments are rejected.
 
-```bash
-#!/bin/bash
-# watchdog.sh — fleet health → Telegram, bypassing the agents.
-# Reuses the general bot's token; talks straight to api.telegram.org.
-set -u
-EXPECTED=(general researcher assistant marketing coder writer producer finance health)  # full fleet
-ENV="$HOME/.hermes/profiles/general/.env"
-TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2)
-CHAT=$(grep '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2 | cut -d, -f1)
-STATE=/tmp/hermes-watchdog; mkdir -p "$STATE"
-
-# Maintenance mute: `touch /tmp/hermes-watchdog/mute` silences alerts for 1h
-# (use while deliberately restarting gateways). Still tracks PIDs meanwhile.
-MUTED=0
-if [ -f "$STATE/mute" ]; then
-  age=$(( $(date +%s) - $(stat -f %m "$STATE/mute") ))
-  if [ "$age" -lt 3600 ]; then MUTED=1; else rm -f "$STATE/mute"; fi
-fi
-
-down=(); restarted=(); ok=()
-for p in "${EXPECTED[@]}"; do
-  pid=$(launchctl list | awk -v l="ai.hermes.gateway-$p" '$3==l {print $1}')
-  if [ -z "$pid" ] || [ "$pid" = "-" ]; then
-    down+=("$p")
-  elif [ -f "$STATE/$p" ] && [ "$pid" != "$(cat "$STATE/$p")" ]; then
-    restarted+=("$p")
-  else
-    ok+=("$p")
-  fi
-  echo "${pid:-none}" > "$STATE/$p"
-done
-
-[ "$MUTED" = "1" ] && exit 0
-[ ${#down[@]} -eq 0 ] && [ ${#restarted[@]} -eq 0 ] && exit 0
-
-msg="🐕 Hermes watchdog · $(date '+%H:%M')"
-if [ ${#down[@]} -gt 0 ]; then
-  msg="$msg
-🔴 DOWN: ${down[*]}
-   → not running under launchd. Logs: ~/.hermes/profiles/<name>/logs/gateway.error.log"
-fi
-if [ ${#restarted[@]} -gt 0 ]; then
-  msg="$msg
-🟡 Restarted in the last 15 min: ${restarted[*]}
-   → one-off = fine (manual restart/upgrade). Same alert repeating = crash loop."
-fi
-if [ ${#ok[@]} -gt 0 ]; then
-  msg="$msg
-🟢 OK: ${ok[*]}"
-fi
-
-curl -fsS "https://api.telegram.org/bot$TOKEN/sendMessage" \
-  --data-urlencode chat_id="$CHAT" \
-  --data-urlencode text="$msg" >/dev/null
-```
-
-Two checks per profile: the launchd job has a live PID, and the PID hasn't changed since the last run — a changed PID means launchd restarted the gateway, which is exactly the event `KeepAlive` would otherwise hide. While something is down it re-alerts every 15 minutes; that nagging is a feature, not a bug. (The `sendMessage` works because you've already messaged the bot — Telegram bots can't initiate chats otherwise.) Status lines are grouped (🔴 down / 🟡 restarted / 🟢 ok) with a hint per group, and the **mute file** keeps planned-maintenance restarts from reading like crash loops. Separate noise source to know about: Hermes itself messages recently-active chats "⚠️ Gateway shutting down/restarting" on every restart — expected during config sessions, rare in steady state.
+A changed PID means launchd restarted the gateway — exactly the event `KeepAlive` would otherwise hide. Repeated identical state is suppressed; the first healthy baseline is silent. Gateway and Honcho-container failures are alert-only: launchd/OrbStack own recovery, while the watchdog makes failure visible.
 
 Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
@@ -178,16 +122,16 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
         <string>/bin/bash</string>
         <string>/Users/YOU/.hermes/scripts/watchdog.sh</string>
     </array>
-    <key>StartInterval</key>    <integer>900</integer>
+    <key>StartInterval</key>    <integer>300</integer>
 </dict>
 </plist>
 ```
 
-**Test it once** (the runbook has this as a gate): `launchctl bootout` the researcher gateway, wait ≤15 min for the Telegram alert, `bootstrap` it back.
+**Test it once** (the runbook has this as a gate): `launchctl bootout` the researcher gateway, wait ≤5 min for the Telegram alert, `bootstrap` it back.
 
 **Known limit:** a same-machine watchdog can't report the machine dying (power, kernel panic, no network). If you add a dead-man service, treat its ping UUID/URL as a credential: store it in 1Password and resolve it at runtime rather than embedding it in the script, plist or documentation. Optional; the Telegram path already covers the common failures.
 
-**Phase B:** extend `EXPECTED`, and add a `docker compose ps` check so Honcho + SearXNG count as fleet members.
+**Current scope:** all nine gateways and the four Honcho containers. SearXNG remains outside this watchdog and is checked through its own service health path.
 
 ---
 
@@ -195,7 +139,7 @@ Schedule it at `~/Library/LaunchAgents/ai.hermes.watchdog.plist`:
 
 The watchdog (14.5) is *anomaly* alerting — it speaks up on down/crash-loop. It does **not** announce a healthy startup. And Hermes' own restart message only reaches *recently-active* chats (it calls `notify_active_sessions` on SIGTERM; an idle bot has `active_at_start=0`, so e.g. Sarp gets nothing when you restart it cold). To get a deterministic "I'm up" line in **every** bot's own chat when the fleet starts, add a one-shot launchd job — same dumb-pipe pattern as the watchdog, no agent involved.
 
-`scripts/notify-online.sh` (in this repo — deploy to `~/.hermes/scripts/`, same as `wire-tinyfish.sh`) checks all launchd labels and asks `hermes -p general send --to telegram` to deliver one fleet-level status message. The helper does not read or fan out Telegram tokens; Hermes resolves the general profile's 1Password-backed mapping. It waits briefly for gateways before checking them.
+`scripts/notify-online.sh` (in this repo — deploy to `~/.hermes/scripts/`, same as `wire-tinyfish.sh`) checks all launchd labels and asks the Quicksilver-aware `hermes-send-keychain.sh general --to telegram` wrapper to deliver one fleet-level status message. The helper does not read or fan out Telegram tokens; it resolves only the general profile's `TELEGRAM_*` references. It waits briefly for gateways before checking them.
 
 ```bash
 notify-online.sh           # all nine (what the launchd job runs)

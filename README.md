@@ -36,7 +36,7 @@ flowchart TB
                 Defne["Defne · health<br/>GPT-5.6-terra"]:::codex
             end
         end
-        wd["🐕 watchdog · launchd<br/>15-min health check"]:::wd
+        wd["🐕 watchdog · launchd<br/>5-min health check"]:::wd
         subgraph svc["local services · loopback"]
             Honcho[("Honcho · :8000<br/>Docker · shared memory")]:::infra
             HonchoCodex["Honcho Codex Adapter · :18080<br/>native LaunchAgent · 9 text surfaces"]:::svc
@@ -158,7 +158,7 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 | **Murat** | `finance` | Markets & finance analyst — analyzes read-only Google-Sheet/CSV/statement data, scans news/Reddit/finance sites (BIST + global), crunches numbers with fenced `code_execution`. *Not* investment advice. | GPT-5.6-terra (Codex) → ds-flash fb |
 | **Defne** | `health` | Health & fitness coach — workout/nutrition logging, calorie/macro estimate from food photos (ballpark), trend tracking. *Not* medical advice. | GPT-5.6-terra (Codex) → ds-flash fb |
 
-> **All nine profiles are host-code-capable by design (accepted 2026-07-19).** Hermes v0.18.2 resolves both `terminal` and `execute_code` on every profile; approvals are `off` fleet-wide. The old “only general/coder/finance can run code” design was superseded — the fleet is uniformly tooled, and security relies on persona guardrails, credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` ([docs/09 §13](docs/09-security.md)).
+> **All nine profiles are host-code-capable by design (accepted 2026-07-19).** Hermes v0.19.0 resolves both `terminal` and `execute_code` on every profile; approvals are `off` fleet-wide. The old “only general/coder/finance can run code” design was superseded — the fleet is uniformly tooled, and security relies on persona guardrails, credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` ([docs/09 §13](docs/09-security.md)).
 
 **🔍 Web stack — all 9 agents:** every agent searches via **TinyFish** (MCP, OAuth 2.1 PKCE — *no API key*) with **SearXNG** as automatic fallback. None is walled off from the web and search never hard-fails; an outage on either side degrades to the other. Wired uniformly by `scripts/wire-tinyfish.sh` — [docs/08](docs/08-web-search.md).
 

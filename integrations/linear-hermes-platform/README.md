@@ -80,7 +80,7 @@ http://localhost:3000/oauth/callback
 Read the public Client ID from its approved source or 1Password reference without placing it on the clipboard, then run the installer through its non-clipboard input path. The client secret and webhook signing secret remain 1Password-backed.
 
 ```bash
-/opt/homebrew/Cellar/hermes-agent/2026.7.1/libexec/bin/python \
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
   integrations/linear-hermes-platform/scripts/install_linear_oauth.py \
   --client-id "$LINEAR_CLIENT_ID"
 ```
@@ -194,7 +194,7 @@ Use the Hermes-bundled Python; the system Python may not include gateway modules
 
 ```bash
 cd /Users/mutlupolatcan/Desktop/hermes-setup
-/opt/homebrew/Cellar/hermes-agent/2026.7.1/libexec/bin/python \
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
   -m unittest discover \
   -s integrations/linear-hermes-platform/tests -v
 ```

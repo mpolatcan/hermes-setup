@@ -100,7 +100,7 @@ gateway:
 
 The token and allowed-users values are resolved from 1Password automatically — they don't need to be repeated here.
 
-**Streaming responses (enabled fleet-wide).** `gateway.streaming.enabled: true` makes replies stream into Telegram as they generate instead of landing as one block at the end. `transport: auto` lets Hermes pick the delivery method. Re-verified in the live v0.18.2 configs on 2026-07-19.
+**Streaming responses (enabled fleet-wide).** `gateway.streaming.enabled: true` makes replies stream into Telegram as they generate instead of landing as one block at the end. `transport: auto` lets Hermes pick the delivery method. Re-verified in the live v0.19.0 configs on 2026-07-24.
 
 ### 4.6 Token collision protection (Hermes-side)
 

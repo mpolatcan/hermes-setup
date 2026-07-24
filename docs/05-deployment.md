@@ -34,7 +34,7 @@ A single install keeps all profiles under `~/.hermes/`. Each agent is a profile;
     └── health/        ← Defne
 ```
 
-*(Re-verified on Hermes v0.18.2 / 2026.7.7.2: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs live under that profile. `profile create` also drops a wrapper at `~/.local/bin/<slug>`.)*
+*(Re-verified on Hermes v0.19.0 / v2026.7.20: named profiles live under `~/.hermes/profiles/<slug>/`; per-profile gateway logs live under that profile. `profile create` also drops a wrapper at `~/.local/bin/<slug>`.)*
 
 Each profile directory holds the full state for that agent:
 
@@ -83,7 +83,7 @@ All state will live under `~/.hermes/`.
 
 ```bash
 hermes profile create researcher
-hermes -p researcher setup        # re-verified v0.18.2: global -p/--profile flag
+hermes -p researcher setup        # re-verified v0.19.0: global -p/--profile flag
                                 # (or use the wrapper: `researcher setup`)
 ```
 
@@ -107,7 +107,7 @@ do not flatten disagreement. Concise by default; expand only when asked.
 **Step 1.4: Run the gateway**
 
 ```bash
-hermes -p researcher gateway run   # foreground; re-verified v0.18.2
+hermes -p researcher gateway run   # foreground; re-verified v0.19.0
 ```
 
 Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p researcher gateway install` (Section 7).
@@ -226,7 +226,7 @@ hermes -p <name> tools list   # active vs available-but-disabled
 
 The s6 supervision tree only exists inside the Docker image. Native, **launchd** is the supervisor: it starts each gateway at login and restarts it on crash — the native equivalent of `--restart unless-stopped`.
 
-**Re-verified on v0.18.2: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and profile-local logs:
+**Re-verified on v0.19.0: do NOT hand-roll plists.** Hermes ships a per-profile launchd installer. It generates a plist labeled `ai.hermes.gateway-<profile>` with `RunAtLoad` + `KeepAlive`, a sane `PATH`, `HERMES_HOME` pinned to the profile dir, and profile-local logs:
 
 ```bash
 hermes -p researcher gateway install    # write + bootstrap the launchd service

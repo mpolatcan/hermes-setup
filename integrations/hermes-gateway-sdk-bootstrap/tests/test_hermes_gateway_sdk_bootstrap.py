@@ -5,6 +5,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -85,6 +86,21 @@ def write_config(root: Path, *, enabled: bool = False) -> Path:
         "    env:\n"
         f"      BETA_KEY: {REF_B}\n"
         f"      ALPHA_KEY: {REF_A}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_send_config(root: Path) -> Path:
+    path = root / "config.yaml"
+    path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: false\n"
+        "    service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN\n"
+        "    env:\n"
+        f"      TELEGRAM_BOT_TOKEN: {REF_A}\n"
+        f"      LINEAR_CLIENT_SECRET: {REF_B}\n",
         encoding="utf-8",
     )
     return path
@@ -245,6 +261,153 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertNotIn(bootstrap.DEFAULT_TOKEN_ENV, child)
         self.assertEqual(child["ALPHA_KEY"], SECRET_A)
 
+    def test_send_reference_scope_keeps_only_telegram_secrets(self) -> None:
+        selected = bootstrap.select_references_for_command(
+            "send",
+            ["--to", "telegram", "ready"],
+            {
+                "TELEGRAM_BOT_TOKEN": REF_A,
+                "TELEGRAM_HOME_CHANNEL": REF_B,
+                "LINEAR_CLIENT_SECRET": "op://vault/item/linear",
+            },
+        )
+        self.assertEqual(
+            selected,
+            {"TELEGRAM_BOT_TOKEN": REF_A, "TELEGRAM_HOME_CHANNEL": REF_B},
+        )
+
+    def test_command_scope_rejects_nontelegram_send_and_gateway_passthrough(self) -> None:
+        references = {"TELEGRAM_BOT_TOKEN": REF_A}
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "Telegram home"):
+            bootstrap.select_references_for_command(
+                "send", ["--to", "discord", "ready"], references
+            )
+        invalid_send_args = [
+            ["--to", "telegram", "ready", "-tdiscord"],
+            ["--to", "telegram", "ready", "--t=discord"],
+            ["--to", "telegram", "-l", "ready"],
+            ["--to", "telegram:123", "ready"],
+            ["--to", "telegram", "--file", "/etc/passwd"],
+            ["--to", "telegram", "MEDIA:/etc/passwd"],
+            ["--to", "telegram", "--subject", "MEDIA:/etc/passwd", "ready"],
+            ["--to", "telegram"],
+            ["--to", "telegram", "-"],
+        ]
+        for send_args in invalid_send_args:
+            with self.subTest(send_args=send_args):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap.select_references_for_command(
+                        "send", send_args, references
+                    )
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "passthrough"):
+            bootstrap.select_references_for_command(
+                "gateway", ["unexpected"], references
+            )
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "exactly one target"):
+            bootstrap.select_references_for_command(
+                "send",
+                ["--to", "telegram", "ready", "--to", "discord"],
+                references,
+            )
+
+    def test_send_rejects_media_from_stdin_before_secret_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = argparse.Namespace(
+                profile="assistant",
+                config=write_send_config(root),
+                hermes_executable=None,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=True,
+                command="send",
+                command_args=["--to", "telegram", "--file", "-"],
+            )
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "media"):
+                bootstrap.run(
+                    args,
+                    environment={bootstrap.DEFAULT_TOKEN_ENV: TOKEN},
+                    client_type=FakeClient,
+                    stdin_stream=StringIO("MEDIA:/etc/passwd"),
+                )
+        self.assertEqual(FakeClient.auth_calls, [])
+        self.assertEqual(FakeSecrets.references, [])
+
+    def test_send_cli_parses_command_before_passthrough_arguments(self) -> None:
+        args = bootstrap.parse_args(
+            [
+                "assistant",
+                "--command",
+                "send",
+                "--",
+                "--to",
+                "telegram",
+                "ready",
+            ]
+        )
+        self.assertEqual(args.command, "send")
+        self.assertEqual(args.command_args, ["--to", "telegram", "ready"])
+
+    def test_send_mode_execs_only_hermes_send_with_resolved_environment(self) -> None:
+        class ExecCaptured(Exception):
+            pass
+
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+            raise ExecCaptured
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_send_config(root)
+            hermes_executable = root / "hermes"
+            hermes_executable.write_text("", encoding="utf-8")
+            hermes_executable.chmod(0o700)
+            args = argparse.Namespace(
+                profile="assistant",
+                config=config,
+                hermes_executable=hermes_executable,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=False,
+                command="send",
+                command_args=["--to", "telegram", "ready"],
+            )
+            with self.assertRaises(ExecCaptured):
+                bootstrap.run(
+                    args,
+                    environment={
+                        bootstrap.DEFAULT_TOKEN_ENV: TOKEN,
+                        "HOME": "/Users/test",
+                        "PATH": "/usr/bin:/bin",
+                        "LINEAR_CLIENT_SECRET": "inherited-linear-secret",
+                        "LC_SECRET": "inherited-locale-secret",
+                    },
+                    client_type=FakeClient,
+                    execve=fake_execve,
+                )
+        self.assertEqual(
+            captured["argv"],
+            [
+                str(hermes_executable),
+                "--profile",
+                "assistant",
+                "send",
+                "--to",
+                "telegram",
+                "ready",
+            ],
+        )
+        child = captured["env"]
+        assert isinstance(child, dict)
+        self.assertNotIn(bootstrap.DEFAULT_TOKEN_ENV, child)
+        self.assertEqual(child["TELEGRAM_BOT_TOKEN"], SECRET_A)
+        self.assertNotIn("LINEAR_CLIENT_SECRET", child)
+        self.assertNotIn("LC_SECRET", child)
+        self.assertEqual(child["PATH"], "/usr/bin:/bin")
+        self.assertEqual(FakeSecrets.references, [REF_A])
+
     def test_transition_dispatches_enabled_profile_to_legacy_hermes(self) -> None:
         class ExecCaptured(Exception):
             pass
@@ -285,6 +448,156 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         assert isinstance(legacy_env, dict)
         self.assertEqual(legacy_env[bootstrap.DEFAULT_TOKEN_ENV], TOKEN)
         self.assertEqual(FakeClient.auth_calls, [])
+
+    def test_transition_rejects_send_instead_of_dispatching_gateway(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_config(root, enabled=True)
+            legacy = root / "hermes"
+            legacy.write_text("#!/bin/sh\n", encoding="utf-8")
+            legacy.chmod(0o700)
+            args = argparse.Namespace(
+                profile="assistant",
+                config=config,
+                hermes_executable=None,
+                legacy_hermes=legacy,
+                timeout_seconds=30.0,
+                check_only=False,
+                command="send",
+                command_args=["--to", "telegram", "ready"],
+            )
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "only gateway"
+            ):
+                bootstrap.run(
+                    args,
+                    environment={bootstrap.DEFAULT_TOKEN_ENV: TOKEN},
+                    client_type=FakeClient,
+                )
+        self.assertEqual(FakeClient.auth_calls, [])
+
+    def test_watchdog_pipes_stdin_as_a_file_and_hashes_stable_state(self) -> None:
+        watchdog = (
+            Path(__file__).parents[3] / "scripts" / "watchdog.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--to telegram --file -", watchdog)
+        self.assertIn(
+            'printf "%s" "$REPORT|$ISSUES|$ALL_OK|$DOWN_COUNT|$RESTART_COUNT" | md5',
+            watchdog,
+        )
+        self.assertNotIn('echo "$MESSAGE" | md5', watchdog)
+
+    def test_send_wrapper_sanitizes_environment_before_keychain_lookup(self) -> None:
+        wrapper = (
+            Path(__file__).parents[1] / "scripts" / "hermes_send_keychain.sh"
+        ).read_text(encoding="utf-8")
+        self.assertLess(wrapper.index("/usr/bin/env -i"), wrapper.index("/usr/bin/security"))
+        self.assertNotIn("HERMES_SEND_SANITIZED", wrapper)
+        self.assertIn("HOME=\"/Users/mutlupolatcan\"", wrapper)
+        self.assertIn("/bin/bash --noprofile --norc -c", wrapper)
+        for unsafe in ("DYLD_", "PYTHONPATH", "HTTPS_PROXY", "SSL_CERT_FILE"):
+            self.assertNotIn(f'{unsafe}="${{{unsafe}', wrapper)
+
+    def test_watchdog_retries_failed_delivery_and_counts_a_missing_label_once(self) -> None:
+        watchdog = Path(__file__).parents[3] / "scripts" / "watchdog.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            stubs = {
+                "launchctl": """#!/bin/bash
+if [[ "${MISSING_GENERAL:-0}" == "1" && "$2" == "ai.hermes.gateway-general" ]]; then exit 1; fi
+printf '\"PID\" = %s;\n\"LastExitStatus\" = 0;\n' "${PID_VALUE:-123}"
+""",
+                "ps": "#!/bin/bash\nprintf '%s\\n' \"$2\"\n",
+                "docker": "#!/bin/bash\nprintf 'true\n'\n",
+                "send": """#!/bin/bash
+cat >> "$SEND_LOG"
+printf '\n---delivery---\n' >> "$SEND_LOG"
+exit "${SEND_EXIT:-1}"
+""",
+            }
+            for name, content in stubs.items():
+                path = bin_dir / name
+                path.write_text(content, encoding="utf-8")
+                path.chmod(0o700)
+
+            send_log = root / "send.log"
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HERMES_WATCHDOG_STATE_DIR": str(root / "state"),
+                "HERMES_WATCHDOG_SEND": str(bin_dir / "send"),
+                "HERMES_WATCHDOG_DOCKER": str(bin_dir / "docker"),
+                "SEND_LOG": str(send_log),
+                "SEND_EXIT": "1",
+                "MISSING_GENERAL": "1",
+                "PID_VALUE": "123",
+            }
+            first = subprocess.run(
+                ["/bin/bash", str(watchdog)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first.returncode, 1)
+            status_file = root / "state" / "hermes-watchdog-last"
+            self.assertFalse(status_file.exists())
+            self.assertFalse((root / "state" / "hermes-watchdog-prev").exists())
+            first_message = send_log.read_text(encoding="utf-8")
+            self.assertIn("general not running", first_message)
+            self.assertIn("1 component failure(s)", first_message)
+
+            environment["SEND_EXIT"] = "0"
+            second = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(second.returncode, 0)
+            self.assertTrue(status_file.exists())
+            deliveries = send_log.read_text(encoding="utf-8").count("---delivery---")
+            self.assertEqual(deliveries, 2)
+
+            third = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(third.returncode, 0)
+            self.assertEqual(
+                send_log.read_text(encoding="utf-8").count("---delivery---"), 2
+            )
+
+            restart_state = root / "restart-state"
+            restart_state.mkdir()
+            profiles = "general researcher assistant marketing coder writer producer finance health"
+            (restart_state / "hermes-watchdog-prev").write_text(
+                "".join(f"{profile}:111:0\n" for profile in profiles.split()),
+                encoding="utf-8",
+            )
+            environment.update(
+                HERMES_WATCHDOG_STATE_DIR=str(restart_state),
+                MISSING_GENERAL="0",
+                PID_VALUE="222",
+                SEND_EXIT="1",
+            )
+            failed_restart = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(failed_restart.returncode, 1)
+            self.assertIn(
+                "general:111:0",
+                (restart_state / "hermes-watchdog-prev").read_text(encoding="utf-8"),
+            )
+
+            environment["SEND_EXIT"] = "0"
+            successful_retry = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(successful_retry.returncode, 0)
+            self.assertIn(
+                "general:222:0",
+                (restart_state / "hermes-watchdog-prev").read_text(encoding="utf-8"),
+            )
 
     def test_cli_error_contains_no_sensitive_data(self) -> None:
         stdout = StringIO()

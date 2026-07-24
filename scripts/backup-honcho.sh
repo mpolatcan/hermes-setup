@@ -12,7 +12,7 @@ ts="$(date +%Y%m%d-%H%M%S)"
 fail() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL: $1" >> "$LOG"
   # notify via hermes so the failure is visible, not silent
-  /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes send "⚠️ Honcho backup FAILED: $1" >/dev/null 2>&1 || true
+  /Users/mutlupolatcan/.hermes/scripts/hermes-send-keychain.sh general --to telegram "⚠️ Honcho backup FAILED: $1" >/dev/null 2>&1 || true
   exit 1
 }
 

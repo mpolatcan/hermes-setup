@@ -14,11 +14,11 @@ This component resolves the configured `ENV_VAR -> op://...` map through the off
 - The bootstrap authenticates one SDK client and resolves every configured reference.
 - Startup fails closed if the token, config, mapping, SDK call, or any value is missing.
 - Secret values and references are never logged.
-- The bootstrap token is removed before Hermes is executed.
-- Secrets exist only in the gateway process environment.
+- The service-account token exists briefly in the mode-`0700` Keychain wrapper and bootstrap process environment, then is removed before Hermes is executed.
+- Resolved values exist briefly in bootstrap memory and only the selected target Hermes child environment. Gateway mode resolves the full configured map; maintenance `send` is restricted to the configured Telegram home target, resolves only `TELEGRAM_*` references, rejects local-file/media delivery, and builds the bootstrap and child from small non-secret environment allowlists rather than inheriting the caller environment.
 - In strict/promoted mode, `secrets.onepassword.enabled` must be exactly `false`; otherwise startup is rejected.
 - The temporary rollout launcher may pass one explicit absolute legacy executable; only profiles still carrying `enabled: true` are dispatched there, without SDK resolution.
-- Hermes starts through the supported `python -m hermes_cli.main` boundary.
+- Hermes starts through the managed `v0.19.0` console executable.
 
 ## Runtime layout
 
@@ -63,6 +63,14 @@ The tests cover disabled-provider enforcement, reference validation, one-client 
 bash integrations/hermes-gateway-sdk-bootstrap/scripts/install_candidate.sh
 ```
 
+Install the narrow maintenance-send wrapper separately with mode `0700`:
+
+```bash
+/usr/bin/install -m 700 \
+  integrations/hermes-gateway-sdk-bootstrap/scripts/hermes_send_keychain.sh \
+  /Users/mutlupolatcan/.hermes/scripts/hermes-send-keychain.sh
+```
+
 To install into a different isolated target:
 
 ```bash
@@ -81,33 +89,28 @@ The installer requires Homebrew Python 3.13 and `uv`, installs fully pinned depe
 6. Compare `op read` process PIDs before and after. The delta must be empty.
 7. Confirm live gateway PIDs are unchanged.
 
-## Transition-safe dispatch
+## Production dispatch (completed)
 
-During rollout, the launcher passes an explicit legacy Hermes executable:
+Production is strict across all nine profiles:
 
-```text
---legacy-hermes /opt/homebrew/bin/hermes
-```
+- `secrets.onepassword.enabled: false` in every profile.
+- `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the managed Hermes `v0.19.0` runtime.
+- The production launcher carries no `--legacy-hermes` argument. An accidental re-enable therefore fails closed.
+- `~/.hermes/scripts/hermes-send-keychain.sh` re-execs itself with a clean environment before Keychain lookup, then uses the same resolution boundary for the narrow Telegram-home `hermes send` command used by maintenance notifications. The bootstrap token is removed before Hermes executes.
+- Homebrew Hermes remains an inert rollback package during the soak period; no production launcher, profile init file, or maintenance script depends on it.
 
-The profile's single config state selects the path:
+The historical transition path remains implemented and tested for rollback analysis, but it is not the production dispatch path.
 
-- `secrets.onepassword.enabled: true` -> legacy Hermes with the bootstrap token retained for the existing built-in provider.
-- `secrets.onepassword.enabled: false` -> SDK resolution followed by Quicksilver, with the bootstrap token removed.
+## Production verification gate
 
-This makes launcher installation safe before any profile config is changed and permits profile-by-profile migration. After all nine profiles are migrated and verified, remove the legacy argument so the launcher becomes strict and any accidental re-enable fails closed.
+After any bootstrap or Hermes runtime change:
 
-## Production rollout gate
-
-Do not perform these changes without explicit approval.
-
-1. Back up all nine profile configs and the live launcher.
-2. Install the exact tested artifact into the production runtime path.
-3. Install the transition launcher at `~/.hermes/scripts/hermes-gateway-keychain.sh` with mode `0700`. Profiles still carrying `enabled: true` remain on legacy Hermes.
-4. For one auxiliary profile at a time, atomically change only `secrets.onepassword.enabled` from `true` to `false`, then restart it with the canonical supervisor-safe helper.
-5. Verify launchd state, PID, Quicksilver process command, Telegram readiness, and zero new `op read` children before advancing.
-6. Continue through the remaining auxiliary profiles.
-7. Migrate and restart `general` last through Telegram `/restart` when available.
-8. Remove the launcher's `--legacy-hermes` argument, install the strict launcher, and confirm all nine configs remain disabled.
+1. Back up all nine profile configs and live launchers.
+2. Run the bootstrap test suite and syntax checks.
+3. Restart auxiliary profiles with the canonical supervisor-safe helper.
+4. Restart `general` last through Telegram `/restart` when available.
+5. Verify launchd PID replacement, managed Python 3.13 process commands, managed-first `PATH`, Telegram readiness, and zero persistent `op read` children.
+6. Verify `hermes-send-keychain.sh` against a non-general profile before relying on maintenance alerts.
 
 ## Rollback
 
