@@ -6,7 +6,7 @@
 
 ## 13. Safety and operational guardrails
 
-Nine agents touching the network and filesystem need explicit guardrails. Hermes v0.18.2 resolves both `terminal` and `execute_code` on **all nine profiles** by design (accepted 2026-07-19); approvals are `off` fleet-wide. The live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` — not a shell-restriction policy.
+Nine agents touching the network and filesystem need explicit guardrails. Managed Hermes v0.19.0 (Quicksilver) resolves both `terminal` and `execute_code` on **all nine profiles** by design (accepted 2026-07-19); approvals are `off` fleet-wide. The live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` — not a shell-restriction policy.
 
 **Approvals policy.** In each agent's `config.yaml`:
 
@@ -76,7 +76,7 @@ Because all profiles share one install, a shell-capable agent can read sibling c
 
 The fence around `coder`:
 
-|- **All nine profiles are shell-capable; there is no scope advantage left in targeting only coder.** The v0.18.2 resolver assembles `terminal` and `execute_code` for 9/9 profiles. This is accepted by design — the fence is credential stripping + Tirith + persona guardrails + website blocklist, not a "fewer shells" policy.
+|- **All nine profiles are shell-capable; there is no scope advantage left in targeting only coder.** The v0.19.0 resolver assembles `terminal` and `execute_code` for 9/9 profiles. This is accepted by design — the fence is credential stripping + Tirith + persona guardrails + website blocklist, not a "fewer shells" policy.
 |- **Approvals are currently `off`.** There is no enforced per-command human gate. All nine profiles share the host-level residual risk.
 |- **Credential stripping is on by default.** Hermes removes env vars matching `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `CREDENTIAL` / `AUTH` from child processes. Do **not** defeat this via `terminal.env_passthrough` or a skill's env config. 1Password prevents static credential sprawl on disk; stripping limits resolved-value propagation into child processes.
 |- **Website blocklist blocks the obvious exfil destinations.** Keep the Section 13 blocklist (`100.*`, `169.254.*`, internal ranges) on active shell profiles so a hijacked agent can't reach a tailnet device or a metadata endpoint to phone home.
