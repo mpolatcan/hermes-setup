@@ -8,48 +8,57 @@ Live procedures for keeping the fleet healthy across hermes-agent upgrades, plus
 
 ## 20. The upgrade checklist
 
-`brew upgrade hermes-agent` alone **breaks the whole fleet**. Two hardcoded-path traps:
+The production fleet does not execute Homebrew Hermes. Gateways, operational scripts, the shell CLI shim, and the dashboard use the stable managed runtime:
 
-1. **Gateway plists pin the versioned Cellar path** (`/opt/homebrew/Cellar/hermes-agent/<ver>/libexec/bin/python`). The old dir is deleted on upgrade; every gateway dies on next restart with nothing in the error log.
-2. **macOS Full Disk Access is granted per versioned Python.app** (`/opt/homebrew/Cellar/python@3.14/<ver>/…/Python.app`). Upgrades bump python@3.14 as a dependency → the grant silently goes stale → TCC permission prompts return.
-
-Full procedure, in order, from a **full login shell** (the plist PATH is snapshotted from the installing shell — a minimal shell bakes a PATH that can't see `~/.local/bin` / `/opt/homebrew/bin`, and the agents lose `claude`, `codex`, `ntn`):
-
-```bash
-brew upgrade hermes-agent
-
-# 1. regenerate + reload all gateway plists
-for p in assistant coder finance general health marketing producer researcher writer; do
-  hermes --profile $p gateway install --force
-  launchctl bootout gui/501/ai.hermes.gateway-$p; sleep 2
-  launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway-$p.plist
-done
-# bootout needs a few seconds to settle; "Bootstrap failed: 5" → sleep 4 and retry
-
-# 2. migrate config schema on ALL profiles (doctor --fix only does the active one)
-for p in assistant coder finance general health marketing producer researcher writer; do
-  hermes -p $p config migrate
-done
-
-# 3. rebuild the dashboard frontend to match the backend
-cd ~/hermes-dashboard-src && git fetch --tags && git checkout v<new-version>
-cd web && npm ci && npm run build          # v0.18+: `git sparse-checkout add apps` once (@hermes/shared)
-launchctl kickstart -k gui/501/ai.hermes.dashboard
-
-# 4. restart fleet so migrated configs load
-for p in …; do launchctl kickstart -k gui/501/ai.hermes.gateway-$p; done
-
-# 5. FDA re-grant if python@3.14 bumped (check: ls /opt/homebrew/Cellar/python@3.14/)
-#    System Settings → Privacy & Security → Full Disk Access → drag the NEW Python.app, drop the old entry
-#    then restart the fleet again (grants apply to new processes only)
-
-# 6. verify
-hermes gateway list                        # 9 ✓
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9119/   # 200
-hermes -p coder -z "which claude codex ntn"                     # all three resolve
+```text
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent
+└── venv/bin/hermes  # Python 3.13; stable launchd target
 ```
 
-Done this way for 0.16.0 → 0.18.0 (2026.7.1) on 2026-07-05.
+Do not upgrade the live directory in place and do not make Python `3.14` the production runtime. Stage the official candidate side by side, preserve the stable path for rollback, and keep the candidate and Honcho adapter in the same supported Python `major.minor` family (`3.13`). The adapter compatibility gate is documented in [`integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md`](../integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md).
+
+Full procedure, in order:
+
+```bash
+# 1. Stage the official tagged candidate under a versioned sibling path.
+#    Use Python 3.13 and run package/import/pip-check plus adapter compatibility gates.
+CANDIDATE=/Users/mutlupolatcan/.hermes/runtime/hermes-agent-candidate-v<release>
+test -x "$CANDIDATE/venv/bin/hermes"
+"$CANDIDATE/venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 13)'
+
+# 2. Run a non-production gateway canary and the adapter compatibility suite.
+#    Do not modify the stable runtime or production launchd jobs yet.
+
+# 3. Build and start the candidate dashboard on 9120 in terminal A.
+env -u HERMES_WEB_DIST \
+  "$CANDIDATE/venv/bin/hermes" -p general dashboard \
+  --no-open --host 127.0.0.1 --port 9120
+
+# In terminal B, smoke-test it, then stop the terminal-A canary.
+curl -fsS http://127.0.0.1:9120/ >/dev/null
+
+# 4. After explicit approval, back up the stable runtime and promote the
+#    verified candidate so the stable path remains the launchd contract.
+
+# 5. Migrate all nine configs, then restart the eight auxiliary gateways in
+#    sequence. Restart general separately only after explicit approval.
+
+# 6. Point HERMES_WEB_DIST at the promoted runtime, lint the dashboard plist,
+#    then reload only the dashboard job. launchd needs a drain interval.
+plutil -lint /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.dashboard.plist
+launchctl bootout gui/501/ai.hermes.dashboard
+sleep 3
+launchctl bootstrap gui/501 /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.dashboard.plist
+
+# 7. Verify disk package, live processes, ports, HTTP, and the global CLI as
+#    separate surfaces. All nine gateway commands must resolve below the
+#    stable managed runtime and the dashboard must return HTTP 200.
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes --version
+command -v hermes && hermes --version
+curl -fsS http://127.0.0.1:9119/ >/dev/null
+```
+
+The managed-runtime pattern was exercised for the `0.19.0` / `v2026.7.20` Quicksilver rollout on 2026-07-23–24. Homebrew `0.18.2` remains installed only as a rollback surface; no production gateway or dashboard executes it.
 
 ## 21. Backup system — current state (2026-07-05)
 

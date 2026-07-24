@@ -117,7 +117,7 @@ Verify the Notion plane separately with `NOTION_KEYRING=0 NOTION_HOME=/Users/YOU
 
 ## Optional extras done
 
-- [x] **Web dashboard (2026-06-08)** — fleet console at `http://127.0.0.1:9119`, persistent under launchd `ai.hermes.dashboard`. The package ships no frontend (formula gap), so it was built from the `v2026.6.5` tag's `web/` and served via `HERMES_WEB_DIST` + `--skip-build` ([docs/06 §8.2.1](06-networking.md)). One console for all profiles (in-UI profile switcher + unified sessions); localhost-only — Tailscale for remote, never `--insecure`.
+- [x] **Web dashboard (migrated 2026-07-24)** — fleet console at `http://127.0.0.1:9119`, persistent under launchd `ai.hermes.dashboard`. Backend and frontend now come from the stable managed Quicksilver runtime (`hermes-agent` `0.19.0`, Python `3.13`); `HERMES_WEB_DIST` points inside that runtime and the plist no longer executes Homebrew Hermes. One console serves all profiles (in-UI profile switcher + unified sessions); localhost-only — Tailscale for remote, never `--insecure` ([docs/06 §8.2.1](06-networking.md)).
 
 ## Deferred — don't build at first
 

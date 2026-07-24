@@ -42,25 +42,33 @@ If you never enable the dashboard or HTTP API, **skip this whole section** — T
 
 The dashboard is **one console for the whole fleet**, not one-per-agent: the UI has a profile **list + switcher** (`/api/profiles`, `/api/profiles/active`) and a **unified sessions view aggregated across all profiles**, plus per-profile config / API-key editing and create/delete. The `-p <slug>` flag only sets which profile is *selected on load*. Config/keys stay *stored* per-profile (that's the isolation); the dashboard is just one window onto all of them. (Cross-*agent* activity is the kanban board's job — separate, and CLI/TUI only.)
 
-⚠️ **Formula gap (re-verified v0.18.2 / 2026.7.7.2):** the Homebrew package still ships neither the built frontend (`hermes_cli/web_dist/`) nor its `web/` source. Build it once from the matching official GitHub tag and point `HERMES_WEB_DIST` at the output (keeps it outside the brew cellar, which `brew upgrade` wipes):
+The production dashboard runs from the same managed Hermes source/runtime as the gateways. Do not point launchd at the Homebrew wrapper or at a separate dashboard checkout: that creates an independently versioned backend/frontend surface. Build the frontend inside the staged managed runtime so `HERMES_WEB_DIST` and the dashboard executable move together:
 
 ```bash
-# clone just web/ at the tag matching the current install (v0.18.2 → v2026.7.7.2)
-git clone --depth 1 --branch v2026.7.7.2 --filter=blob:none --sparse \
-  https://github.com/NousResearch/hermes-agent.git ~/hermes-dashboard-src
-git -C ~/hermes-dashboard-src sparse-checkout set web
-cd ~/hermes-dashboard-src/web && npm install && npm run build   # → ../hermes_cli/web_dist
+RUNTIME=/Users/mutlupolatcan/.hermes/runtime/hermes-agent
+env -u HERMES_WEB_DIST HERMES_HOME=/Users/mutlupolatcan/.hermes/profiles/general \
+  "$RUNTIME/venv/bin/hermes" -p general dashboard \
+  --no-open --host 127.0.0.1 --port 9120
+# First start installs/builds web/ and writes hermes_cli/web_dist/. Smoke-test
+# http://127.0.0.1:9120/, then stop the canary before reloading the live job.
 ```
 
-Run it persistently under launchd (`~/Library/LaunchAgents/ai.hermes.dashboard.plist`, `RunAtLoad`+`KeepAlive`, bound `127.0.0.1:9119`), with `HERMES_WEB_DIST` and a node-capable `PATH` in `EnvironmentVariables`, and `--skip-build` so it serves the prebuilt dist:
+Run it persistently under launchd (`~/Library/LaunchAgents/ai.hermes.dashboard.plist`, `RunAtLoad`+`KeepAlive`, bound `127.0.0.1:9119`). Use absolute managed paths in the plist:
 
 ```bash
-hermes -p general dashboard --no-open --skip-build --host 127.0.0.1 --port 9119
-# env: HERMES_WEB_DIST=/Users/<you>/hermes-dashboard-src/hermes_cli/web_dist
+# plist ProgramArguments[0]:
+#   /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes
+# plist EnvironmentVariables.HERMES_WEB_DIST:
+#   /Users/mutlupolatcan/.hermes/runtime/hermes-agent/hermes_cli/web_dist
+# args: -p general dashboard --no-open --host 127.0.0.1 --port 9119
+
+launchctl bootout gui/$(id -u)/ai.hermes.dashboard
+sleep 3  # launchd drain; immediate bootstrap can fail with exit 5
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.dashboard.plist
+curl -fsS http://127.0.0.1:9119/ >/dev/null
 ```
 
-On `brew upgrade hermes-agent`: the cellar's `web_dist` is irrelevant (we use `HERMES_WEB_DIST`), but rebuild the source dir against the **new** tag so the frontend matches the backend — `git -C ~/hermes-dashboard-src fetch --tags && git checkout v<new> && (cd web && npm run build)` — then `launchctl kickstart -k gui/$(id -u)/ai.hermes.dashboard`.
+On a Hermes upgrade, build and smoke-test the candidate runtime on port `9120` before promoting it. After promotion, confirm that both plist paths still resolve under the stable managed runtime, reload only the dashboard job, and verify HTTP `200`. Homebrew may remain installed for rollback, but it is not a production dashboard dependency.
 
 ### 8.3 If you do enable a listener — bind it to Tailscale
 
