@@ -119,3 +119,32 @@ June 2026 skill-curation merges renamed skills without updating cron job `skills
 | `honcho-to-notion` | `notion-knowledge-ops` |
 
 All 23 affected job definitions repointed 2026-07-05. Also found and fixed a **double eviction**: general's jobs.json held central `mem-eviction-<profile>` copies for all 9 profiles while each profile also had a local twin — both ran nightly, 30–45 min apart (central copies now paused, locals canonical). After any future skill merge: sweep every profile's `cron/jobs.json` for the old name AND check profile-local `skills/` dirs before declaring a reference dead — health's medication skills live in `profiles/health/skills/`, not canonical.
+
+## 27. Runtime topology remediation and gated retirement (2026-07-25)
+
+The production installation remains intentionally split by responsibility, not by competing agent cores:
+
+- `~/.hermes/runtime/hermes-agent` is the only production Hermes code and Python environment.
+- `~/.hermes/profiles/<name>` owns profile state and configuration.
+- `~/Library/LaunchAgents` owns macOS service definitions.
+- `~/.hermes/scripts` owns machine-level deterministic cron scripts.
+- This repository is the canonical, reviewable source for deployment artifacts and local Hermes patches.
+
+The July 25 audit removed the obsolete `ai.hermes.linear-bridge` LaunchAgent and its unused runtime. The native Linear plugin remains on `127.0.0.1:8787` and continues to own the existing credential, OAuth, and SQLite state files. Unsigned local Desktop `dist/` and `release/` artifacts were deleted; no Hermes Desktop app is installed in `/Applications`.
+
+The dashboard CLI status detector did not recognize the machine dashboard command when `-p default` preceded `dashboard`. The verified local production commit is preserved as an applyable mail patch:
+
+```text
+patches/hermes-agent/0001-fix-cli-detect-profile-scoped-dashboard-processes.patch
+```
+
+Apply it only to a compatible Hermes Agent checkout and run the focused stale-dashboard, lifecycle, and Windows subprocess tests before promotion. The patch structurally validates supported launchers instead of substring-matching arbitrary process text; this is security-sensitive because the same detector is used by the update kill path.
+
+Quicksilver retirement is deliberately gated:
+
+1. `integrations/honcho-codex-adapter/scripts/quicksilver_soak_cleanup.py` is the byte-for-byte source copy of the deployed canonical soak cleanup. It removes the recovery checkout and managed candidate only after the scheduler reaches 8 completed runs and the persisted soak history contains seven successful calendar days with no failures.
+2. The remaining Python canary, gateway/adapter candidates, Homebrew formula, and Homebrew-backup environments are **not** deleted by unattended automation. After the canonical completion marker exists, re-run live process, `lsof`, LaunchAgent, cron, config, global-CLI, and path-safety checks; then show the exact `brew uninstall` and removal commands for explicit approval. Do not infer approval from the earlier soak schedule.
+
+The canonical cleanup remains general-profile no-agent job `c083e57807d7` at 04:40. A proposed destructive post-soak job was rejected during independent review and removed before its first run; no post-cleanup script remains deployed.
+
+The npm audit remains advisory-only for the unresolved build surfaces. The installed TUI graph already resolves direct `eslint-plugin-react` to `7.37.5`; npm's remaining automatic remediation requires incompatible actions (React Router/`electron-builder` downgrades or ESLint major changes). Do not use `npm audit fix --force`. Re-evaluate when upstream publishes compatible patched releases, then require web/TUI/Desktop typecheck, test, and build gates before committing lockfile changes.

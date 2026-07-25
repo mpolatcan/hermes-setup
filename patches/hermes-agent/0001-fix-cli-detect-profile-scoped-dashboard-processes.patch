@@ -1,0 +1,354 @@
+From bbb03fa0a092344d4a26cce2b3df4c4a3e738f82 Mon Sep 17 00:00:00 2001
+From: Mutlu Polatcan <mutlupolatcan@gmail.com>
+Date: Sat, 25 Jul 2026 23:21:55 +0300
+Subject: [PATCH] fix(cli): detect profile-scoped dashboard processes
+
+---
+ hermes_cli/main.py                            | 111 +++++++++--
+ .../hermes_cli/test_update_stale_dashboard.py | 177 ++++++++++++++++++
+ 2 files changed, 275 insertions(+), 13 deletions(-)
+
+diff --git a/hermes_cli/main.py b/hermes_cli/main.py
+index 526fa93..95fe308 100644
+--- a/hermes_cli/main.py
++++ b/hermes_cli/main.py
+@@ -6089,17 +6089,102 @@ def _find_stale_dashboard_pids(
+ 
+     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
+     """
+-    patterns = [
+-        "hermes dashboard",
+-        "hermes_cli.main dashboard",
+-        "hermes_cli/main.py dashboard",
+-        # The headless backend (`hermes serve`) is the same long-lived server
+-        # under a different command name — the desktop app spawns it. Reap it
+-        # on update for the same frontend/backend-mismatch reason.
+-        "hermes serve",
+-        "hermes_cli.main serve",
+-        "hermes_cli/main.py serve",
+-    ]
++    def _matches_dashboard_command(command: str) -> bool:
++        """Return whether *command* is an exact dashboard/serve launch."""
++        try:
++            tokens = shlex.split(command, posix=sys.platform != "win32")
++        except ValueError:
++            # A malformed command line cannot be validated safely.
++            return False
++
++        if sys.platform == "win32":
++            # With posix=False, shlex preserves the quotes around each Windows
++            # argv token. Strip only a complete matching pair; malformed
++            # quoting has already raised ValueError above.
++            tokens = [
++                token[1:-1]
++                if len(token) >= 2
++                and token[0] == token[-1]
++                and token[0] in {'"', "'"}
++                else token
++                for token in tokens
++            ]
++
++        if not tokens:
++            return False
++        if any(token in {"--status", "--stop"} for token in tokens):
++            return False
++
++        def _basename(token: str) -> str:
++            return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
++
++        def _is_python_executable(token: str) -> bool:
++            name = _basename(token)
++            if name.endswith(".exe"):
++                name = name[:-4]
++            for prefix in ("python", "pythonw"):
++                if name == prefix:
++                    return True
++                if not name.startswith(prefix):
++                    continue
++                suffix = name[len(prefix) :]
++                if suffix and all(part.isdigit() for part in suffix.split(".")):
++                    return True
++            return False
++
++        def _is_main_script(token: str) -> bool:
++            path = token.replace("\\", "/").lower()
++            return path == "hermes_cli/main.py" or path.endswith(
++                "/hermes_cli/main.py"
++            )
++
++        def _is_console_entrypoint_script(token: str) -> bool:
++            """Recognize the scripts generated for the ``hermes`` entrypoint."""
++            return _basename(token) in {"hermes", "hermes-script.py"}
++
++        executable = _basename(tokens[0])
++        if executable in {"hermes", "hermes.exe"}:
++            command_index = 1
++        elif _is_python_executable(tokens[0]):
++            if tokens[1:3] == ["-m", "hermes_cli.main"]:
++                command_index = 3
++            elif len(tokens) > 1 and (
++                _is_main_script(tokens[1])
++                or _is_console_entrypoint_script(tokens[1])
++            ):
++                command_index = 2
++            else:
++                return False
++        elif _is_main_script(tokens[0]):
++            command_index = 1
++        else:
++            return False
++
++        while command_index < len(tokens):
++            token = tokens[command_index]
++            if token in {"-p", "--profile"}:
++                if command_index + 1 >= len(tokens):
++                    return False
++                command_index += 2
++            elif token.startswith("--profile=") and token != "--profile=":
++                command_index += 1
++            else:
++                break
++
++        if (
++            command_index >= len(tokens)
++            or tokens[command_index] not in {"dashboard", "serve"}
++        ):
++            return False
++
++        server_command = tokens[command_index]
++        server_args = tokens[command_index + 1 :]
++        if any(token in {"--help", "-h"} for token in server_args):
++            return False
++        if server_command == "dashboard" and server_args[:1] == ["register"]:
++            return False
++        return True
++
+     self_pid = os.getpid()
+     dashboard_pids: list[int] = []
+ 
+@@ -6136,7 +6221,7 @@ def _find_stale_dashboard_pids(
+                 elif line.startswith("ProcessId="):
+                     pid_str = line[len("ProcessId=") :]
+                     if (
+-                        any(p in current_cmd for p in patterns)
++                        _matches_dashboard_command(current_cmd)
+                         and int(pid_str) != self_pid
+                     ):
+                         try:
+@@ -6169,7 +6254,7 @@ def _find_stale_dashboard_pids(
+                     except ValueError:
+                         continue
+                     command = parts[1]
+-                    if any(p in command for p in patterns) and pid != self_pid:
++                    if _matches_dashboard_command(command) and pid != self_pid:
+                         dashboard_pids.append(pid)
+     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+         return []
+diff --git a/tests/hermes_cli/test_update_stale_dashboard.py b/tests/hermes_cli/test_update_stale_dashboard.py
+index 4134bac..42a3af5 100644
+--- a/tests/hermes_cli/test_update_stale_dashboard.py
++++ b/tests/hermes_cli/test_update_stale_dashboard.py
+@@ -83,6 +83,59 @@ def _ps_runner(stdout: str):
+ class TestFindStaleDashboardPids:
+     """Unit tests for the ps/wmic-based detection step."""
+ 
++    @pytest.mark.parametrize(
++        "command",
++        [
++            "hermes -p work dashboard --port 9119",
++            "hermes --profile work serve",
++            "hermes --profile=work dashboard",
++            "python3 -m hermes_cli.main -p work serve",
++            "python -m hermes_cli.main --profile work dashboard",
++            "python /opt/hermes/hermes_cli/main.py --profile=work serve",
++            "python /opt/hermes/.venv/bin/hermes dashboard",
++            "python /opt/hermes/.venv/bin/hermes -p work serve",
++        ],
++    )
++    def test_matches_supported_posix_launch_forms(self, command):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=_ps_line(12345, command) + "\n",
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == [12345]
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            "echo hermes dashboard",
++            "python worker.py hermes serve",
++            "python -m other.module hermes dashboard",
++            "python -m hermes_cli.main chat hermes dashboard",
++            "/opt/bin/not-hermes dashboard",
++            "hermes-helper serve",
++            "hermes dashboard-worker",
++            "hermes --profile work",
++        ],
++    )
++    def test_rejects_unrelated_separate_tokens_and_lookalikes(self, command):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=_ps_line(12345, command) + "\n",
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
++
++    def test_rejects_malformed_posix_quotes(self):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=_ps_line(12345, 'hermes "dashboard') + "\n",
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
++
+     def test_no_matches_returns_empty(self):
+         with patch("subprocess.run") as mock_run:
+             mock_run.return_value = MagicMock(
+@@ -104,6 +157,18 @@ class TestFindStaleDashboardPids:
+             )
+             assert _find_stale_dashboard_pids() == [12345]
+ 
++    def test_matches_profile_scoped_running_dashboard(self):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=_ps_line(
++                    12345,
++                    "python3 -m hermes_cli.main -p default dashboard --open-profile general",
++                ) + "\n",
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == [12345]
++
+     def test_multiple_matches(self):
+         with patch("subprocess.run") as mock_run:
+             mock_run.return_value = MagicMock(
+@@ -157,6 +222,31 @@ class TestFindStaleDashboardPids:
+             pids = _find_stale_dashboard_pids()
+         assert pids == [12345]
+ 
++    @pytest.mark.parametrize(
++        "command",
++        [
++            "hermes dashboard --status",
++            "hermes dashboard --stop",
++            "hermes dashboard register",
++            "hermes dashboard --help",
++            "hermes dashboard -h",
++            "hermes serve --help",
++            "hermes serve -h",
++            "hermes --profile work dashboard register",
++            "python /opt/hermes/.venv/bin/hermes -p work dashboard --help",
++        ],
++    )
++    def test_dashboard_control_and_non_server_processes_not_matched(
++        self, command
++    ):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=_ps_line(12345, command) + "\n",
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
++
+     def test_grep_lines_ignored(self):
+         with patch("subprocess.run") as mock_run:
+             mock_run.return_value = MagicMock(
+@@ -434,3 +524,90 @@ class TestWindowsWmicEncoding:
+             )
+             # Must not raise.
+             assert _find_stale_dashboard_pids() == []
++
++
++class TestWindowsDashboardDetection:
++    """Windows command lines are parsed as argv, including quoted tokens."""
++
++    @staticmethod
++    def _wmic_output(command: str, pid: int = 12345) -> str:
++        return f"CommandLine={command}\nProcessId={pid}\n"
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            '"C:\\Program Files\\Hermes\\hermes.exe" "-p" "work" "dashboard"',
++            '"C:\\Program Files\\Hermes\\hermes.exe" "--profile" "work" "serve"',
++            '"C:\\Program Files\\Hermes\\hermes.exe" "--profile=work" "dashboard"',
++            '"python.exe" "-m" "hermes_cli.main" "--profile=work" "serve"',
++            '"python.exe" "C:\\src\\hermes_cli\\main.py" "-p" "work" "dashboard"',
++            '"python.exe" "C:\\venv\\Scripts\\hermes-script.py" "dashboard"',
++            '"python.exe" "C:\\venv\\Scripts\\hermes-script.py" "--profile" "work" "serve"',
++        ],
++    )
++    def test_matches_quoted_supported_launch_forms(
++        self, monkeypatch, command
++    ):
++        monkeypatch.setattr(sys, "platform", "win32")
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=self._wmic_output(command),
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == [12345]
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            '"hermes.exe" "dashboard" "--status"',
++            '"hermes.exe" "dashboard" "--stop"',
++            '"hermes.exe" "dashboard" "register"',
++            '"hermes.exe" "dashboard" "--help"',
++            '"hermes.exe" "dashboard" "-h"',
++            '"hermes.exe" "serve" "--help"',
++            '"hermes.exe" "serve" "-h"',
++            '"python.exe" "C:\\venv\\Scripts\\hermes-script.py" '
++            '"--profile=work" "dashboard" "register"',
++        ],
++    )
++    def test_rejects_quoted_control_and_non_server_invocations(
++        self, monkeypatch, command
++    ):
++        monkeypatch.setattr(sys, "platform", "win32")
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=self._wmic_output(command),
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            '"cmd.exe" "/c" "hermes.exe" "dashboard"',
++            '"python.exe" "worker.py" "hermes.exe" "serve"',
++            '"hermes-helper.exe" "dashboard"',
++            '"hermes.exe" "dashboard-worker"',
++        ],
++    )
++    def test_rejects_unrelated_windows_argv(self, monkeypatch, command):
++        monkeypatch.setattr(sys, "platform", "win32")
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=self._wmic_output(command),
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
++
++    def test_rejects_malformed_windows_quotes(self, monkeypatch):
++        monkeypatch.setattr(sys, "platform", "win32")
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(
++                returncode=0,
++                stdout=self._wmic_output('"hermes.exe" "dashboard'),
++                stderr="",
++            )
++            assert _find_stale_dashboard_pids() == []
+-- 
+2.50.1 (Apple Git-155)
