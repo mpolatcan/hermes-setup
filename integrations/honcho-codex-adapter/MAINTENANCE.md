@@ -40,10 +40,10 @@ Runtime invariants:
 
 | Purpose | Path |
 |---|---|
-| Tracked adapter | `/Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter` |
+| Tracked adapter | `/Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter` |
 | Non-secret adapter config | `config/adapter.toml` |
 | Hermes compatibility manifest | `compatibility/hermes-current.json` |
-| Honcho checkout | `/Users/mutlupolatcan/honcho-stack/server` |
+| Honcho checkout | `/Users/mutlupolatcan/.hermes/services/honcho-stack/server` |
 | Credential-resolving launcher | `/Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh` |
 | Tracked launcher source | `scripts/honcho_codex_adapter_launcher.sh` |
 | Production runtime | `/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter` |
@@ -74,7 +74,7 @@ Folder TCC prompts in the LaunchAgent execution context.
 
 ```bash
 brew install python@3.13
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 ./scripts/deploy_runtime.sh
 bash -n /Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh
 ```
@@ -84,6 +84,25 @@ separate pinned Python 3.13 adapter and 1Password SDK venvs, validates config an
 Hermes compatibility against the supported git runtime at
 `/Users/mutlupolatcan/.hermes/runtime/hermes-agent`, and installs the tracked launcher
 with mode `0700`. It does not restart the service.
+
+After moving the checkout, rebuild its development venvs instead of reusing activation
+scripts, editable-install metadata, or native wheels that embed the old absolute path.
+Use the signed Python.org interpreter shared by the production runtime; mixing a Python
+3.14 development interpreter with Hermes 3.13 site-packages breaks native modules such
+as `rpds`. Ruff is pinned to the repository's reviewed rule set rather than floating to
+a new minor release during environment reconstruction:
+
+```bash
+PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13
+UV=/Users/mutlupolatcan/.local/bin/uv
+$UV venv --python "$PYTHON" .venv
+$UV pip install --python .venv/bin/python \
+  --constraint requirements/runtime-constraints.txt -e . pytest 'ruff==0.15.22'
+$UV venv --python "$PYTHON" .venv-onepassword-sdk
+$UV pip install --python .venv-onepassword-sdk/bin/python \
+  --requirement requirements/onepassword-sdk.txt
+```
+
 Restart only after explicit operator approval:
 
 ```bash
@@ -113,7 +132,7 @@ process liveness only; use the deterministic probe for authenticated model and
 contract coverage:
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 .venv/bin/python scripts/honcho_codex_soak_probe.py --json
 ```
 
@@ -146,9 +165,9 @@ reviewed signature manifest before behavioral tests run.
 Then validate the Honcho completion guard in its checkout:
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 scripts/run_honcho_guard_tests.sh
-cd /Users/mutlupolatcan/honcho-stack/server
+cd /Users/mutlupolatcan/.hermes/services/honcho-stack/server
 .venv/bin/python -m ruff check \
   src/dreamer/orchestrator.py tests/dreamer/test_dreamer_integration.py
 ```

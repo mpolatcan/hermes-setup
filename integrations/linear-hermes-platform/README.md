@@ -193,7 +193,7 @@ curl -fsS https://hermes-funnel.tail7c4d1d.ts.net/health
 Use the Hermes-bundled Python; the system Python may not include gateway modules:
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup
 /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
   -m unittest discover \
   -s integrations/linear-hermes-platform/tests -v

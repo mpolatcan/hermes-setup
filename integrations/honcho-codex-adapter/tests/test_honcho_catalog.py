@@ -14,7 +14,7 @@ from honcho_codex_adapter.models import ChatCompletionRequest
 
 
 DEFAULT_HONCHO_AGENT_TOOLS = Path(
-    "/Users/mutlupolatcan/honcho-stack/server/src/utils/agent_tools.py"
+    "/Users/mutlupolatcan/.hermes/services/honcho-stack/server/src/utils/agent_tools.py"
 )
 CATALOG_NAMES = {
     "TOOLS",

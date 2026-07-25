@@ -1,0 +1,3 @@
+# Unified diff context lines use a leading space as syntax; do not treat that
+# marker as trailing whitespace in the outer repository.
+*.patch whitespace=-blank-at-eol

@@ -7,7 +7,7 @@ Any `launchctl` restart or production config replacement requires explicit opera
 ## Preflight
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 test -z "$(git status --porcelain)" || {
   echo "Refusing rollback with a dirty adapter worktree" >&2
   exit 1
@@ -27,7 +27,7 @@ git tag -a "adapter-known-good-YYYY-MM-DD-stage" \
 Set `KNOWN_GOOD` to a reviewed annotated tag. The restore is committed instead of rewriting history.
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 KNOWN_GOOD=honcho-codex-adapter-known-good-2026-07-19
 git cat-file -e "${KNOWN_GOOD}^{commit}"
 git restore --source="$KNOWN_GOOD" --staged --worktree -- .
@@ -49,7 +49,7 @@ After explicit approval, restart the adapter LaunchAgent:
 Canonical live config:
 
 ```text
-/Users/mutlupolatcan/honcho-stack/server/config.toml
+/Users/mutlupolatcan/.hermes/services/honcho-stack/server/config.toml
 ```
 
 Available stage snapshots, newest scope first:
@@ -65,7 +65,7 @@ Available stage snapshots, newest scope first:
 Choose one reviewed snapshot and preserve the current file before replacement:
 
 ```bash
-cd /Users/mutlupolatcan/honcho-stack/server
+cd /Users/mutlupolatcan/.hermes/services/honcho-stack/server
 SNAPSHOT=config.toml.pre-codex-canary
 CONFIG=config.toml
 cp -p "$CONFIG" "$CONFIG.pre-rollback-$(date +%Y%m%d-%H%M%S)"
@@ -101,14 +101,14 @@ Honcho services:
 
 ```bash
 curl -fsS http://127.0.0.1:8000/health
-cd /Users/mutlupolatcan/honcho-stack/server
+cd /Users/mutlupolatcan/.hermes/services/honcho-stack/server
 docker compose ps api deriver
 ```
 
 For an adapter-backed route, exercise non-stream, SSE, and a real tool loop; the script creates and removes its own isolated workspace:
 
 ```bash
-cd /Users/mutlupolatcan/Desktop/hermes-setup/integrations/honcho-codex-adapter
+cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-adapter
 python3 scripts/honcho_low_canary.py
 ```
 

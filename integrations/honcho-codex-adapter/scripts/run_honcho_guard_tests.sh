@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HONCHO_ROOT="${HONCHO_ROOT:-/Users/mutlupolatcan/honcho-stack/server}"
+HONCHO_ROOT="${HONCHO_ROOT:-/Users/mutlupolatcan/.hermes/services/honcho-stack/server}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-pgvector/pgvector:pg15}"
 TEST_FILE="tests/dreamer/test_dreamer_integration.py"
 
