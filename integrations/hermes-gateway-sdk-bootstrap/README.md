@@ -77,7 +77,7 @@ To install into a different isolated target:
 bash integrations/hermes-gateway-sdk-bootstrap/scripts/install_candidate.sh /absolute/target
 ```
 
-The installer requires Homebrew Python 3.13 and `uv`, installs fully pinned dependencies, runs `uv pip check`, copies the bootstrap with mode `0700`, and verifies imports.
+The installer requires the signed, notarized Python.org 3.13 runtime at `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` and `uv`, installs fully pinned dependencies, runs `uv pip check`, copies the bootstrap with mode `0700`, and verifies imports. Override `PYTHON` only for an explicit canary; production must not fall back to an ad-hoc Homebrew interpreter.
 
 ## Pre-production canary
 

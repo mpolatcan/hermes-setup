@@ -7,7 +7,7 @@ RUNTIME_ROOT="/Users/mutlupolatcan/.hermes/runtime/honcho-codex-adapter"
 LAUNCHER_TARGET="/Users/mutlupolatcan/.hermes/scripts/honcho-codex-adapter-keychain.sh"
 HERMES_ROOT="/Users/mutlupolatcan/.hermes/runtime/hermes-agent"
 HERMES_PYTHON="$HERMES_ROOT/venv/bin/python"
-SDK_PYTHON="/opt/homebrew/bin/python3.13"
+SDK_PYTHON="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
 
 for executable in "$HERMES_PYTHON" "$SDK_PYTHON" /usr/bin/rsync; do
   if [[ ! -x "$executable" ]]; then

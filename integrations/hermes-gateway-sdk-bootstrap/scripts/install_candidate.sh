@@ -4,7 +4,7 @@ umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${1:-/Users/mutlupolatcan/.hermes/runtime/hermes-gateway-sdk-bootstrap-candidate}"
-PYTHON="${PYTHON:-/opt/homebrew/opt/python@3.13/bin/python3.13}"
+PYTHON="${PYTHON:-/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13}"
 UV="${UV:-/Users/mutlupolatcan/.local/bin/uv}"
 
 [[ "$TARGET" = /* ]] || { echo "target must be absolute" >&2; exit 64; }

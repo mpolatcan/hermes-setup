@@ -11,6 +11,8 @@ Honcho-only OpenAI Chat Completions façade over Hermes-managed `openai-codex` O
 - Credentials: resolved per request by `hermes_cli.auth.resolve_codex_runtime_credentials()`
 - Transport: Hermes `ResponsesApiTransport` plus its event-stream assembler
 - Embeddings: remain on OpenRouter
+- Runtime isolation: the adapter keeps its own venv while importing the selected Hermes contract through `PYTHONPATH`
+- Python base: adapter and SDK venvs are built from the signed, notarized Python.org 3.13 runtime at `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13`; production must not fall back to an ad-hoc Homebrew interpreter
 
 Hermes private imports are isolated in `compat.py`; the HTTP, scheduler, validation,
 and model contracts remain backend-independent. See [Architecture](docs/architecture.md)
