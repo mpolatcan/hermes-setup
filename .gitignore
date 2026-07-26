@@ -3,6 +3,7 @@
 !*.env.example
 
 # Local Hermes data dirs, if ever created inside the repo
+.hermes/
 .hermes-*/
 
 # Python build/test artifacts

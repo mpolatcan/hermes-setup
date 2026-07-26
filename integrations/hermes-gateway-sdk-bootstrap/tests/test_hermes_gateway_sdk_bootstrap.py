@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import importlib.util
 import json
 import os
@@ -186,6 +187,30 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertNotIn("VIRTUAL_ENV", child)
         self.assertEqual(child["ALPHA_KEY"], SECRET_A)
         self.assertEqual(child["HERMES_HOME"], "/profile/home")
+
+    def test_derives_workspace_scoped_honcho_jwt_and_removes_root(self) -> None:
+        resolved = bootstrap.derive_honcho_environment(
+            {bootstrap.HONCHO_ROOT_ENV: "root-secret", "OTHER": "keep"},
+            workspace="polatcan-gaming",
+            timestamp="2026-07-26T00:00:00+00:00",
+        )
+        self.assertNotIn(bootstrap.HONCHO_ROOT_ENV, resolved)
+        self.assertEqual(resolved["OTHER"], "keep")
+        token = resolved["HONCHO_API_KEY"]
+        self.assertEqual(len(token.split(".")), 3)
+        encoded_payload = token.split(".")[1]
+        encoded_payload += "=" * (-len(encoded_payload) % 4)
+        self.assertEqual(
+            json.loads(base64.urlsafe_b64decode(encoded_payload)),
+            {"t": "2026-07-26T00:00:00+00:00", "w": "polatcan-gaming"},
+        )
+
+    def test_rejects_unapproved_honcho_workspace(self) -> None:
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "workspace"):
+            bootstrap.derive_honcho_environment(
+                {bootstrap.HONCHO_ROOT_ENV: "root-secret"},
+                workspace="hermes_general",
+            )
 
     def test_check_only_reports_names_not_values_or_references(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,7 +536,10 @@ if [[ "${MISSING_GENERAL:-0}" == "1" && "$2" == "ai.hermes.gateway-general" ]]; 
 printf '\"PID\" = %s;\n\"LastExitStatus\" = 0;\n' "${PID_VALUE:-123}"
 """,
                 "ps": "#!/bin/bash\nprintf '%s\\n' \"$2\"\n",
-                "docker": "#!/bin/bash\nprintf 'true\n'\n",
+                "docker": """#!/bin/bash
+if [[ "$*" == *".State.Running"* ]]; then printf 'true\n'; else printf 'healthy\n'; fi
+""",
+                "queue-probe": "#!/bin/bash\nprintf '{\"ok\":true,\"pending\":0,\"in_progress\":0}\\n'\n",
                 "send": """#!/bin/bash
 cat >> "$SEND_LOG"
 printf '\n---delivery---\n' >> "$SEND_LOG"
@@ -530,6 +558,7 @@ exit "${SEND_EXIT:-1}"
                 "HERMES_WATCHDOG_STATE_DIR": str(root / "state"),
                 "HERMES_WATCHDOG_SEND": str(bin_dir / "send"),
                 "HERMES_WATCHDOG_DOCKER": str(bin_dir / "docker"),
+                "HERMES_WATCHDOG_QUEUE_PROBE": str(bin_dir / "queue-probe"),
                 "SEND_LOG": str(send_log),
                 "SEND_EXIT": "1",
                 "MISSING_GENERAL": "1",
@@ -597,6 +626,71 @@ exit "${SEND_EXIT:-1}"
             self.assertIn(
                 "general:222:0",
                 (restart_state / "hermes-watchdog-prev").read_text(encoding="utf-8"),
+            )
+
+    def test_watchdog_alerts_on_queue_threshold_and_sends_one_recovery(self) -> None:
+        watchdog = Path(__file__).parents[3] / "scripts" / "watchdog.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            stubs = {
+                "launchctl": "#!/bin/bash\nprintf '\"PID\" = 123;\\n\"LastExitStatus\" = 0;\\n'\n",
+                "ps": "#!/bin/bash\nprintf '123\\n'\n",
+                "docker": """#!/bin/bash
+if [[ "$*" == *".State.Running"* ]]; then printf 'true\n'; else printf 'healthy\n'; fi
+""",
+                "queue-probe": """#!/bin/bash
+if [[ "${QUEUE_FAIL:-0}" == "1" ]]; then
+  printf '{"ok":false,"pending":26,"in_progress":0,"threshold":"pending>25"}\n'
+  exit 2
+fi
+printf '{"ok":true,"pending":0,"in_progress":0}\n'
+""",
+                "send": """#!/bin/bash
+cat >> "$SEND_LOG"
+printf '\n---delivery---\n' >> "$SEND_LOG"
+""",
+            }
+            for name, content in stubs.items():
+                path = bin_dir / name
+                path.write_text(content, encoding="utf-8")
+                path.chmod(0o700)
+            send_log = root / "send.log"
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HERMES_WATCHDOG_STATE_DIR": str(root / "state"),
+                "HERMES_WATCHDOG_SEND": str(bin_dir / "send"),
+                "HERMES_WATCHDOG_DOCKER": str(bin_dir / "docker"),
+                "HERMES_WATCHDOG_QUEUE_PROBE": str(bin_dir / "queue-probe"),
+                "SEND_LOG": str(send_log),
+                "QUEUE_FAIL": "1",
+            }
+            alarm = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(alarm.returncode, 0)
+            self.assertTrue(send_log.exists(), "queue threshold must emit an alert")
+            first = send_log.read_text(encoding="utf-8")
+            self.assertIn("Honcho queue threshold exceeded", first)
+            self.assertIn("pending=26", first)
+
+            environment["QUEUE_FAIL"] = "0"
+            recovered = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(recovered.returncode, 0)
+            second = send_log.read_text(encoding="utf-8")
+            self.assertIn("Recovered", second)
+            self.assertEqual(second.count("---delivery---"), 2)
+
+            steady = subprocess.run(
+                ["/bin/bash", str(watchdog)], env=environment, check=False
+            )
+            self.assertEqual(steady.returncode, 0)
+            self.assertEqual(
+                send_log.read_text(encoding="utf-8").count("---delivery---"), 2
             )
 
     def test_cli_error_contains_no_sensitive_data(self) -> None:

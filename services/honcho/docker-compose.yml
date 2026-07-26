@@ -1,0 +1,99 @@
+# Honcho self-hosted deployment
+# Source pin: 5bc9f39dd116ea6cd0658852917cf8b25b8282dc
+# Secrets are injected transiently by recreate-honcho.sh; no env_file is used.
+
+services:
+  api:
+    image: local/hermes-honcho:5bc9f39dd116ea6cd0658852917cf8b25b8282dc
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./config.toml:/app/config.toml
+      - ./docker/entrypoint.sh:/app/docker/entrypoint.sh:ro
+    environment:
+      - DB_CONNECTION_URI=postgresql+psycopg://honcho:honcho@database:5432/honcho
+      - CACHE_URL=redis://redis:6379/0?suppress=true
+      - CACHE_ENABLED=true
+      - METRICS_ENABLED=true
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+      - LLM_OPENAI_API_KEY=${LLM_OPENAI_API_KEY:?LLM_OPENAI_API_KEY is required}
+      - HONCHO_CODEX_ADAPTER_API_KEY=${HONCHO_CODEX_ADAPTER_API_KEY:?HONCHO_CODEX_ADAPTER_API_KEY is required}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+  deriver:
+    image: local/hermes-honcho:5bc9f39dd116ea6cd0658852917cf8b25b8282dc
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./config.toml:/app/config.toml
+    environment:
+      - DB_CONNECTION_URI=postgresql+psycopg://honcho:honcho@database:5432/honcho
+      - CACHE_URL=redis://redis:6379/0?suppress=true
+      - CACHE_ENABLED=true
+      - METRICS_ENABLED=true
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+      - LLM_OPENAI_API_KEY=${LLM_OPENAI_API_KEY:?LLM_OPENAI_API_KEY is required}
+      - HONCHO_CODEX_ADAPTER_API_KEY=${HONCHO_CODEX_ADAPTER_API_KEY:?HONCHO_CODEX_ADAPTER_API_KEY is required}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; [(lambda s,h,p: (s.settimeout(3),s.connect((h,p)),s.close()))(socket.socket(),h,p) for h,p in [('database',5432),('redis',6379)]]"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+  database:
+    image: pgvector/pgvector:pg15@sha256:bd12d6788a617f4147d5a2ae0b56d07921398adabfe5a033bd3f50c245df55a1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      - POSTGRES_DB=honcho
+      - POSTGRES_USER=honcho
+      - POSTGRES_PASSWORD=honcho
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honcho -d honcho"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8.2@sha256:1b6a67ec7c9361c91d6e03e7162116a6ecc90139eae5419b47f141109fc55c40
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redis-data:

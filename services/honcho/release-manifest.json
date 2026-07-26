@@ -1,0 +1,44 @@
+{
+  "acceptance": {
+    "auth": {
+      "authenticated_context_profiles": "9/9 HTTP 200",
+      "correct_workspace": 200,
+      "no_token": 401,
+      "reasoning_canary": 200,
+      "wrong_workspace": "401 rejected per upstream AuthenticationException contract"
+    },
+    "queue": {
+      "alarm_capture": true,
+      "in_progress": 0,
+      "pending": 0,
+      "recovery_capture": true,
+      "steady_state_deduplicated": true,
+      "workspaces": 3
+    },
+    "runtime": {
+      "adapter_health": "ok",
+      "containers_healthy": "4/4",
+      "deriver_failing_streak": 0,
+      "profile_queue_probes": "9/9 HTTP 200"
+    }
+  },
+  "deployment_files_sha256": {
+    "backup-honcho.sh": "b9995dbf83b06bab2efd98d327907ac24490ce3337b9388798cb44272c3ed358",
+    "config.toml": "7b81c01944c214511e12784ecff841bf3831cd6bfe7d3183625a91f4186ff908",
+    "docker-compose.yml": "33af629e617604016e205428a00cfbec11d46c505fe815495d6dfaf4c0a778e2",
+    "probe-honcho-queue.py": "f1f85c8719206256e8af863fc5b3afb42c2be3af8f83e8d52dc4fdab88756721",
+    "recreate-honcho.sh": "3b0630ce7514eafcdf52802801fd6cdf83e14f32b1e5d61ad1c2df9967cbbbc4",
+    "verify-honcho-restore.sh": "c79afc650883f3fa3bba52a27239764933d7ed19a7be3ae8969d738ee3276458"
+  },
+  "images": {
+    "honcho": "local/hermes-honcho:5bc9f39dd116ea6cd0658852917cf8b25b8282dc",
+    "pgvector": "pgvector/pgvector:pg15@sha256:bd12d6788a617f4147d5a2ae0b56d07921398adabfe5a033bd3f50c245df55a1",
+    "redis": "redis:8.2@sha256:1b6a67ec7c9361c91d6e03e7162116a6ecc90139eae5419b47f141109fc55c40"
+  },
+  "secrets": "1Password transient resolution; no env_file or plaintext shell credential",
+  "source": {
+    "commit": "5bc9f39dd116ea6cd0658852917cf8b25b8282dc",
+    "lockfile_sha256": "7055d801c912250521189add822b832b6a51fa3befa2241d9797fd1316f9ec51",
+    "repository": "https://github.com/plastic-labs/honcho"
+  }
+}

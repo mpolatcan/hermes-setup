@@ -51,6 +51,18 @@ endpoint_ok "http://127.0.0.1:18080/healthz" || {
     ISSUES="$ISSUES\n  - Honcho Codex adapter health endpoint failed"; ALL_OK=false; DOWN_COUNT=$((DOWN_COUNT+1));
 }
 
+QUEUE_PROBE="${HERMES_WATCHDOG_QUEUE_PROBE:-/Users/mutlupolatcan/.hermes/services/honcho-stack/probe-honcho-queue.py}"
+QUEUE_OUTPUT=$("$QUEUE_PROBE" 2>/dev/null)
+QUEUE_RC=$?
+if [ "$QUEUE_RC" -eq 2 ]; then
+    QUEUE_COUNTS=$(printf '%s' "$QUEUE_OUTPUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("pending=%s, in_progress=%s" % (d.get("pending",0),d.get("in_progress",0)))' 2>/dev/null)
+    ISSUES="$ISSUES\n  - Honcho queue threshold exceeded: ${QUEUE_COUNTS:-counts-unavailable}"
+    ALL_OK=false; DOWN_COUNT=$((DOWN_COUNT+1))
+elif [ "$QUEUE_RC" -ne 0 ]; then
+    ISSUES="$ISSUES\n  - Honcho authenticated queue probe failed"
+    ALL_OK=false; DOWN_COUNT=$((DOWN_COUNT+1))
+fi
+
 fresh_backup() {
     python3 - "$1" "$2" "$3" <<'PY'
 from pathlib import Path
@@ -124,6 +136,7 @@ if [ -f "$PREV_FILE" ]; then
 fi
 
 MESSAGE=""
+RECOVERY=false
 if [ -n "$REPORT" ] || [ -n "$ISSUES" ]; then
     MESSAGE="\nWatchdog - $NOW\n---\n"
     [ -z "$REPORT" ] || MESSAGE="${MESSAGE}\nRestarted:$REPORT"
@@ -131,6 +144,9 @@ if [ -n "$REPORT" ] || [ -n "$ISSUES" ]; then
     MESSAGE="${MESSAGE}\n---\n"
     if [ "$ALL_OK" = true ] && [ "$RESTART_COUNT" -gt 0 ]; then MESSAGE="${MESSAGE}All healthy | $RESTART_COUNT restart(s)";
     elif [ "$DOWN_COUNT" -gt 0 ]; then MESSAGE="${MESSAGE}$DOWN_COUNT component failure(s)"; fi
+elif [ "$ALL_OK" = true ] && [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE")" != "OK" ]; then
+    MESSAGE="\nWatchdog - $NOW\n---\nRecovered: all monitored components healthy\n---\n"
+    RECOVERY=true
 fi
 
 if [ -n "$MESSAGE" ]; then
@@ -139,7 +155,8 @@ if [ -n "$MESSAGE" ]; then
     if [ "$LAST_STATE" != "$NEW_STATE" ]; then
         echo "[$NOW_LOG] $MESSAGE" >> "$LOG_FILE"
         if printf "%b" "$MESSAGE" | "$HERMES_SEND" general --to telegram --file -; then
-            echo "$NEW_STATE" > "$STATUS_FILE"; cp "$CURRENT_FILE" "$PREV_FILE"
+            if [ "$RECOVERY" = true ]; then echo "OK" > "$STATUS_FILE"; else echo "$NEW_STATE" > "$STATUS_FILE"; fi
+            cp "$CURRENT_FILE" "$PREV_FILE"
         else
             echo "[$NOW_LOG] alert delivery failed" >> "$LOG_FILE"; exit 1
         fi

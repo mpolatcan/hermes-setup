@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import datetime as dt
+import hashlib
+import hmac
 import importlib
 import json
 import os
@@ -25,6 +29,11 @@ INTEGRATION_NAME = "Hermes Gateway SDK Bootstrap"
 INTEGRATION_VERSION = "v0.1.0"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
+HONCHO_ROOT_ENV = "HONCHO_JWT_ROOT"
+HONCHO_SERVER_DOMAIN = b"honcho-auth-jwt-secret-v1"
+ALLOWED_HONCHO_WORKSPACES = frozenset(
+    {"polatcan-gaming", "polatcan-finance", "polatcan-health"}
+)
 SEND_ENV_ALLOWLIST = {
     "HOME",
     "LANG",
@@ -143,6 +152,64 @@ async def resolve_reference_map(
         raise BootstrapError("1Password SDK resolution timed out") from exc
     except Exception as exc:
         raise BootstrapError("1Password SDK resolution failed") from exc
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+
+def load_honcho_workspace(profile_home: Path) -> str:
+    try:
+        raw = json.loads((profile_home / "honcho.json").read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise BootstrapError("unable to load Honcho profile config") from exc
+    workspace = raw.get("workspace") if isinstance(raw, dict) else None
+    expected = (
+        "polatcan-finance"
+        if profile_home.name == "finance"
+        else "polatcan-health"
+        if profile_home.name == "health"
+        else "polatcan-gaming"
+    )
+    if workspace != expected or workspace not in ALLOWED_HONCHO_WORKSPACES:
+        raise BootstrapError("invalid Honcho workspace for profile")
+    return workspace
+
+
+def derive_honcho_environment(
+    resolved: Mapping[str, str],
+    *,
+    workspace: str,
+    timestamp: str | None = None,
+) -> dict[str, str]:
+    values = dict(resolved)
+    root = values.pop(HONCHO_ROOT_ENV, None)
+    if root is None:
+        return values
+    if not root or workspace not in ALLOWED_HONCHO_WORKSPACES:
+        raise BootstrapError("invalid Honcho workspace or root secret")
+    if "HONCHO_API_KEY" in values:
+        raise BootstrapError("ambiguous Honcho credential mapping")
+    server_secret = hmac.new(root.encode(), HONCHO_SERVER_DOMAIN, hashlib.sha256).hexdigest()
+    header = _b64url(
+        json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":"), sort_keys=True).encode()
+    )
+    payload = _b64url(
+        json.dumps(
+            {
+                "t": timestamp or dt.datetime.now(dt.timezone.utc).isoformat(),
+                "w": workspace,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
+    signing_input = f"{header}.{payload}"
+    signature = _b64url(
+        hmac.new(server_secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+    )
+    values["HONCHO_API_KEY"] = f"{signing_input}.{signature}"
+    return values
 
 
 def build_child_environment(
@@ -324,6 +391,12 @@ def run(
         )
     finally:
         token = ""
+
+    if HONCHO_ROOT_ENV in resolved:
+        resolved = derive_honcho_environment(
+            resolved,
+            workspace=load_honcho_workspace(profile_home),
+        )
 
     if command == "send":
         base = build_send_base_environment(base)

@@ -1,0 +1,169 @@
+# Honcho self-hosted — Hermes fleet config (upstream MODEL_CONFIG schema).
+# Module-specific routing: embedding and non-canary LLM routes use OpenRouter;
+# selected canary modules use the local Codex OAuth adapter.
+# LLM_OPENAI_API_KEY = OpenRouter key; HONCHO_CODEX_ADAPTER_API_KEY = local adapter bearer.
+
+[app]
+LOG_LEVEL = "INFO"
+SESSION_OBSERVERS_LIMIT = 10
+GET_CONTEXT_MAX_TOKENS = 100000
+MAX_FILE_SIZE = 5242880
+MAX_MESSAGE_SIZE = 25000
+EMBED_MESSAGES = true
+MAX_EMBEDDING_TOKENS = 8192
+NAMESPACE = "honcho"
+
+[db]
+CONNECTION_URI = "postgresql+psycopg://honcho:honcho@database:5432/honcho"
+SCHEMA = "public"
+POOL_SIZE = 10
+MAX_OVERFLOW = 20
+POOL_TIMEOUT = 30
+POOL_RECYCLE = 300
+
+[auth]
+USE_AUTH = true
+
+[cache]
+ENABLED = true
+URL = "redis://redis:6379/0?suppress=true"
+DEFAULT_TTL_SECONDS = 300
+
+[embedding]
+MAX_INPUT_TOKENS = 8192
+
+[embedding.model_config]
+transport = "openai"
+model = "openai/text-embedding-3-small"
+
+[embedding.model_config.overrides]
+base_url = "https://openrouter.ai/api/v1"
+
+[deriver]
+ENABLED = true
+WORKERS = 1
+POLLING_SLEEP_INTERVAL_SECONDS = 1.0
+STALE_SESSION_TIMEOUT_MINUTES = 5
+DEDUPLICATE = true
+FLUSH_ENABLED = true
+
+[deriver.model_config]
+transport = "openai"
+model = "honcho-deriver-luna"
+
+[deriver.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dialectic]
+MAX_OUTPUT_TOKENS = 8192
+MAX_INPUT_TOKENS = 100000
+HISTORY_TOKEN_LIMIT = 8192
+SESSION_HISTORY_MAX_TOKENS = 4096
+
+[dialectic.levels.minimal]
+MAX_TOOL_ITERATIONS = 1
+MAX_OUTPUT_TOKENS = 250
+
+[dialectic.levels.minimal.model_config]
+transport = "openai"
+model = "honcho-dialectic-luna"
+thinking_effort = "minimal"
+
+[dialectic.levels.minimal.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dialectic.levels.low]
+MAX_TOOL_ITERATIONS = 5
+
+[dialectic.levels.low.model_config]
+transport = "openai"
+model = "honcho-dialectic-luna"
+thinking_effort = "low"
+
+[dialectic.levels.low.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dialectic.levels.medium]
+MAX_TOOL_ITERATIONS = 2
+
+[dialectic.levels.medium.model_config]
+transport = "openai"
+model = "honcho-dialectic-luna"
+thinking_effort = "medium"
+
+[dialectic.levels.medium.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dialectic.levels.high]
+MAX_TOOL_ITERATIONS = 4
+
+[dialectic.levels.high.model_config]
+transport = "openai"
+model = "honcho-dialectic-luna"
+thinking_effort = "high"
+
+[dialectic.levels.high.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dialectic.levels.max]
+MAX_TOOL_ITERATIONS = 6
+
+[dialectic.levels.max.model_config]
+transport = "openai"
+model = "honcho-dialectic-luna"
+thinking_effort = "max"
+
+[dialectic.levels.max.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[summary]
+ENABLED = true
+MESSAGES_PER_SHORT_SUMMARY = 20
+MESSAGES_PER_LONG_SUMMARY = 60
+MAX_TOKENS_SHORT = 1000
+MAX_TOKENS_LONG = 4000
+
+[summary.model_config]
+transport = "openai"
+model = "honcho-summary-luna"
+
+[summary.model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dream]
+ENABLED = true
+DOCUMENT_THRESHOLD = 50
+IDLE_TIMEOUT_MINUTES = 60
+MIN_HOURS_BETWEEN_DREAMS = 8
+ENABLED_TYPES = ["omni"]
+MAX_TOOL_ITERATIONS = 20
+HISTORY_TOKEN_LIMIT = 16384
+
+[dream.deduction_model_config]
+transport = "openai"
+model = "honcho-dream-deduction-luna"
+
+[dream.deduction_model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[dream.induction_model_config]
+transport = "openai"
+model = "honcho-dream-induction-luna"
+
+[dream.induction_model_config.overrides]
+api_key_env = "HONCHO_CODEX_ADAPTER_API_KEY"
+base_url = "http://host.docker.internal:18080/v1"
+
+[metrics]
+ENABLED = false
+
+[telemetry]
+ENABLED = false
