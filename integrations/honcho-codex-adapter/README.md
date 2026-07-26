@@ -68,10 +68,11 @@ non-loopback hosts, incomplete queue weights, and invalid workload routes fail c
 
 ```bash
 HERMES_PY=/absolute/path/to/selected/hermes/python
+HERMES_ROOT="$($HERMES_PY -c 'import hermes_cli, pathlib; print(pathlib.Path(hermes_cli.__file__).resolve().parent.parent)')"
 HERMES_SITE="$($HERMES_PY -c 'import site; print(site.getsitepackages()[0])')"
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
-PYTHONPATH="src:$HERMES_SITE" .venv/bin/python scripts/live_probe.py
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python scripts/check_hermes_compat.py --json
+PYTHONPATH="src:$HERMES_ROOT:$HERMES_SITE" .venv/bin/python scripts/live_probe.py
 PYTHONPATH=src "$HERMES_PY" scripts/honcho_dream_tool_canary.py \
   --honcho-root /absolute/path/to/honcho-stack/server
 docker compose -f /absolute/path/to/honcho-stack/server/docker-compose.yml \

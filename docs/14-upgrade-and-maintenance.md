@@ -141,6 +141,14 @@ patches/hermes-agent/0001-fix-cli-detect-profile-scoped-dashboard-processes.patc
 
 Apply it only to a compatible Hermes Agent checkout and run the focused stale-dashboard, lifecycle, and Windows subprocess tests before promotion. The patch structurally validates supported launchers instead of substring-matching arbitrary process text; this is security-sensitive because the same detector is used by the update kill path.
 
+Authenticated self-hosted Honcho instances on loopback/LAN need a separate explicit opt-in because upstream otherwise replaces every environment-owned API key with the unauthenticated `"local"` placeholder. General sets `hosts.hermes_general.authRequired=true`; the scoped JWT remains process-only. The verified compatibility patch is:
+
+```text
+patches/hermes-agent/0002-fix-honcho-authenticated-local-env-credentials.patch
+```
+
+After each Hermes Agent upgrade, apply the patch only if the target still has the local-placeholder branch in `plugins/memory/honcho/client.py`. Run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart the General isolated serve backend and require a real `honcho_context` success. Roll back by reversing the patch, removing `authRequired` from General `honcho.json`, and restarting the serve backend; never replace the flag with a literal `apiKey` in profile files.
+
 Quicksilver retirement is deliberately gated:
 
 1. `integrations/honcho-codex-adapter/scripts/quicksilver_soak_cleanup.py` is the byte-for-byte source copy of the deployed canonical soak cleanup. It removes the recovery checkout and managed candidate only after the scheduler reaches 8 completed runs and the persisted soak history contains seven successful calendar days with no failures.

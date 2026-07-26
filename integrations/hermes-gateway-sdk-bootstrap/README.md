@@ -15,7 +15,7 @@ This component resolves the configured `ENV_VAR -> op://...` map through the off
 - Startup fails closed if the token, config, mapping, SDK call, or any value is missing.
 - Secret values and references are never logged.
 - The service-account token exists briefly in the mode-`0700` Keychain wrapper and bootstrap process environment, then is removed before Hermes is executed.
-- Resolved values exist briefly in bootstrap memory and only the selected target Hermes child environment. Gateway mode resolves the full configured map; maintenance `send` is restricted to the configured Telegram home target, resolves only `TELEGRAM_*` references, rejects local-file/media delivery, and builds the bootstrap and child from small non-secret environment allowlists rather than inheriting the caller environment.
+- Resolved values exist briefly in bootstrap memory and only the selected target child environment. Gateway mode resolves the full configured map; general-only `serve` mode resolves the same map and binds a fixed Desktop backend to `127.0.0.1:9120`; general-only `desktop` mode resolves only `HERMES_DASHBOARD_SESSION_TOKEN`, renames it to the Desktop remote-token variable, fixes the URL to `http://127.0.0.1:9120`, and never gives Desktop the bootstrap token, Honcho root/JWT, or unrelated credentials; maintenance `send` is restricted to the configured Telegram home target, resolves only `TELEGRAM_*` references, rejects local-file/media delivery, and builds the bootstrap and child from small non-secret environment allowlists rather than inheriting the caller environment.
 - In strict/promoted mode, `secrets.onepassword.enabled` must be exactly `false`; otherwise startup is rejected.
 - The temporary rollout launcher may pass one explicit absolute legacy executable; only profiles still carrying `enabled: true` are dispatched there, without SDK resolution.
 - Hermes starts through the managed `v0.19.0` console executable.
@@ -71,6 +71,32 @@ Install the narrow maintenance-send wrapper separately with mode `0700`:
   /Users/mutlupolatcan/.hermes/scripts/hermes-send-keychain.sh
 ```
 
+Install the general-only loopback Desktop backend wrapper and LaunchAgent with modes `0700` and `0600`:
+
+```bash
+/usr/bin/install -m 700 \
+  integrations/hermes-gateway-sdk-bootstrap/scripts/hermes_serve_keychain.sh \
+  /Users/mutlupolatcan/.hermes/scripts/hermes-serve-keychain.sh
+/usr/bin/install -m 600 \
+  integrations/hermes-gateway-sdk-bootstrap/launchd/ai.hermes.serve-general.plist \
+  /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.serve-general.plist
+launchctl bootstrap gui/$(id -u) \
+  /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.serve-general.plist
+```
+
+Install the General-only secure Desktop launcher and LaunchAgent with the same modes:
+
+```bash
+/usr/bin/install -m 700 \
+  integrations/hermes-gateway-sdk-bootstrap/scripts/hermes_desktop_keychain.sh \
+  /Users/mutlupolatcan/.hermes/scripts/hermes-desktop-keychain.sh
+/usr/bin/install -m 600 \
+  integrations/hermes-gateway-sdk-bootstrap/launchd/ai.hermes.desktop-general.plist \
+  /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.desktop-general.plist
+launchctl bootstrap gui/$(id -u) \
+  /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.desktop-general.plist
+```
+
 To install into a different isolated target:
 
 ```bash
@@ -97,6 +123,8 @@ Production is strict across all nine profiles:
 - `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the managed Hermes `v0.19.0` runtime.
 - The production launcher carries no `--legacy-hermes` argument. An accidental re-enable therefore fails closed.
 - `~/.hermes/scripts/hermes-send-keychain.sh` re-execs itself with a clean environment before Keychain lookup, then uses the same resolution boundary for the narrow Telegram-home `hermes send` command used by maintenance notifications. The bootstrap token is removed before Hermes executes.
+- `~/.hermes/scripts/hermes-serve-keychain.sh` does the same for a general-only, argument-free `hermes serve --isolated --host 127.0.0.1 --port 9120` backend used by Hermes Desktop remote-backend mode.
+- `~/.hermes/scripts/hermes-desktop-keychain.sh` launches Hermes Desktop with only the fixed loopback URL and its dedicated session token. The full profile credential map remains confined to the serve backend.
 - Homebrew Hermes remains an inert rollback package during the soak period; no production launcher, profile init file, or maintenance script depends on it.
 
 The historical transition path remains implemented and tested for rollback analysis, but it is not the production dispatch path.
@@ -111,6 +139,7 @@ After any bootstrap or Hermes runtime change:
 4. Restart `general` last through Telegram `/restart` when available.
 5. Verify launchd PID replacement, managed Python 3.13 process commands, managed-first `PATH`, Telegram readiness, and zero persistent `op read` children.
 6. Verify `hermes-send-keychain.sh` against a non-general profile before relying on maintenance alerts.
+7. Verify `ai.hermes.serve-general` on `127.0.0.1:9120`, then verify the Desktop process has only the remote URL/session token and a tool-level `honcho_context` call succeeds.
 
 ## Rollback
 

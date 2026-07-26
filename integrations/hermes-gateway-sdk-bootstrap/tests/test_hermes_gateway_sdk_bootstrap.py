@@ -107,6 +107,21 @@ def write_send_config(root: Path) -> Path:
     return path
 
 
+def write_desktop_config(root: Path) -> Path:
+    path = root / "config.yaml"
+    path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: false\n"
+        "    service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN\n"
+        "    env:\n"
+        f"      HERMES_DASHBOARD_SESSION_TOKEN: {REF_A}\n"
+        f"      HONCHO_JWT_ROOT: {REF_B}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class GatewaySdkBootstrapTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeClient.reset()
@@ -286,6 +301,108 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertNotIn(bootstrap.DEFAULT_TOKEN_ENV, child)
         self.assertEqual(child["ALPHA_KEY"], SECRET_A)
 
+    def test_serve_mode_execs_general_loopback_backend_with_full_environment(self) -> None:
+        class ExecCaptured(Exception):
+            pass
+
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+            raise ExecCaptured
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_config(root)
+            hermes_executable = root / "hermes"
+            hermes_executable.write_text("", encoding="utf-8")
+            hermes_executable.chmod(0o700)
+            args = argparse.Namespace(
+                profile="general",
+                config=config,
+                hermes_executable=hermes_executable,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=False,
+                command="serve",
+                command_args=[],
+            )
+            with self.assertRaises(ExecCaptured):
+                bootstrap.run(
+                    args,
+                    environment={bootstrap.DEFAULT_TOKEN_ENV: TOKEN},
+                    client_type=FakeClient,
+                    execve=fake_execve,
+                )
+        self.assertEqual(
+            captured["argv"],
+            [
+                str(hermes_executable),
+                "--profile",
+                "general",
+                "serve",
+                "--isolated",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "9120",
+            ],
+        )
+        child = captured["env"]
+        assert isinstance(child, dict)
+        self.assertNotIn(bootstrap.DEFAULT_TOKEN_ENV, child)
+        self.assertEqual(child["ALPHA_KEY"], SECRET_A)
+        self.assertEqual(child["BETA_KEY"], SECRET_B)
+
+    def test_desktop_mode_execs_general_app_with_only_loopback_session_environment(self) -> None:
+        class ExecCaptured(Exception):
+            pass
+
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+            raise ExecCaptured
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_desktop_config(root)
+            desktop_executable = root / "Hermes"
+            desktop_executable.write_text("", encoding="utf-8")
+            desktop_executable.chmod(0o700)
+            args = argparse.Namespace(
+                profile="general",
+                config=config,
+                hermes_executable=None,
+                desktop_executable=desktop_executable,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=False,
+                command="desktop",
+                command_args=[],
+            )
+            with self.assertRaises(ExecCaptured):
+                bootstrap.run(
+                    args,
+                    environment={
+                        bootstrap.DEFAULT_TOKEN_ENV: TOKEN,
+                        "LINEAR_CLIENT_SECRET": "inherited-secret",
+                        "PATH": "/usr/bin:/bin",
+                    },
+                    client_type=FakeClient,
+                    execve=fake_execve,
+                )
+        self.assertEqual(captured["path"], str(desktop_executable))
+        self.assertEqual(captured["argv"], [str(desktop_executable)])
+        child = captured["env"]
+        assert isinstance(child, dict)
+        self.assertNotIn(bootstrap.DEFAULT_TOKEN_ENV, child)
+        self.assertNotIn("LINEAR_CLIENT_SECRET", child)
+        self.assertNotIn("HERMES_DASHBOARD_SESSION_TOKEN", child)
+        self.assertNotIn("HONCHO_JWT_ROOT", child)
+        self.assertEqual(child["HERMES_DESKTOP_REMOTE_TOKEN"], SECRET_A)
+        self.assertEqual(child["HERMES_DESKTOP_REMOTE_URL"], "http://127.0.0.1:9120")
+
     def test_send_reference_scope_keeps_only_telegram_secrets(self) -> None:
         selected = bootstrap.select_references_for_command(
             "send",
@@ -372,6 +489,70 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "send")
         self.assertEqual(args.command_args, ["--to", "telegram", "ready"])
+
+    def test_serve_cli_is_general_only_and_rejects_passthrough(self) -> None:
+        args = bootstrap.parse_args(["general", "--command", "serve"])
+        self.assertEqual(args.command, "serve")
+        self.assertEqual(args.command_args, [])
+
+        references = {"ALPHA_KEY": REF_A}
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "passthrough"):
+            bootstrap.select_references_for_command("serve", ["--port", "9120"], references)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            invalid = argparse.Namespace(
+                profile="assistant",
+                config=write_config(Path(tmp)),
+                hermes_executable=None,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=True,
+                command="serve",
+                command_args=[],
+            )
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "general profile"):
+                bootstrap.run(
+                    invalid,
+                    environment={bootstrap.DEFAULT_TOKEN_ENV: TOKEN},
+                    client_type=FakeClient,
+                )
+        self.assertEqual(FakeClient.auth_calls, [])
+
+    def test_desktop_cli_is_general_only_and_rejects_passthrough(self) -> None:
+        args = bootstrap.parse_args(["general", "--command", "desktop"])
+        self.assertEqual(args.command, "desktop")
+        self.assertEqual(args.command_args, [])
+
+        references = {
+            "HERMES_DASHBOARD_SESSION_TOKEN": REF_A,
+            "HONCHO_JWT_ROOT": REF_B,
+        }
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "passthrough"):
+            bootstrap.select_references_for_command("desktop", ["--unsafe"], references)
+        self.assertEqual(
+            bootstrap.select_references_for_command("desktop", [], references),
+            {"HERMES_DASHBOARD_SESSION_TOKEN": REF_A},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            invalid = argparse.Namespace(
+                profile="assistant",
+                config=write_desktop_config(Path(tmp)),
+                hermes_executable=None,
+                desktop_executable=None,
+                legacy_hermes=None,
+                timeout_seconds=30.0,
+                check_only=True,
+                command="desktop",
+                command_args=[],
+            )
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "general profile"):
+                bootstrap.run(
+                    invalid,
+                    environment={bootstrap.DEFAULT_TOKEN_ENV: TOKEN},
+                    client_type=FakeClient,
+                )
+        self.assertEqual(FakeClient.auth_calls, [])
 
     def test_send_mode_execs_only_hermes_send_with_resolved_environment(self) -> None:
         class ExecCaptured(Exception):
@@ -522,6 +703,27 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertIn("/bin/bash --noprofile --norc -c", wrapper)
         for unsafe in ("DYLD_", "PYTHONPATH", "HTTPS_PROXY", "SSL_CERT_FILE"):
             self.assertNotIn(f'{unsafe}="${{{unsafe}', wrapper)
+
+    def test_desktop_wrapper_sanitizes_environment_before_keychain_lookup(self) -> None:
+        wrapper = (
+            Path(__file__).parents[1] / "scripts" / "hermes_desktop_keychain.sh"
+        ).read_text(encoding="utf-8")
+        self.assertLess(wrapper.index("/usr/bin/env -i"), wrapper.index("/usr/bin/security"))
+        self.assertIn("HOME=\"/Users/mutlupolatcan\"", wrapper)
+        self.assertIn("/bin/bash --noprofile --norc -c", wrapper)
+        self.assertLess(wrapper.index("/usr/bin/pgrep -x Hermes"), wrapper.index("/usr/bin/security"))
+        self.assertIn('"$profile" --command desktop', wrapper)
+        for unsafe in ("DYLD_", "PYTHONPATH", "HTTPS_PROXY", "SSL_CERT_FILE"):
+            self.assertNotIn(f'{unsafe}="${{{unsafe}', wrapper)
+
+    def test_desktop_launchagent_runs_only_the_secure_wrapper(self) -> None:
+        plist = (
+            Path(__file__).parents[1] / "launchd" / "ai.hermes.desktop-general.plist"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ai.hermes.desktop-general", plist)
+        self.assertIn("/Users/mutlupolatcan/.hermes/scripts/hermes-desktop-keychain.sh", plist)
+        self.assertNotIn("OP_SERVICE_ACCOUNT_TOKEN", plist)
+        self.assertNotIn("HERMES_DESKTOP_REMOTE_TOKEN", plist)
 
     def test_watchdog_retries_failed_delivery_and_counts_a_missing_label_once(self) -> None:
         watchdog = Path(__file__).parents[3] / "scripts" / "watchdog.sh"

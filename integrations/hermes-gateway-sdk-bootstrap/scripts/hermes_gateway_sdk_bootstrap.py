@@ -30,6 +30,10 @@ INTEGRATION_VERSION = "v0.1.0"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 HONCHO_ROOT_ENV = "HONCHO_JWT_ROOT"
+DESKTOP_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+DESKTOP_REMOTE_TOKEN_ENV = "HERMES_DESKTOP_REMOTE_TOKEN"
+DESKTOP_REMOTE_URL_ENV = "HERMES_DESKTOP_REMOTE_URL"
+DESKTOP_REMOTE_URL = "http://127.0.0.1:9120"
 HONCHO_SERVER_DOMAIN = b"honcho-auth-jwt-secret-v1"
 ALLOWED_HONCHO_WORKSPACES = frozenset(
     {"polatcan-gaming", "polatcan-finance", "polatcan-health"}
@@ -273,10 +277,18 @@ def select_references_for_command(
     command_args: list[str],
     references: Mapping[str, str],
 ) -> dict[str, str]:
-    if command == "gateway":
+    if command in {"gateway", "serve"}:
         if command_args:
-            raise BootstrapError("gateway command does not accept passthrough arguments")
+            raise BootstrapError(f"{command} command does not accept passthrough arguments")
         return dict(references)
+
+    if command == "desktop":
+        if command_args:
+            raise BootstrapError("desktop command does not accept passthrough arguments")
+        reference = references.get(DESKTOP_SESSION_TOKEN_ENV)
+        if reference is None:
+            raise BootstrapError("missing Desktop session token mapping")
+        return {DESKTOP_SESSION_TOKEN_ENV: reference}
 
     parse_maintenance_send_args(command_args)
 
@@ -313,7 +325,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--legacy-hermes", type=Path)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--check-only", action="store_true")
-    parser.add_argument("--command", choices=("gateway", "send"), default="gateway")
+    parser.add_argument(
+        "--command", choices=("desktop", "gateway", "send", "serve"), default="gateway"
+    )
     args = parser.parse_args(raw)
     args.command_args = command_args
     return args
@@ -333,10 +347,15 @@ def run(
     hermes_executable = args.hermes_executable or Path(
         "/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes"
     )
+    desktop_executable = getattr(args, "desktop_executable", None) or Path(
+        "/Applications/Hermes.app/Contents/MacOS/Hermes"
+    )
     command = getattr(args, "command", "gateway")
     command_args = list(getattr(args, "command_args", []))
     if command_args[:1] == ["--"]:
         command_args = command_args[1:]
+    if command in {"desktop", "serve"} and args.profile != "general":
+        raise BootstrapError(f"{command} command is restricted to the general profile")
 
     references, token_env, provider_enabled = load_reference_map(
         config_path, allow_enabled=args.legacy_hermes is not None
@@ -398,8 +417,14 @@ def run(
             workspace=load_honcho_workspace(profile_home),
         )
 
-    if command == "send":
+    if command in {"desktop", "send"}:
         base = build_send_base_environment(base)
+    if command == "desktop":
+        session_token = resolved.pop(DESKTOP_SESSION_TOKEN_ENV, None)
+        if not session_token:
+            raise BootstrapError("missing resolved Desktop session token")
+        resolved[DESKTOP_REMOTE_TOKEN_ENV] = session_token
+        resolved[DESKTOP_REMOTE_URL_ENV] = DESKTOP_REMOTE_URL
     child = build_child_environment(
         base,
         resolved,
@@ -422,19 +447,34 @@ def run(
         )
         return 0
 
+    executable = desktop_executable if command == "desktop" else hermes_executable
     if (
-        not hermes_executable.is_absolute()
-        or not hermes_executable.is_file()
-        or not os.access(hermes_executable, os.X_OK)
+        not executable.is_absolute()
+        or not executable.is_file()
+        or not os.access(executable, os.X_OK)
     ):
-        raise BootstrapError("Hermes console executable is unavailable")
-    if command == "send":
+        raise BootstrapError("Hermes executable is unavailable")
+    if command == "desktop":
+        argv = [str(desktop_executable)]
+    elif command == "send":
         argv = [
             str(hermes_executable),
             "--profile",
             args.profile,
             "send",
             *command_args,
+        ]
+    elif command == "serve":
+        argv = [
+            str(hermes_executable),
+            "--profile",
+            args.profile,
+            "serve",
+            "--isolated",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9120",
         ]
     else:
         argv = [
@@ -447,13 +487,13 @@ def run(
         ]
     try:
         if stdin_message is None:
-            execve(str(hermes_executable), argv, child)
+            execve(str(executable), argv, child)
         else:
             with tempfile.TemporaryFile(mode="w+b") as validated_stdin:
                 validated_stdin.write(stdin_message.encode("utf-8"))
                 validated_stdin.seek(0)
                 os.dup2(validated_stdin.fileno(), 0)
-                execve(str(hermes_executable), argv, child)
+                execve(str(executable), argv, child)
     except OSError as exc:
         raise BootstrapError("Hermes exec failed") from exc
     raise BootstrapError("Hermes exec unexpectedly returned")
