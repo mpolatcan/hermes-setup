@@ -60,16 +60,17 @@ curl -fsS http://127.0.0.1:9119/ >/dev/null
 
 The managed-runtime pattern was exercised for the `0.19.0` / `v2026.7.20` Quicksilver rollout on 2026-07-23–24. Homebrew `0.18.2` remains installed only as a rollback surface; no production gateway or dashboard executes it.
 
-## 21. Backup system — current state (2026-07-05)
+## 21. Backup system — current state (2026-07-26)
 
-One deterministic script owns Honcho dumps: `~/honcho-stack/backup-honcho.sh` (mirrored at `~/.hermes/scripts/backup-honcho.sh`, copy in `scripts/` here).
+Two deterministic, non-agent layers own backup work:
 
-- Runs twice daily: launchd `ai.hermes.backup-honcho` at 03:00 + general-profile cron job `129cac421e8c` at 04:00 (**no-agent script mode** — the script is the job).
-- Hardened after the June incident: container-running check → dump to temp file → verify ≥10 KB → publish; rotation keeps 14 (≈7 days at 2/day); failures log to `~/backups/honcho-backup.log` **and** alert via `hermes send`.
-- **Why hardened:** OrbStack was down June 17 → July 4 and nobody noticed. The old script piped a failing `pg_dump` into `gzip`, producing 18 consecutive 20-byte "backups"; one more successful rotation would have deleted the last good dumps. Separately, an **LLM-agent** version of this cron fabricated a success report ("145 MB, 13 s, MD5 …") for a file that never existed, and its ambiguous cleanup prompt ("delete the last seven days of backups") deleted fresh dumps. **Rule: an agent never owns backup or rotation logic — scripts do the work, agents at most narrate.**
-- Weekly state backup (`ai.hermes.backup-state`, Sat 04:00): profile configs + memories + logs → `~/.hermes/state-backups/hermes-state-*.tar.gz`, plus root-level `hermes-root-*.tar.gz` (honcho.json, kanban.db, active_profile, root config.yaml, SOUL.md, scripts/). 28-day retention. Deliberately excludes `state.db` (GB-scale session history, not config).
-- Weekly skills backup (curator cron, Sat 03:00): registry JSON export **plus** `shared-skills-<date>.tar.gz` of `~/.hermes/shared-skills/canonical` — the JSON export alone covers only hub-installed skills, which is none of ours; the tar covers the 16 real local skills. Keeps 4 of each. The cron's script path is the **profile** scripts dir: `~/.hermes/profiles/general/scripts/curator-snapshot.sh`.
-- **Notion boundary:** these local archives do not back up Notion page/database contents. Notion is the external durable knowledge/reporting plane; its OAuth directory is sensitive access state, not a content backup. Workspace retention/export is a separate control ([docs/16](16-notion-knowledge-and-reporting.md)).
+- **Hermes profile state:** `~/.hermes/scripts/profile-backup-quick.sh`, scheduled by `ai.hermes.backup-state` every day at 01:00. It runs native `hermes backup --quick` for all nine profile homes, requires a fresh `manifest.json`, rejects failed/oversized database entries, verifies every copied SQLite database, and only then keeps the newest seven snapshots per profile.
+- **Honcho PostgreSQL:** `~/.hermes/services/honcho-stack/backup-honcho.sh`, scheduled by `ai.hermes.backup-honcho` at 03:00 and 15:00. It checks the database container, writes a partial `pg_dump`, validates size and `gzip -t`, atomically publishes the dump, writes SHA-256 evidence, and applies retention only after success.
+- **Watchdog contract:** `watchdog.sh` checks Honcho dump freshness (<16h) and all nine Hermes profile snapshots (<26h, manifest present). It no longer requires a global full ZIP.
+- **Retired:** weekly live tar files under `~/.hermes/state-backups`, the root-wide `hermes backup -o` wrapper, `ai.hermes.backup-state-full`, and plaintext partial full archives. The root-wide archive treated reproducible `runtime/`, `source/`, `staging/`, `archive/` and service trees as state and duplicated credential files.
+- **Restore evidence:** each scheduled Hermes run verifies snapshots before retention; acceptance includes an isolated copied `state.db` with `PRAGMA integrity_check=ok`. Honcho has its own throwaway-container restore drill.
+- **Remaining DR gap:** local snapshots protect rollback, not disk loss. Any future off-host layer must be encrypted, exclude reproducible code/runtime trees, and pass restore acceptance before it can own retention.
+- **Notion boundary:** local archives do not back up Notion page/database contents. Notion workspace retention/export remains a separate control ([docs/16](16-notion-knowledge-and-reporting.md)).
 
 ## 22. Watchdog v2
 

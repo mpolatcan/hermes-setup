@@ -317,20 +317,20 @@ Memory is the asset that compounds. Plan backups now, not after six months.
 - `~/.hermes/honcho.json` — the shared Honcho config (per-agent peers, recall modes, cadence).
 - The Honcho Postgres database on the Mini — this holds Honcho's accumulated observations, conclusions, user peer card, AI peer cards.
 
-**Implemented (2026-06-08) — `scripts/backup-state.sh` + `scripts/backup-honcho.sh`, scheduled via launchd.**
+**Implemented (2026-07-26) — native profile snapshots plus an application-consistent Honcho dump, scheduled via launchd.**
 
-**Hermes text-state → a local git repo.** `scripts/backup-state.sh` (deployed to `~/.hermes/scripts/`) snapshots the *safe* text state of **all profiles** into a local git repo at `~/hermes-state-backup/`: per-profile `config.yaml`, `SOUL.md`, `AGENTS.md`, `memories/`, `skills/`, plus the shared `~/.hermes/honcho.json`. **Secrets are never copied** — three layers: an allowlist `rsync` (only those paths enter the repo), a `.gitignore` backstop, and a pre-commit secret scan that *aborts* the commit if anything token-shaped (telegram / `sk-` / `mn_` / JWT / `*_secret`) appears. The repo is **local-only by design** — don't add a hosted remote without re-verifying the scan first, since pushing offsite is the one path that could leak fleet credentials. Large/binary state (`sessions/`, `state.db`, `logs/`) is left to Time Machine.
+**Hermes profile state → native quick snapshots.** `scripts/profile-backup-quick.sh` (deployed to `~/.hermes/scripts/`) runs `hermes backup --quick` independently for all nine profile homes. Every new snapshot must include `manifest.json`, report no failed or oversized SQLite databases, pass `backup_ops.py verify-snapshot`, and survive retention only after verification. Each profile keeps its newest seven snapshots under `~/.hermes/profiles/<slug>/state-snapshots/` with private permissions. These local snapshots contain restore-sensitive state, including writable OAuth/auth files where Hermes includes them; they must not be published or copied to an unencrypted destination.
 
-**Honcho Postgres → a logical dump.** `scripts/backup-honcho.sh` (deployed to `~/honcho-stack/`) runs `docker exec server-database-1 pg_dump -U honcho honcho | gzip` into `~/backups/honcho-*.sql.gz`, keeping the newest 8. One dump captures all AI peers + the shared user peer.
+**Honcho Postgres → an atomic logical dump.** `services/honcho-stack/backup-honcho.sh` writes a partial `pg_dump`, validates minimum size and `gzip -t`, publishes atomically, writes a SHA-256 manifest, and only then applies retention. One dump captures all AI peers plus the shared user peer.
 
-**Schedule (launchd, not `cron` — consistent with the rest of the fleet):**
+**Schedule (launchd, not Hermes cron):**
 
 | Job | launchd label | Cadence |
 |---|---|---|
-| state snapshot | `ai.hermes.backup-state` | daily 03:30 |
-| Honcho dump | `ai.hermes.backup-honcho` | weekly Sun 03:00 |
+| Hermes profile snapshots | `ai.hermes.backup-state` | daily 01:00 |
+| Honcho dump | `ai.hermes.backup-honcho` | daily 03:00 and 15:00 |
 
-Verify a backup is restorable at least once. Sometime in month 1, do a test restore into a throwaway container and confirm the dump produces a usable database. A backup you've never restored is not a backup.
+The old global full ZIP and live-tar mechanisms were retired because the canonical `runtime/`, `source/`, `staging/`, `archive/` and service trees were misclassified as portable state and plaintext credentials were duplicated. Local snapshots are a rollback layer, not disaster recovery. A future off-host layer must be encrypted, exclude reproducible runtime/source trees, and pass a documented restore drill before retention can depend on it.
 
 ### 9.8 Failure modes to know about
 

@@ -308,15 +308,15 @@ flowchart TB
     scripts --> sb["setup-bots.sh<br/>retired plaintext fan-out path"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
-    scripts --> bs["backup-state.sh<br/>git snapshot of all 9 profiles' text state (secrets excluded)"]:::svc
-    scripts --> bh["backup-honcho.sh<br/>weekly Honcho pg_dump → ~/backups"]:::svc
+    scripts --> bs["profile-backup-quick.sh<br/>daily native quick snapshots · all 9 profiles"]:::svc
+    scripts --> bh["backup-honcho.sh<br/>atomic Honcho pg_dump + gzip verification"]:::svc
     scripts --> ex["bot-tokens.env.example<br/>retired migration reference"]:::svc
     classDef root fill:#303F9F,stroke:#1A237E,color:#fff
     classDef doc fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: 1Password vault items (canonical static credentials), `~/.hermes/profiles/<slug>/` (each agent's config with `op://` references, SOUL, sessions, memory, bootstrap `.op.env` where required, and writable OAuth stores), Derya's deployed Linear plugin + native OAuth store + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/`, `~/honcho-stack/` + `~/hermes-services/` (Docker), the **local backup repo `~/hermes-state-backup/`** (all 9 profiles' text state, secrets excluded, local-only) + Honcho dumps in `~/backups/`, and the launchd plists in `~/Library/LaunchAgents/ai.hermes.*`.
+State that lives **outside** the repo: 1Password vault items (canonical static credentials), `~/.hermes/profiles/<slug>/` (each agent's config with `op://` references, SOUL, sessions, memory, bootstrap `.op.env` where required, writable OAuth stores and local `state-snapshots/`), Derya's deployed Linear plugin + native OAuth store + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/`, `~/.hermes/services/honcho-stack/` (Docker), verified Honcho dumps in `~/.hermes/backups/honcho/`, and launchd plists in `~/Library/LaunchAgents/ai.hermes.*`. Local quick snapshots are rollback state, not off-host disaster recovery.
 
 ---
 
