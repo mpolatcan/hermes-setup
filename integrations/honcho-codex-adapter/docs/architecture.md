@@ -11,16 +11,20 @@ Hermes agent, or mutate Hermes configuration. OpenRouter remains the embedding r
 ```mermaid
 flowchart LR
     H["Honcho<br/>9 text surfaces"]:::infra
+    W["4 workload routes<br/>dialectic · summary · deriver · dream"]:::route
+    Q["Weighted scheduler<br/>8 · 4 · 2 · 1 + aging"]:::route
     A["OpenAI-compatible façade<br/>stable contract"]:::svc
     C["Typed adapter config<br/>TOML + env overrides"]:::config
     B["Hermes compatibility backend<br/>private imports isolated"]:::compat
     R["Selected Hermes runtime<br/>version + signature manifest"]:::hermes
-    O["Codex OAuth / Responses API"]:::ext
+    O["Codex OAuth / Responses API<br/>gpt-5.6-luna"]:::ext
     V["1Password + Keychain"]:::secret
     E["OpenRouter embeddings"]:::ext
 
-    H -->|"Chat Completions"| A
+    H -->|"Chat Completions"| W --> Q --> A
     H -->|"embeddings only"| E
+    C --> W
+    C --> Q
     C --> A
     A --> B
     B --> R
@@ -29,6 +33,7 @@ flowchart LR
     V -. "OAuth resolution" .-> R
 
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef route fill:#5D4037,stroke:#3E2723,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef config fill:#455A64,stroke:#263238,color:#fff
     classDef compat fill:#D32F2F,stroke:#B71C1C,color:#fff
@@ -57,6 +62,7 @@ flowchart TD
     E["environment overrides<br/>machine-specific only"]:::config
     V["schema + type + invariant validation"]:::gate
     X["effective config<br/>secret-free JSON"]:::svc
+    W["4 route IDs → queue classes<br/>one upstream: gpt-5.6-luna"]:::route
     A["FastAPI + driver + scheduler"]:::svc
     S["1Password / Keychain<br/>secrets at runtime"]:::secret
 
@@ -64,11 +70,12 @@ flowchart TD
     F --> V
     E --> V
     V --> X
-    V --> A
+    V --> W --> A
     S -. "never rendered" .-> A
 
     classDef config fill:#455A64,stroke:#263238,color:#fff
     classDef gate fill:#D32F2F,stroke:#B71C1C,color:#fff
+    classDef route fill:#5D4037,stroke:#3E2723,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef secret fill:#455A64,stroke:#263238,color:#fff
 ```

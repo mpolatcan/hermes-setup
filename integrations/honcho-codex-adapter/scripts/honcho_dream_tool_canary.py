@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 
-DEDUCTION_ALIAS = "honcho-dream-deduction-luna"
-INDUCTION_ALIAS = "honcho-dream-induction-luna"
+DEDUCTION_ROUTE = "honcho-dream"
+INDUCTION_ROUTE = "honcho-dream"
 EXPECTED_TOOL_NAMES = {
     "deduction": [
         "get_recent_observations",
@@ -133,8 +133,8 @@ def validate_catalogs(
 def build_cases(catalogs: dict[str, list[dict[str, Any]]]) -> list[ToolCase]:
     cases: list[ToolCase] = []
     for specialist, model in (
-        ("deduction", DEDUCTION_ALIAS),
-        ("induction", INDUCTION_ALIAS),
+        ("deduction", DEDUCTION_ROUTE),
+        ("induction", INDUCTION_ROUTE),
     ):
         for target in EXPECTED_TOOL_NAMES[specialist]:
             cases.append(

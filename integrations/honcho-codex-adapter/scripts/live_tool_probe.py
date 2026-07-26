@@ -25,7 +25,7 @@ messages = [
     {"role": "user", "content": "Use search_memory with query alpha."},
 ]
 first_request = ChatCompletionRequest.model_validate({
-    "model": "honcho-dialectic-luna",
+    "model": "honcho-dialectic",
     "messages": messages,
     "tools": [TOOL],
     "tool_choice": {"type": "function", "function": {"name": "search_memory"}},
@@ -45,7 +45,7 @@ messages.extend([
     {"role": "tool", "tool_call_id": call["id"], "content": json.dumps({"matches": ["alpha-result"]})},
 ])
 second_request = ChatCompletionRequest.model_validate({
-    "model": "honcho-dialectic-luna",
+    "model": "honcho-dialectic",
     "messages": messages,
     "tools": [TOOL],
     "tool_choice": "none",

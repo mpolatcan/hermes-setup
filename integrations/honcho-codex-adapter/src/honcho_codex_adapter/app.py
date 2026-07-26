@@ -73,7 +73,10 @@ def create_app(
         queue_capacity,
         aging_seconds=queue_aging_seconds,
         weights=resolved_config.admission.weights,
-        model_classes={alias: route.queue_class for alias, route in resolved_config.models.items()},
+        model_classes={
+            route_id: route.queue_class
+            for route_id, route in resolved_config.models.items()
+        },
     )
 
     async def require_auth(authorization: str | None = Header(default=None)) -> None:

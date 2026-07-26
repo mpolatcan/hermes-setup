@@ -23,23 +23,14 @@ dream = 1
 [output]
 encoding = "o200k_base"
 
-[models."gpt-5.6-luna"]
+[models."honcho-deriver"]
 queue_class = "deriver"
 
-[models."honcho-deriver-luna"]
-queue_class = "deriver"
-
-[models."honcho-summary-luna"]
+[models."honcho-summary"]
 queue_class = "summary"
 
-[models."honcho-dialectic-minimal-luna"]
+[models."honcho-dialectic"]
 queue_class = "dialectic"
 
-[models."honcho-dialectic-luna"]
-queue_class = "dialectic"
-
-[models."honcho-dream-deduction-luna"]
-queue_class = "dream"
-
-[models."honcho-dream-induction-luna"]
+[models."honcho-dream"]
 queue_class = "dream"

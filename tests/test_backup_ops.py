@@ -163,7 +163,14 @@ class BackupPolicyContractTests(unittest.TestCase):
         self.assertIn('export HONCHO_CODEX_ADAPTER_API_KEY', text)
         self.assertIn('docker compose', text)
         self.assertNotIn('--env-file .env', text)
-        self.assertIn('unset secret OP_SERVICE_ACCOUNT_TOKEN', text)
+        self.assertIn(
+            'unset HONCHO_JWT_ROOT adapter_root auth_secret embedding_key OP_SERVICE_ACCOUNT_TOKEN',
+            text,
+        )
+        self.assertIn(
+            "trap 'unset HONCHO_CODEX_ADAPTER_API_KEY AUTH_JWT_SECRET LLM_OPENAI_API_KEY' EXIT",
+            text,
+        )
 
 
 if __name__ == '__main__':

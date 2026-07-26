@@ -17,7 +17,9 @@ from .config import AdapterConfig, DEFAULT_CONFIG, load_config
 from .models import ChatCompletionRequest
 
 UPSTREAM_MODEL = DEFAULT_CONFIG.upstream.model
-MODEL_ALIASES = {alias: route.upstream_model for alias, route in DEFAULT_CONFIG.models.items()}
+WORKLOAD_ROUTES = {
+    route_id: route.upstream_model for route_id, route in DEFAULT_CONFIG.models.items()
+}
 OUTPUT_ENCODING = tiktoken.get_encoding(DEFAULT_CONFIG.output.encoding)
 
 

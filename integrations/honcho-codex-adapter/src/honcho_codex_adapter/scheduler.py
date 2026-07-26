@@ -10,13 +10,10 @@ from typing import Callable
 
 _QUEUE_CLASSES = ("dialectic", "summary", "deriver", "dream")
 _DEFAULT_MODEL_CLASSES = {
-    "gpt-5.6-luna": "deriver",
-    "honcho-deriver-luna": "deriver",
-    "honcho-summary-luna": "summary",
-    "honcho-dialectic-minimal-luna": "dialectic",
-    "honcho-dialectic-luna": "dialectic",
-    "honcho-dream-deduction-luna": "dream",
-    "honcho-dream-induction-luna": "dream",
+    "honcho-deriver": "deriver",
+    "honcho-summary": "summary",
+    "honcho-dialectic": "dialectic",
+    "honcho-dream": "dream",
 }
 
 

@@ -23,18 +23,23 @@ for the runtime, configuration, and replacement boundaries.
 ```mermaid
 flowchart LR
     H["Honcho<br/>9 text surfaces"]:::infra
-    A["OpenAI-compatible façade<br/>stable contract"]:::svc
+    W["4 workload routes<br/>dialectic · summary · deriver · dream"]:::route
+    Q["Weighted scheduler<br/>8 · 4 · 2 · 1 + aging"]:::route
+    A["OpenAI-compatible façade<br/>one upstream model"]:::svc
     C["Typed TOML config"]:::config
     B["Hermes compatibility backend<br/>8-symbol manifest"]:::compat
     R["Selected Hermes runtime"]:::hermes
-    O["Codex OAuth / Responses API"]:::ext
+    O["Codex OAuth / Responses API<br/>gpt-5.6-luna"]:::ext
     E["OpenRouter embeddings"]:::ext
 
-    H -->|"text generation"| A --> B --> R --> O
+    H -->|"text generation"| W --> Q --> A --> B --> R --> O
     H -->|"embeddings only"| E
+    C --> W
+    C --> Q
     C --> A
 
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef route fill:#5D4037,stroke:#3E2723,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef config fill:#455A64,stroke:#263238,color:#fff
     classDef compat fill:#D32F2F,stroke:#B71C1C,color:#fff
@@ -46,7 +51,7 @@ flowchart LR
 
 `config/adapter.toml` is the canonical non-secret configuration. It controls the
 loopback listener, upstream timeout/retry policy, admission capacity, queue weights,
-model aliases/classes, and output tokenizer. Environment variables remain typed,
+workload route IDs/classes, and output tokenizer. Environment variables remain typed,
 machine-specific overrides; the bearer key remains runtime-only.
 
 ```bash
@@ -57,7 +62,7 @@ PYTHONPATH=src .venv/bin/python -m honcho_codex_adapter.cli \
 ```
 
 The effective output is secret-free. Invalid types, unknown top-level sections,
-non-loopback hosts, incomplete queue weights, and invalid aliases fail closed.
+non-loopback hosts, incomplete queue weights, and invalid workload routes fail closed.
 
 ## Development
 
@@ -102,7 +107,7 @@ Dialectic 8 : Summary 4 : Deriver 2 : Dream 1, FIFO within each class, 30-second
 a 90-second upstream timeout, and zero SDK retries. Change them in TOML rather than
 editing Python.
 
-Active adapter base URL: `http://host.docker.internal:18080/v1`. All nine Honcho text-generation surfaces resolve through this adapter: Deriver, Summary, five Dialectic levels, and both Dream specialists. The seven advertised model IDs collapse those surfaces onto `gpt-5.6-luna`; embeddings remain on OpenRouter and are intentionally outside this adapter.
+Active adapter base URL: `http://host.docker.internal:18080/v1`. All nine Honcho text-generation surfaces resolve through four workload route IDs: `honcho-deriver`, `honcho-summary`, `honcho-dialectic`, and `honcho-dream`. Route IDs select queue policy, not a model; all four map to the single upstream `gpt-5.6-luna`. Embeddings remain on OpenRouter and are intentionally outside this adapter.
 
 ## Operations
 

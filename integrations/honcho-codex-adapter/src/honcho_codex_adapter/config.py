@@ -45,13 +45,10 @@ class ModelRoute:
 
 
 _DEFAULT_ROUTES = {
-    "gpt-5.6-luna": ModelRoute("gpt-5.6-luna", "deriver"),
-    "honcho-deriver-luna": ModelRoute("gpt-5.6-luna", "deriver"),
-    "honcho-summary-luna": ModelRoute("gpt-5.6-luna", "summary"),
-    "honcho-dialectic-minimal-luna": ModelRoute("gpt-5.6-luna", "dialectic"),
-    "honcho-dialectic-luna": ModelRoute("gpt-5.6-luna", "dialectic"),
-    "honcho-dream-deduction-luna": ModelRoute("gpt-5.6-luna", "dream"),
-    "honcho-dream-induction-luna": ModelRoute("gpt-5.6-luna", "dream"),
+    "honcho-deriver": ModelRoute("gpt-5.6-luna", "deriver"),
+    "honcho-summary": ModelRoute("gpt-5.6-luna", "summary"),
+    "honcho-dialectic": ModelRoute("gpt-5.6-luna", "dialectic"),
+    "honcho-dream": ModelRoute("gpt-5.6-luna", "dream"),
 }
 
 
@@ -178,11 +175,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AdapterConfig:
         raise ValueError("models must be a non-empty table")
     else:
         routes = {}
-        for alias, route_raw in models_raw.items():
+        for route_id, route_raw in models_raw.items():
             if not isinstance(route_raw, Mapping):
-                raise ValueError(f"models.{alias} must be a table")
-            _strict_keys(f"models.{alias}", route_raw, {"upstream_model", "queue_class"})
-            routes[str(alias)] = ModelRoute(
+                raise ValueError(f"models.{route_id} must be a table")
+            _strict_keys(f"models.{route_id}", route_raw, {"upstream_model", "queue_class"})
+            routes[str(route_id)] = ModelRoute(
                 upstream_model=str(route_raw.get("upstream_model", upstream.model)),
                 queue_class=str(route_raw.get("queue_class", "deriver")),
             )
@@ -199,11 +196,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AdapterConfig:
         raise ValueError("admission capacity and aging_seconds must be positive")
     if set(weights) != set(QUEUE_CLASSES) or any(value < 1 for value in weights.values()):
         raise ValueError("all admission weights must be positive")
-    for alias, route in routes.items():
-        if not alias.strip() or not route.upstream_model.strip():
-            raise ValueError("model aliases and upstream models must be non-empty")
+    for route_id, route in routes.items():
+        if not route_id.strip() or not route.upstream_model.strip():
+            raise ValueError("workload route IDs and upstream models must be non-empty")
         if route.queue_class not in QUEUE_CLASSES:
-            raise ValueError(f"models.{alias}.queue_class is invalid: {route.queue_class}")
+            raise ValueError(f"models.{route_id}.queue_class is invalid: {route.queue_class}")
 
     return AdapterConfig(
         schema_version=schema_version,

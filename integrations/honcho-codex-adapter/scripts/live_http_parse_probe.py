@@ -15,7 +15,7 @@ api_key = Path("/tmp/honcho-codex-adapter-test.key").read_text().strip()
 client = OpenAI(api_key=api_key, base_url="http://127.0.0.1:18080/v1", timeout=180.0)
 try:
     completion = client.beta.chat.completions.parse(
-        model="honcho-deriver-luna",
+        model="honcho-deriver",
         messages=[
             {"role": "system", "content": "Return the requested structured data."},
             {"role": "user", "content": "Set answer to HTTP-ready."},

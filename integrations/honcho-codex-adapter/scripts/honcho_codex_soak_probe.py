@@ -34,13 +34,10 @@ OP_SDK_RESOLVER = (
     else Path(__file__).with_name("resolve_onepassword_secret.py")
 )
 EXPECTED_MODELS = {
-    "gpt-5.6-luna",
-    "honcho-deriver-luna",
-    "honcho-summary-luna",
-    "honcho-dialectic-minimal-luna",
-    "honcho-dialectic-luna",
-    "honcho-dream-deduction-luna",
-    "honcho-dream-induction-luna",
+    "honcho-deriver",
+    "honcho-summary",
+    "honcho-dialectic",
+    "honcho-dream",
 }
 SIMPLE_TOOL = {
     "type": "function",
@@ -157,7 +154,7 @@ def tool_payload(model: str) -> dict[str, Any]:
 
 def structured_payload() -> dict[str, Any]:
     return {
-        "model": "honcho-deriver-luna",
+        "model": "honcho-deriver",
         "messages": [
             {
                 "role": "user",
@@ -277,7 +274,7 @@ def run_probe(timeout: float) -> dict[str, Any]:
         "summary",
         completion(
             "summary",
-            text_payload("honcho-summary-luna", "Reply with exactly: SOAK_OK"),
+            text_payload("honcho-summary", "Reply with exactly: SOAK_OK"),
             "text",
         ),
     )
@@ -286,21 +283,21 @@ def run_probe(timeout: float) -> dict[str, Any]:
         "dialectic_minimal",
         completion(
             "dialectic_minimal",
-            text_payload("honcho-dialectic-minimal-luna", "Reply with exactly: SOAK_OK"),
+            text_payload("honcho-dialectic", "Reply with exactly: SOAK_OK"),
             "text",
         ),
     )
     check(
         "dialectic",
-        completion("dialectic", tool_payload("honcho-dialectic-luna"), "tool"),
+        completion("dialectic", tool_payload("honcho-dialectic"), "tool"),
     )
     check(
         "dream_deduction",
-        completion("dream_deduction", tool_payload("honcho-dream-deduction-luna"), "tool"),
+        completion("dream_deduction", tool_payload("honcho-dream"), "tool"),
     )
     check(
         "dream_induction",
-        completion("dream_induction", tool_payload("honcho-dream-induction-luna"), "tool"),
+        completion("dream_induction", tool_payload("honcho-dream"), "tool"),
     )
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -28,9 +28,9 @@ from honcho_codex_adapter.scheduler import WeightedPriorityScheduler, queue_clas
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from honcho_dream_tool_canary import (  # pyright: ignore[reportMissingImports]  # noqa: E402
-    DEDUCTION_ALIAS,
+    DEDUCTION_ROUTE,
     EXPECTED_TOOL_NAMES,
-    INDUCTION_ALIAS,
+    INDUCTION_ROUTE,
     ToolCase,
     build_cases,
     build_payload,
@@ -70,7 +70,7 @@ class AdapterTests(unittest.TestCase):
             response = client.post(
                 "/v1/chat/completions",
                 headers={"Authorization": "Bearer test-key"},
-                json={"model": "honcho-deriver-luna", "messages": [{"role": "user", "content": "hi"}]},
+                json={"model": "honcho-deriver", "messages": [{"role": "user", "content": "hi"}]},
             )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["code"], "queue_full")
@@ -83,7 +83,7 @@ class AdapterTests(unittest.TestCase):
             build_upstream_kwargs(request, "test-session")
 
     def test_non_stream_response(self):
-        payload = {"model": "honcho-deriver-luna", "messages": [{"role": "user", "content": "hi"}]}
+        payload = {"model": "honcho-deriver", "messages": [{"role": "user", "content": "hi"}]}
         response = self.client.post("/v1/chat/completions", headers=self.headers, json=payload)
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -93,7 +93,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_final_only_stream(self):
         payload = {
-            "model": "honcho-deriver-luna", "messages": [{"role": "user", "content": "hi"}],
+            "model": "honcho-deriver", "messages": [{"role": "user", "content": "hi"}],
             "stream": True, "stream_options": {"include_usage": True},
         }
         response = self.client.post("/v1/chat/completions", headers=self.headers, json=payload)
@@ -121,7 +121,7 @@ class AdapterTests(unittest.TestCase):
                 "/v1/chat/completions",
                 headers={"Authorization": "Bearer test-key"},
                 json={
-                    "model": "honcho-deriver-luna",
+                    "model": "honcho-deriver",
                     "messages": [{"role": "user", "content": "hi"}],
                 },
             )
@@ -130,7 +130,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_structured_output_translation(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "system", "content": "Return JSON"}, {"role": "user", "content": "go"}],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "answer", "strict": True,
@@ -144,7 +144,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_max_completion_tokens_is_not_forwarded(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "brief"}],
             "max_completion_tokens": 128,
         })
@@ -153,7 +153,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_plain_text_output_is_truncated_at_requested_token_cap(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "brief"}],
             "max_completion_tokens": 250,
         })
@@ -174,13 +174,13 @@ class AdapterTests(unittest.TestCase):
 
     def test_structured_and_tool_outputs_fail_closed_when_over_cap(self):
         structured = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "brief"}],
             "max_completion_tokens": 8,
             "response_format": {"type": "json_object"},
         })
         tool_request = ChatCompletionRequest.model_validate({
-            "model": "honcho-dialectic-luna",
+            "model": "honcho-dialectic",
             "messages": [{"role": "user", "content": "search"}],
             "max_completion_tokens": 8,
         })
@@ -205,7 +205,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_tool_translation_and_specific_choice(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-dialectic-luna",
+            "model": "honcho-dialectic",
             "messages": [{"role": "user", "content": "search"}],
             "tools": [{"type": "function", "function": {"name": "search_memory", "description": "search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}],
             "tool_choice": {"type": "function", "function": {"name": "search_memory"}},
@@ -216,7 +216,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_specific_choice_must_reference_declared_tool(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-dialectic-luna",
+            "model": "honcho-dialectic",
             "messages": [{"role": "user", "content": "search"}],
             "tools": [{"type": "function", "function": {
                 "name": "search_memory", "description": "search",
@@ -233,7 +233,7 @@ class AdapterTests(unittest.TestCase):
             "parameters": {"type": "object", "properties": {}},
         }}
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-dialectic-luna",
+            "model": "honcho-dialectic",
             "messages": [{"role": "user", "content": "search"}],
             "tools": [tool, tool],
         })
@@ -262,7 +262,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_raw_upstream_errors_are_mapped_and_credentials_refresh(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "hi"}],
         })
 
@@ -299,7 +299,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_upstream_timeout_and_retry_policy_is_bounded_and_configurable(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "hi"}],
         })
         client = MagicMock()
@@ -338,7 +338,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_event_stream_and_client_close_on_consume_failure(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "hi"}],
         })
         event_stream = MagicMock()
@@ -369,7 +369,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_cancellation_reaches_stream_consumer_and_closes_resources(self):
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-deriver-luna",
+            "model": "honcho-deriver",
             "messages": [{"role": "user", "content": "hi"}],
         })
         cancel_event = threading.Event()
@@ -408,23 +408,22 @@ class AdapterTests(unittest.TestCase):
 
 
 class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_aliases_map_to_priority_classes(self):
-        self.assertEqual(queue_class_for_model("honcho-dialectic-luna"), "dialectic")
-        self.assertEqual(queue_class_for_model("honcho-dialectic-minimal-luna"), "dialectic")
-        self.assertEqual(queue_class_for_model("honcho-summary-luna"), "summary")
-        self.assertEqual(queue_class_for_model("honcho-deriver-luna"), "deriver")
-        self.assertEqual(queue_class_for_model("honcho-dream-deduction-luna"), "dream")
+    async def test_workload_routes_map_to_priority_classes(self):
+        self.assertEqual(queue_class_for_model("honcho-dialectic"), "dialectic")
+        self.assertEqual(queue_class_for_model("honcho-summary"), "summary")
+        self.assertEqual(queue_class_for_model("honcho-deriver"), "deriver")
+        self.assertEqual(queue_class_for_model("honcho-dream"), "dream")
 
     async def test_interactive_overtakes_queued_background(self):
         scheduler = WeightedPriorityScheduler(3)
-        active = await scheduler.try_acquire("honcho-deriver-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
         self.assertIsNotNone(active)
         dream_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dream-deduction-luna")
+            scheduler.try_acquire("honcho-dream")
         )
         await asyncio.sleep(0)
         dialectic_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dialectic-luna")
+            scheduler.try_acquire("honcho-dialectic")
         )
         await asyncio.sleep(0)
 
@@ -439,13 +438,13 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_class_is_fifo(self):
         scheduler = WeightedPriorityScheduler(3)
-        active = await scheduler.try_acquire("honcho-deriver-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
         first_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-summary-luna")
+            scheduler.try_acquire("honcho-summary")
         )
         await asyncio.sleep(0)
         second_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-summary-luna")
+            scheduler.try_acquire("honcho-summary")
         )
         await asyncio.sleep(0)
 
@@ -458,13 +457,13 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_weighted_cycle_services_lower_class(self):
         scheduler = WeightedPriorityScheduler(11)
-        active = await scheduler.try_acquire("honcho-deriver-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
         dialectic_tasks = [
-            asyncio.create_task(scheduler.try_acquire("honcho-dialectic-luna"))
+            asyncio.create_task(scheduler.try_acquire("honcho-dialectic"))
             for _ in range(9)
         ]
         summary_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-summary-luna")
+            scheduler.try_acquire("honcho-summary")
         )
         await asyncio.sleep(0)
 
@@ -486,14 +485,14 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
             aging_seconds=30,
             clock=lambda: now[0],
         )
-        active = await scheduler.try_acquire("honcho-deriver-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
         dream_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dream-induction-luna")
+            scheduler.try_acquire("honcho-dream")
         )
         await asyncio.sleep(0)
         now[0] = 31.0
         dialectic_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dialectic-luna")
+            scheduler.try_acquire("honcho-dialectic")
         )
         await asyncio.sleep(0)
 
@@ -506,9 +505,9 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_waiter_releases_capacity(self):
         scheduler = WeightedPriorityScheduler(2)
-        active = await scheduler.try_acquire("honcho-deriver-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
         cancelled_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dream-deduction-luna")
+            scheduler.try_acquire("honcho-dream")
         )
         await asyncio.sleep(0)
         cancelled_task.cancel()
@@ -516,7 +515,7 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
             await cancelled_task
 
         replacement_task = asyncio.create_task(
-            scheduler.try_acquire("honcho-dialectic-luna")
+            scheduler.try_acquire("honcho-dialectic")
         )
         await asyncio.sleep(0)
         self.assertFalse(replacement_task.done())
@@ -526,8 +525,8 @@ class PrioritySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capacity_counts_active_plus_waiting(self):
         scheduler = WeightedPriorityScheduler(1)
-        active = await scheduler.try_acquire("honcho-deriver-luna")
-        rejected = await scheduler.try_acquire("honcho-dialectic-luna")
+        active = await scheduler.try_acquire("honcho-deriver")
+        rejected = await scheduler.try_acquire("honcho-dialectic")
         self.assertIsNone(rejected)
         await active.release()
 
@@ -566,16 +565,16 @@ class DreamToolCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "catalog drift"):
             validate_catalogs(catalogs)
 
-    def test_build_cases_uses_dream_aliases(self):
+    def test_build_cases_uses_shared_dream_route(self):
         cases = build_cases(validate_catalogs(self.catalogs()))
         self.assertEqual(len(cases), 10)
-        self.assertEqual({case.model for case in cases[:6]}, {DEDUCTION_ALIAS})
-        self.assertEqual({case.model for case in cases[6:]}, {INDUCTION_ALIAS})
+        self.assertEqual({case.model for case in cases[:6]}, {DEDUCTION_ROUTE})
+        self.assertEqual({case.model for case in cases[6:]}, {INDUCTION_ROUTE})
 
     def test_payload_and_response_are_envelope_only(self):
         case = ToolCase(
             specialist="deduction",
-            model=DEDUCTION_ALIAS,
+            model=DEDUCTION_ROUTE,
             target="search_memory",
             tools=validate_catalogs(self.catalogs())["deduction"],
             arguments={"query": "sandbox canary", "top_k": 2},

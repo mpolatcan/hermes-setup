@@ -6,7 +6,7 @@ from honcho_codex_adapter.driver import HermesCodexDriver
 from honcho_codex_adapter.models import ChatCompletionRequest
 
 request = ChatCompletionRequest.model_validate({
-    "model": "honcho-deriver-luna",
+    "model": "honcho-deriver",
     "messages": [
         {"role": "system", "content": "Return only data matching the supplied schema."},
         {"role": "user", "content": "Set answer to the single word ready."},

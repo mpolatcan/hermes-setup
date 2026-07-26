@@ -12,9 +12,14 @@ Live fleet config was re-read profile by profile on **2026-07-19**. All nine pro
 flowchart LR
     all9["all 9 agents + crons"]:::codex -->|primary| codex56["Codex OAuth · GPT-5.6<br/>sol / terra / luna"]:::codex
     codex56 -. "only profile-level fallback<br/>quota / rate limit / outage" .-> ds2["DeepSeek · V4 Flash<br/>direct API"]:::ds
+    honcho["Honcho · 9 text surfaces"]:::infra --> routes["4 workload routes<br/>dialectic · summary · deriver · dream"]:::route
+    routes -->|"weighted scheduling"| adapter["Honcho Codex Adapter<br/>one upstream: gpt-5.6-luna"]:::svc --> codex56
 
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef ds fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
+    classDef route fill:#5D4037,stroke:#3E2723,color:#fff
+    classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
 - **Reasoning efforts:** `medium` general/assistant/coder/finance/health/researcher/writer · `low` marketing/producer. GPT-5.6 Sol stays at `medium` to control quota and cost.

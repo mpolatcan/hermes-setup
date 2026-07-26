@@ -75,7 +75,7 @@ class HonchoCatalogContractTests(unittest.TestCase):
     def test_every_current_honcho_tool_translates(self):
         tools = [as_openai_tool(tool) for tool in self.catalogs["TOOLS"].values()]
         request = ChatCompletionRequest.model_validate({
-            "model": "honcho-dream-deduction-luna",
+            "model": "honcho-dream",
             "messages": [{"role": "user", "content": "contract probe"}],
             "tools": tools,
             "tool_choice": "auto",
@@ -93,7 +93,7 @@ class HonchoCatalogContractTests(unittest.TestCase):
                 self.assertTrue(catalog)
                 tools = [as_openai_tool(tool) for tool in catalog]
                 request = ChatCompletionRequest.model_validate({
-                    "model": "honcho-dialectic-luna",
+                    "model": "honcho-dialectic",
                     "messages": [{"role": "user", "content": "catalog probe"}],
                     "tools": tools,
                     "tool_choice": "auto",

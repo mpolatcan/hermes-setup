@@ -17,11 +17,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConfigTests(unittest.TestCase):
-    def test_canonical_config_loads_and_has_seven_aliases(self):
+    def test_canonical_config_loads_and_has_four_workload_routes(self):
         config = load_config(ROOT / "config" / "adapter.toml")
         self.assertEqual(config.server.host, "127.0.0.1")
         self.assertEqual(config.server.port, 18080)
-        self.assertEqual(len(config.models), 7)
+        self.assertEqual(set(config.models), {
+            "honcho-deriver",
+            "honcho-summary",
+            "honcho-dialectic",
+            "honcho-dream",
+        })
         self.assertEqual(config.admission.weights["dialectic"], 8)
 
     def test_environment_override_is_typed_and_secret_is_not_rendered(self):
@@ -34,7 +39,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("never-render", config.effective_json())
         self.assertNotIn("api_key", config.effective_json())
 
-    def test_global_upstream_override_retargets_canonical_aliases(self) -> None:
+    def test_global_upstream_override_retargets_workload_routes(self) -> None:
         with patch.dict(os.environ, {"HONCHO_CODEX_UPSTREAM_MODEL": "gpt-candidate"}, clear=False):
             config = load_config(ROOT / "config" / "adapter.toml")
         self.assertEqual(config.upstream.model, "gpt-candidate")

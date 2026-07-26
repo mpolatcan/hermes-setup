@@ -39,7 +39,7 @@ flowchart TB
         wd["🐕 watchdog · launchd<br/>5-min health check"]:::wd
         subgraph svc["local services · loopback"]
             Honcho[("Honcho · :8000<br/>Docker · shared memory")]:::infra
-            HonchoCodex["Honcho Codex Adapter · :18080<br/>native LaunchAgent · 9 text surfaces"]:::svc
+            HonchoCodex["Honcho Codex Adapter · :18080<br/>9 surfaces · 4 workload routes · 1 model"]:::svc
             SearXNG["SearXNG · :8888<br/>search fallback"]:::svc
         end
     end
@@ -200,12 +200,14 @@ The agent routing is deliberately simple: GPT-5.6 is primary on all nine profile
 flowchart LR
     all9["all 9 agents + cron jobs"]:::codex -->|primary| Codex["Codex OAuth · gpt-5.6 sol/terra/luna<br/>ChatGPT sub · profile-local auth stores"]:::codex
     Codex -. "only agent fallback<br/>(quota window / outage)" .-> DeepSeek["DeepSeek · V4 Flash<br/>direct API · pay-per-token"]:::fallback
-    Honcho["Honcho memory workers"]:::infra -->|"9 text surfaces"| HCA["Honcho Codex Adapter<br/>loopback · typed config"]:::svc
-    HCA -->|"Codex OAuth"| Codex
+    Honcho["Honcho memory workers"]:::infra -->|"9 text surfaces"| Routes["4 workload routes<br/>dialectic · summary · deriver · dream"]:::route
+    Routes -->|"weighted 8 · 4 · 2 · 1"| HCA["Honcho Codex Adapter<br/>loopback · typed config"]:::svc
+    HCA -->|"one upstream · gpt-5.6-luna<br/>Codex OAuth"| Codex
     Honcho -->|"embeddings only"| ORd["OpenRouter<br/>text-embedding-3-small"]:::ext
     classDef codex fill:#EF6C00,stroke:#E65100,color:#fff
     classDef fallback fill:#1565C0,stroke:#0D47A1,color:#fff
     classDef ext fill:#00796B,stroke:#004D40,color:#fff
+    classDef route fill:#5D4037,stroke:#3E2723,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
 ```

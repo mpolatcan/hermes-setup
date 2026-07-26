@@ -48,7 +48,7 @@ flowchart LR
 7. Require zero fixture residue and preserve logs without credentials.
 8. Show the exact production launcher diff and restart command. Promotion requires a
    fresh explicit operator approval.
-9. After promotion, verify one listener, both health endpoints, the seven-model
+9. After promotion, verify one listener, both health endpoints, the four-route
    catalog, all nine Honcho routes, recent logs, and the deterministic probe.
 
 ## Rollback boundary

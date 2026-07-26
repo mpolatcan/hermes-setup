@@ -8,17 +8,17 @@ upstream Honcho or Hermes documentation.
 
 | Surface | Honcho model | Route |
 |---|---|---|
-| Deriver | `honcho-deriver-luna` | Codex adapter |
-| Summary | `honcho-summary-luna` | Codex adapter |
-| Dialectic `minimal` through `max` | `honcho-dialectic-luna` | Codex adapter |
-| Dream deduction | `honcho-dream-deduction-luna` | Codex adapter |
-| Dream induction | `honcho-dream-induction-luna` | Codex adapter |
+| Deriver | `honcho-deriver` | Codex adapter |
+| Summary | `honcho-summary` | Codex adapter |
+| Dialectic `minimal` through `max` | `honcho-dialectic` | Codex adapter |
+| Dream deduction | `honcho-dream` | Codex adapter |
+| Dream induction | `honcho-dream` | Codex adapter |
 | Embeddings | `openai/text-embedding-3-small` | OpenRouter, not this adapter |
 
-The nine text-generation surfaces use six of the seven advertised aliases in the
-current Honcho configuration. `honcho-dialectic-minimal-luna` and the direct
-`gpt-5.6-luna` alias remain valid adapter endpoints but are not selected by the
-current Honcho `config.toml`.
+The nine text-generation surfaces use four workload route IDs. These IDs classify
+traffic for admission and weighted scheduling; they are not separate models. All four
+routes map to the single upstream model `gpt-5.6-luna`. Dream deduction and induction
+intentionally share `honcho-dream` because they have the same upstream and queue policy.
 
 Runtime invariants:
 
@@ -137,7 +137,7 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup/integrations/honcho-codex-ad
 ```
 
 The probe resolves its bearer through Keychain and 1Password without printing it.
-It checks both health endpoints, the exact seven-model catalog, Summary, structured
+It checks both health endpoints, the exact four-route catalog, Summary, structured
 Deriver output, Dialectic text/tool behavior, and both Dream tool envelopes.
 
 ## Test and release gate
