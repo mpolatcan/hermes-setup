@@ -13,6 +13,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SCRIPT = (
@@ -35,15 +36,30 @@ REF_B = "op://vault/item/field-b"
 
 class FakeSecrets:
     values = {REF_A: SECRET_A, REF_B: SECRET_B}
-    references: list[str] = []
+    batch_calls: list[list[str]] = []
     error: Exception | None = None
+    response_overrides: dict[str, object] = {}
 
-    async def resolve(self, reference: str) -> str:
-        type(self).references.append(reference)
+    async def resolve(self, _: str) -> str:
+        raise AssertionError("single-reference resolution must not be used")
+
+    async def resolve_all(self, references: list[str]) -> object:
+        type(self).batch_calls.append(references)
         error = type(self).error
         if error is not None:
             raise error
-        return type(self).values[reference]
+        responses = {}
+        for reference in references:
+            if reference in type(self).response_overrides:
+                override = type(self).response_overrides[reference]
+                if override is not None:
+                    responses[reference] = override
+                continue
+            responses[reference] = SimpleNamespace(
+                content=SimpleNamespace(secret=type(self).values[reference]),
+                error=None,
+            )
+        return SimpleNamespace(individual_responses=responses)
 
 
 class FakeClient:
@@ -52,8 +68,9 @@ class FakeClient:
 
     @classmethod
     def reset(cls) -> None:
-        FakeSecrets.references = []
+        FakeSecrets.batch_calls = []
         FakeSecrets.error = None
+        FakeSecrets.response_overrides = {}
         FakeSecrets.values = {REF_A: SECRET_A, REF_B: SECRET_B}
         cls.auth_calls = []
 
@@ -64,9 +81,9 @@ class FakeClient:
 
 
 class SlowSecrets:
-    async def resolve(self, _: str) -> str:
+    async def resolve_all(self, _: list[str]) -> object:
         await asyncio.sleep(60)
-        return SECRET_A
+        return SimpleNamespace(individual_responses={})
 
 
 class SlowClient:
@@ -151,7 +168,7 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
             )
         )
         self.assertEqual(values, {"ALPHA_KEY": SECRET_A, "BETA_KEY": SECRET_B})
-        self.assertEqual(FakeSecrets.references, [REF_A, REF_B])
+        self.assertEqual(FakeSecrets.batch_calls, [[REF_A, REF_B]])
         self.assertEqual(len(FakeClient.auth_calls), 1)
         self.assertEqual(FakeClient.auth_calls[0]["auth"], TOKEN)
 
@@ -175,6 +192,42 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         message = str(caught.exception)
         for sensitive in (TOKEN, REF_A, SECRET_A):
             self.assertNotIn(sensitive, message)
+
+    def test_batch_missing_response_fails_closed(self) -> None:
+        FakeSecrets.response_overrides[REF_A] = None
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "resolve all references"):
+            asyncio.run(
+                bootstrap.resolve_reference_map(
+                    {"ALPHA_KEY": REF_A}, TOKEN, client_type=FakeClient
+                )
+            )
+
+    def test_batch_item_error_fails_closed_and_sanitized(self) -> None:
+        FakeSecrets.response_overrides[REF_A] = SimpleNamespace(
+            content=None,
+            error=f"leak {TOKEN} {REF_A} {SECRET_A}",
+        )
+        with self.assertRaises(bootstrap.BootstrapError) as caught:
+            asyncio.run(
+                bootstrap.resolve_reference_map(
+                    {"ALPHA_KEY": REF_A}, TOKEN, client_type=FakeClient
+                )
+            )
+        message = str(caught.exception)
+        for sensitive in (TOKEN, REF_A, SECRET_A):
+            self.assertNotIn(sensitive, message)
+
+    def test_batch_empty_secret_fails_closed(self) -> None:
+        FakeSecrets.response_overrides[REF_A] = SimpleNamespace(
+            content=SimpleNamespace(secret=""),
+            error=None,
+        )
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "empty secret"):
+            asyncio.run(
+                bootstrap.resolve_reference_map(
+                    {"ALPHA_KEY": REF_A}, TOKEN, client_type=FakeClient
+                )
+            )
 
     def test_timeout_is_bounded_and_sanitized(self) -> None:
         with self.assertRaisesRegex(bootstrap.BootstrapError, "timed out"):
@@ -473,7 +526,7 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
                     stdin_stream=StringIO("MEDIA:/etc/passwd"),
                 )
         self.assertEqual(FakeClient.auth_calls, [])
-        self.assertEqual(FakeSecrets.references, [])
+        self.assertEqual(FakeSecrets.batch_calls, [])
 
     def test_send_cli_parses_command_before_passthrough_arguments(self) -> None:
         args = bootstrap.parse_args(
@@ -612,7 +665,7 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertNotIn("LINEAR_CLIENT_SECRET", child)
         self.assertNotIn("LC_SECRET", child)
         self.assertEqual(child["PATH"], "/usr/bin:/bin")
-        self.assertEqual(FakeSecrets.references, [REF_A])
+        self.assertEqual(FakeSecrets.batch_calls, [[REF_A]])
 
     def test_transition_dispatches_enabled_profile_to_legacy_hermes(self) -> None:
         class ExecCaptured(Exception):

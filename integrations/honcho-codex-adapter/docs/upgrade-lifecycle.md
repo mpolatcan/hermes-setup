@@ -35,20 +35,40 @@ flowchart LR
 
 1. Install the candidate side by side using a currently supported Hermes installation
    path. Do not run an in-place update against the live runtime.
-2. Run `scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python`.
-3. Review every manifest mismatch. Never regenerate the manifest merely to make the
+2. Check the candidate's locally owned Hermes patches before the adapter gate:
+
+   ```bash
+   python3 scripts/manage_hermes_agent_patches.py \
+     --runtime-root /absolute/path/to/candidate-hermes-agent \
+     --mode check
+   ```
+
+   `already-applied` and `upstreamed` pass. `applicable` means the candidate still
+   needs the local patch; `conflict` requires source review. Apply only to the
+   side-by-side candidate with an explicit command:
+
+   ```bash
+   python3 scripts/manage_hermes_agent_patches.py \
+     --runtime-root /absolute/path/to/candidate-hermes-agent \
+     --mode apply
+   ```
+
+3. Run `scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python`.
+   The stage script repeats the patch check and fails closed before compatibility
+   or adapter tests if any patch remains applicable or conflicts.
+4. Review every manifest mismatch. Never regenerate the manifest merely to make the
    gate green; first inspect source and behavior changes.
-4. If the mismatch is understood and the adapter has been updated, run the test suite
+5. If the mismatch is understood and the adapter has been updated, run the test suite
    again and write the reviewed manifest with `scripts/check_hermes_compat.py
    --write-manifest`.
-5. Start a separately approved temporary adapter on `127.0.0.1:18081` with the
+6. Start a separately approved temporary adapter on `127.0.0.1:18081` with the
    candidate runtime and a vault-resolved bearer.
-6. Run the authenticated deterministic probe, all Dream envelope checks, the
+7. Run the authenticated deterministic probe, all Dream envelope checks, the
    disposable effect canary, full Dream E2E, and the 11 Honcho completion-guard tests.
-7. Require zero fixture residue and preserve logs without credentials.
-8. Show the exact production launcher diff and restart command. Promotion requires a
+8. Require zero fixture residue and preserve logs without credentials.
+9. Show the exact production launcher diff and restart command. Promotion requires a
    fresh explicit operator approval.
-9. After promotion, verify one listener, both health endpoints, the four-route
+10. After promotion, verify one listener, both health endpoints, the four-route
    catalog, all nine Honcho routes, recent logs, and the deterministic probe.
 
 ## Rollback boundary

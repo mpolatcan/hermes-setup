@@ -147,7 +147,15 @@ Authenticated self-hosted Honcho instances on loopback/LAN need a separate expli
 patches/hermes-agent/0002-fix-honcho-authenticated-local-env-credentials.patch
 ```
 
-After each Hermes Agent upgrade, apply the patch only if the target still has the local-placeholder branch in `plugins/memory/honcho/client.py`. Run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart the General isolated serve backend and require a real `honcho_context` success. Roll back by reversing the patch, removing `authRequired` from General `honcho.json`, and restarting the serve backend; never replace the flag with a literal `apiKey` in profile files.
+After each Hermes Agent upgrade, classify all owned patches before promotion:
+
+```bash
+python3 scripts/manage_hermes_agent_patches.py \
+  --runtime-root /absolute/path/to/candidate-hermes-agent \
+  --mode check
+```
+
+Only `already-applied` and `upstreamed` pass. Use explicit `--mode apply` only against the side-by-side candidate; the manager rejects dirty worktrees and reports `applicable` versus `conflict` separately. `integrations/honcho-codex-adapter/scripts/stage_hermes_upgrade.sh` repeats this check fail-closed. For the local-auth patch, run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart affected processes and require a real authenticated Honcho canary. Roll back by reversing the patch, removing `authRequired` from affected `honcho.json` files, and restarting those processes; never replace the flag with a literal `apiKey` in profile files.
 
 Quicksilver retirement is deliberately gated:
 

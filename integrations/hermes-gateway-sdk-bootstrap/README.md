@@ -11,8 +11,8 @@ This component resolves the configured `ENV_VAR -> op://...` map through the off
 ## Security contract
 
 - The service-account token is obtained by the existing Keychain launcher.
-- The bootstrap authenticates one SDK client and resolves every configured reference.
-- Startup fails closed if the token, config, mapping, SDK call, or any value is missing.
+- The bootstrap authenticates one SDK client and resolves the sorted reference set with one native `secrets.resolve_all(...)` batch call. It does not issue one vault request per environment variable.
+- Startup fails closed if the token, config, mapping, SDK batch call, any individual response, or any value is missing.
 - Secret values and references are never logged.
 - The service-account token exists briefly in the mode-`0700` Keychain wrapper and bootstrap process environment, then is removed before Hermes is executed.
 - Resolved values exist briefly in bootstrap memory and only the selected target child environment. Gateway mode resolves the full configured map; general-only `serve` mode resolves the same map and binds a fixed Desktop backend to `127.0.0.1:9120`; general-only `desktop` mode resolves only `HERMES_DASHBOARD_SESSION_TOKEN`, renames it to the Desktop remote-token variable, fixes the URL to `http://127.0.0.1:9120`, and never gives Desktop the bootstrap token, Honcho root/JWT, or unrelated credentials; maintenance `send` is restricted to the configured Telegram home target, resolves only `TELEGRAM_*` references, rejects local-file/media delivery, and builds the bootstrap and child from small non-secret environment allowlists rather than inheriting the caller environment.
@@ -135,11 +135,12 @@ After any bootstrap or Hermes runtime change:
 
 1. Back up all nine profile configs and live launchers.
 2. Run the bootstrap test suite and syntax checks.
-3. Restart auxiliary profiles with the canonical supervisor-safe helper.
-4. Restart `general` last through Telegram `/restart` when available.
-5. Verify launchd PID replacement, managed Python 3.13 process commands, managed-first `PATH`, Telegram readiness, and zero persistent `op read` children.
-6. Verify `hermes-send-keychain.sh` against a non-general profile before relying on maintenance alerts.
-7. Verify `ai.hermes.serve-general` on `127.0.0.1:9120`, then verify the Desktop process has only the remote URL/session token and a tool-level `honcho_context` call succeeds.
+3. Query the official service-account rate-limit state before a fleet rollout. If account-level `remaining` is zero, keep the affected LaunchAgents unloaded until the reported reset window expires; do not let `KeepAlive` create a retry storm.
+4. Restart auxiliary profiles serially, leaving at least 15 seconds between profiles. Require a stable PID and the final scoped credential boundary before continuing.
+5. Restart `general` last through Telegram `/restart` when available.
+6. Verify launchd PID replacement, the bootstrap runtime's exact `sys.base_prefix`, managed-first `PATH`, Telegram readiness, and zero persistent `op read` children. Do not hard-code the intended Python version as proof of the live process.
+7. Verify `hermes-send-keychain.sh` against a non-general profile before relying on maintenance alerts.
+8. Verify `ai.hermes.serve-general` on `127.0.0.1:9120`, then verify the Desktop process has only the remote URL/session token and a tool-level `honcho_context` call succeeds.
 
 ## Rollback
 

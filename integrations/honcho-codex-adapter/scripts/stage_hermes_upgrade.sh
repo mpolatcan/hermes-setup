@@ -7,9 +7,10 @@ usage() {
 }
 
 [[ $# -ge 1 && $# -le 3 ]] || usage
+root="$(cd "$(dirname "$0")/.." && pwd)"
 candidate_python="$1"
-config_path="${2:-config/adapter.toml}"
-adapter_python="${3:-.venv/bin/python}"
+config_path="${2:-$root/config/adapter.toml}"
+adapter_python="${3:-$root/.venv/bin/python}"
 [[ "$candidate_python" = /* && -x "$candidate_python" ]] || {
   echo "candidate Python must be an absolute executable path" >&2
   exit 65
@@ -26,10 +27,13 @@ adapter_abi="$($adapter_python -c 'import sys; print(f"{sys.version_info.major}.
 }
 [[ -f "$config_path" ]] || { echo "missing adapter config: $config_path" >&2; exit 66; }
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 candidate_site="$($candidate_python -c 'import site; print(site.getsitepackages()[0])')"
 candidate_root="$($candidate_python -c 'from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).resolve().parents[1])')"
+setup_root="$(cd "$root/../.." && pwd)"
+patch_manager="$setup_root/scripts/manage_hermes_agent_patches.py"
+[[ -f "$patch_manager" ]] || { echo "missing Hermes patch manager: $patch_manager" >&2; exit 66; }
+"$adapter_python" "$patch_manager" --runtime-root "$candidate_root" --mode check
 export PYTHONPATH="$root/src:$candidate_root:$candidate_site"
 
 "$adapter_python" -m honcho_codex_adapter.cli --config "$config_path" --check-config

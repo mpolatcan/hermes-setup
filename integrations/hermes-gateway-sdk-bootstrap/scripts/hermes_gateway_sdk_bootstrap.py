@@ -140,9 +140,23 @@ async def resolve_reference_map(
             integration_name=INTEGRATION_NAME,
             integration_version=INTEGRATION_VERSION,
         )
+        ordered = sorted(references.items())
+        response = await client.secrets.resolve_all(
+            [reference for _, reference in ordered]
+        )
+        individual = getattr(response, "individual_responses", None)
+        if not isinstance(individual, Mapping):
+            raise BootstrapError("1Password SDK could not resolve all references")
         values: dict[str, str] = {}
-        for name in sorted(references):
-            value = await client.secrets.resolve(references[name])
+        for name, reference in ordered:
+            item = individual.get(reference)
+            if (
+                item is None
+                or getattr(item, "error", None) is not None
+                or getattr(item, "content", None) is None
+            ):
+                raise BootstrapError("1Password SDK could not resolve all references")
+            value = getattr(item.content, "secret", None)
             if not isinstance(value, str) or not value:
                 raise BootstrapError("1Password SDK returned an empty secret")
             values[name] = value
