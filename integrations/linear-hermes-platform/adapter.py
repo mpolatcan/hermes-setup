@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -69,6 +70,15 @@ def _read_env_file(path: str) -> dict[str, str]:
             value = value[1:-1]
         result[key.strip()] = value
     return result
+
+
+def _read_webhook_credentials(path: str) -> dict[str, str]:
+    credentials = _read_env_file(path) if path else {}
+    for name in ("LINEAR_WEBHOOK_SECRET", "LINEAR_WEBHOOK_SECRET_PREVIOUS"):
+        value = os.environ.get(name)
+        if value:
+            credentials[name] = value
+    return credentials
 
 
 def _payload_timestamp_seconds(payload: dict[str, Any]) -> float | None:
@@ -294,8 +304,11 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     @staticmethod
     def validate_config(config: PlatformConfig) -> bool:
         extra = config.extra
-        required = ("credential_env_file", "oauth_file", "database_path")
-        return all(bool(extra.get(key)) for key in required)
+        required = ("oauth_file", "database_path")
+        has_secret_source = bool(
+            extra.get("credential_env_file") or os.environ.get("LINEAR_WEBHOOK_SECRET")
+        )
+        return all(bool(extra.get(key)) for key in required) and has_secret_source
 
     @classmethod
     def from_config(cls, config: PlatformConfig) -> "LinearPlatformAdapter":
@@ -304,7 +317,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
         try:
-            credentials = _read_env_file(self.credential_env_file)
+            credentials = _read_webhook_credentials(self.credential_env_file)
             current_secret = credentials.get("LINEAR_WEBHOOK_SECRET", "")
             previous_secret = credentials.get("LINEAR_WEBHOOK_SECRET_PREVIOUS", "")
             if len(current_secret) < 16:
@@ -728,8 +741,11 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         delivery_key: str,
         *,
         include_queued: bool,
-        body: str = "Derya accepted the task; Hermes is processing it.",
+        body: str | None = None,
     ) -> None:
+        if body is None:
+            actor_name = getattr(self._linear, "actor_name", None) or "Hermes"
+            body = f"{actor_name} accepted the task; Hermes is processing it."
         self._enqueue_activity(
             agent_session_id,
             "thought",

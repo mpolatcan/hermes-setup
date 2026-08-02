@@ -14,6 +14,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from aiohttp import web
 
@@ -197,6 +198,45 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
 
+class AdapterCredentialTests(unittest.TestCase):
+    def test_validate_config_accepts_process_environment_secret_without_file(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "oauth_file": "/tmp/linear-oauth.json",
+                "database_path": "/tmp/linear.sqlite3",
+            },
+        )
+
+        with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
+            self.assertTrue(LinearPlatformAdapter.validate_config(config))
+
+    def test_process_environment_secret_overrides_legacy_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "linear-bridge.env"
+            path.write_text(
+                "LINEAR_WEBHOOK_SECRET=file-current\n"
+                "LINEAR_WEBHOOK_SECRET_PREVIOUS=file-previous\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LINEAR_WEBHOOK_SECRET": "environment-current",
+                    "LINEAR_WEBHOOK_SECRET_PREVIOUS": "environment-previous",
+                },
+                clear=False,
+            ):
+                credentials = adapter_mod._read_webhook_credentials(str(path))
+
+        self.assertEqual(credentials["LINEAR_WEBHOOK_SECRET"], "environment-current")
+        self.assertEqual(
+            credentials["LINEAR_WEBHOOK_SECRET_PREVIOUS"],
+            "environment-previous",
+        )
+
+
 class PromptTests(unittest.TestCase):
     def test_created_uses_prompt_context(self):
         text = build_agent_prompt(
@@ -321,6 +361,18 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate.status, 200)
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
+
+    async def test_created_acknowledgment_uses_installed_app_actor_name(self):
+        self.adapter._linear.actor_name = "Doruk"
+
+        response = await self.adapter._handle_webhook(self.request_for(self.make_payload()))
+
+        self.assertEqual(response.status, 200)
+        await asyncio.sleep(0)
+        self.assertEqual(
+            self.adapter._linear.calls[0][2],
+            "Doruk accepted the task; Hermes is processing it.",
+        )
 
     async def test_same_subscription_id_accepts_distinct_agent_sessions(self):
         first = self.make_payload(
