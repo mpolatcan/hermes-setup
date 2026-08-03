@@ -1,5 +1,5 @@
 name: linear
-version: "0.5.0"
-description: Native Linear Agent Session messaging platform for Hermes
+version: "0.6.0"
+description: Native Linear Agent Sessions plus policy-gated official MCP tools
 kind: platform
 author: Polatcan Studio

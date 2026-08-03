@@ -5,6 +5,7 @@ from __future__ import annotations
 
 def register(ctx) -> None:
     from .adapter import LinearPlatformAdapter
+    from .linear_tools import register_outbound_tools
 
     ctx.register_platform(
         name="linear",
@@ -22,3 +23,4 @@ def register(ctx) -> None:
             "Telegram delivery. Do not emit local MEDIA paths; use durable links when files matter."
         ),
     )
+    register_outbound_tools(ctx)

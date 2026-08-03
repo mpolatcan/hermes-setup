@@ -1,0 +1,213 @@
+"""Pure fail-closed policy for outbound Linear MCP operations."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+READ_TOOLS = frozenset({"get_issue", "list_issues"})
+MUTATION_TOOLS = frozenset({"save_issue", "save_comment"})
+ALLOWED_TOOLS = READ_TOOLS | MUTATION_TOOLS
+GET_ISSUE_FIELDS = frozenset({"id", "includeRelations"})
+LIST_ISSUE_FIELDS = frozenset({"team", "query", "state", "assignee", "delegate", "limit"})
+
+SAVE_ISSUE_FIELDS = frozenset(
+    {
+        "id",
+        "title",
+        "team",
+        "description",
+        "state",
+        "priority",
+        "assignee",
+        "delegate",
+        "labels",
+        "label",
+        "project",
+        "parentId",
+        "milestone",
+        "cycle",
+        "dueDate",
+        "estimate",
+        "blocks",
+        "blockedBy",
+        "relatedTo",
+        "removeBlocks",
+        "removeBlockedBy",
+        "removeRelatedTo",
+        "target_team_id",
+        "operation_key",
+        "approval_reference",
+    }
+)
+SAVE_COMMENT_FIELDS = frozenset(
+    {"id", "issueId", "body", "target_team_id", "operation_key", "approval_reference"}
+)
+SENSITIVE_TEXT_FIELDS = frozenset({"title", "description", "body", "comment"})
+METADATA_UUID_ONLY_FIELDS = frozenset(
+    {"state", "assignee", "delegate", "labels", "label", "project", "milestone", "cycle"}
+)
+METADATA_ISSUE_REF_FIELDS = frozenset(
+    {
+        "parentId", "blocks", "blockedBy", "relatedTo",
+        "removeBlocks", "removeBlockedBy", "removeRelatedTo",
+    }
+)
+METADATA_DENIED_FIELDS = frozenset({"priority", "estimate", "dueDate"})
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+ISSUE_REF_RE = re.compile(
+    r"^(?:[A-Z][A-Z0-9]{0,15}-[1-9][0-9]*|"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+)
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    action: str
+    reason: str
+
+
+class OutboundPolicy:
+    def __init__(
+        self,
+        *,
+        expected_actor_id: str,
+        expected_organization_id: str,
+        allowed_team_ids: Iterable[str],
+        sensitive_mode: str = "standard",
+        metadata_templates: Iterable[str] = (),
+    ) -> None:
+        self.expected_actor_id = str(expected_actor_id or "")
+        self.expected_organization_id = str(expected_organization_id or "")
+        self.allowed_team_ids = frozenset(str(value) for value in allowed_team_ids if value)
+        self.sensitive_mode = str(sensitive_mode or "standard")
+        self.metadata_templates = frozenset(str(value) for value in metadata_templates)
+
+    def is_configured(self) -> bool:
+        return bool(
+            self.expected_actor_id
+            and self.expected_organization_id
+            and self.allowed_team_ids
+            and self.sensitive_mode in {"standard", "metadata_only"}
+        )
+
+    def preflight(self, tool_name: str, args: dict[str, Any]) -> PolicyDecision:
+        """Run all config/local argument checks without claiming a live vendor identity."""
+        return self.evaluate(
+            tool_name,
+            args,
+            live_actor_id=self.expected_actor_id,
+            live_organization_id=self.expected_organization_id,
+        )
+
+    def evaluate(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        live_actor_id: str,
+        live_organization_id: str,
+    ) -> PolicyDecision:
+        if not self.is_configured():
+            return PolicyDecision("deny", "policy_not_configured")
+        if str(live_actor_id or "") != self.expected_actor_id:
+            return PolicyDecision("deny", "actor_mismatch")
+        if str(live_organization_id or "") != self.expected_organization_id:
+            return PolicyDecision("deny", "organization_mismatch")
+        if tool_name not in ALLOWED_TOOLS:
+            return PolicyDecision("deny", "tool_not_allowed")
+        if tool_name == "get_issue":
+            if set(arguments) - GET_ISSUE_FIELDS:
+                return PolicyDecision("deny", "field_not_allowed")
+            if arguments.get("includeRelations") not in (None, False):
+                return PolicyDecision("deny", "relations_not_allowed")
+            if self.sensitive_mode == "metadata_only" and not ISSUE_REF_RE.fullmatch(
+                str(arguments.get("id") or "")
+            ):
+                return PolicyDecision("deny", "sensitive_content")
+            return PolicyDecision("allow", "read_allowed")
+        if tool_name == "list_issues":
+            if set(arguments) - LIST_ISSUE_FIELDS:
+                return PolicyDecision("deny", "field_not_allowed")
+            team_id = str(arguments.get("team") or "")
+            if not team_id:
+                return PolicyDecision("deny", "team_required")
+            if team_id not in self.allowed_team_ids:
+                return PolicyDecision("deny", "team_not_allowed")
+            if self.sensitive_mode == "metadata_only":
+                if arguments.get("query") not in (None, ""):
+                    return PolicyDecision("deny", "sensitive_content")
+                for field in ("state", "assignee", "delegate"):
+                    value = arguments.get(field)
+                    if value not in (None, "") and not UUID_RE.fullmatch(str(value)):
+                        return PolicyDecision("deny", "sensitive_content")
+                limit = arguments.get("limit")
+                if limit is not None and (
+                    isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 250
+                ):
+                    return PolicyDecision("deny", "sensitive_content")
+            return PolicyDecision("allow", "read_allowed")
+
+        allowed_fields = SAVE_ISSUE_FIELDS if tool_name == "save_issue" else SAVE_COMMENT_FIELDS
+        if set(arguments) - allowed_fields:
+            return PolicyDecision("deny", "field_not_allowed")
+        target_team_id = str(arguments.get("target_team_id") or "")
+        if not target_team_id:
+            return PolicyDecision("deny", "team_required")
+        if target_team_id not in self.allowed_team_ids:
+            return PolicyDecision("deny", "team_not_allowed")
+        if tool_name == "save_issue":
+            requested_team = str(arguments.get("team") or "")
+            if not arguments.get("id") and not requested_team:
+                return PolicyDecision("deny", "team_argument_required")
+            if requested_team and requested_team != target_team_id:
+                return PolicyDecision("deny", "team_argument_mismatch")
+            priority = arguments.get("priority")
+            if priority is not None and (
+                isinstance(priority, bool)
+                or not isinstance(priority, int)
+                or not 0 <= priority <= 4
+            ):
+                return PolicyDecision("deny", "invalid_priority")
+
+        if self.sensitive_mode == "metadata_only":
+            if any(field in arguments for field in METADATA_DENIED_FIELDS):
+                return PolicyDecision("deny", "sensitive_content")
+            for field in SENSITIVE_TEXT_FIELDS:
+                if field not in arguments:
+                    continue
+                value = str(arguments.get(field) or "")
+                if value not in self.metadata_templates:
+                    return PolicyDecision("deny", "sensitive_content")
+            for field in METADATA_UUID_ONLY_FIELDS:
+                raw_value = arguments.get(field)
+                if raw_value in (None, ""):
+                    continue
+                values = raw_value if isinstance(raw_value, list) else [raw_value]
+                if any(not UUID_RE.fullmatch(str(value)) for value in values):
+                    return PolicyDecision("deny", "sensitive_content")
+            if tool_name == "save_issue":
+                issue_id = arguments.get("id")
+                if issue_id not in (None, "") and not ISSUE_REF_RE.fullmatch(str(issue_id)):
+                    return PolicyDecision("deny", "sensitive_content")
+                for field in METADATA_ISSUE_REF_FIELDS:
+                    raw_value = arguments.get(field)
+                    if raw_value in (None, ""):
+                        continue
+                    values = raw_value if isinstance(raw_value, list) else [raw_value]
+                    if any(not ISSUE_REF_RE.fullmatch(str(value)) for value in values):
+                        return PolicyDecision("deny", "sensitive_content")
+            else:
+                comment_id = arguments.get("id")
+                if comment_id not in (None, "") and not UUID_RE.fullmatch(str(comment_id)):
+                    return PolicyDecision("deny", "sensitive_content")
+                issue_id = arguments.get("issueId")
+                if not ISSUE_REF_RE.fullmatch(str(issue_id or "")):
+                    return PolicyDecision("deny", "sensitive_content")
+
+        return PolicyDecision("allow", "policy_allowed")

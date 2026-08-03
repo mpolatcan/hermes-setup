@@ -10,6 +10,8 @@ flowchart LR
     C -->|"nine exact host/path routes"| A["Profile-local adapters<br/>127.0.0.1:8787–8793,8796–8797"]:::svc
     A -->|"MessageEvent"| G["Nine Hermes Gateways"]:::codex
     G -->|"AgentActivity + lifecycle GraphQL"| L
+    G -. "policy-gated official MCP outbound" .-> M["mcp.linear.app/mcp"]:::net
+    M -. "profile-local app identity" .-> L
 
     classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
@@ -44,7 +46,12 @@ flowchart LR
 | Path | Purpose |
 |---|---|
 | `adapter.py` | Native platform lifecycle, webhook validation, and prompt/stop routing |
-| `linear_client.py` | OAuth refresh and Linear GraphQL Agent Activity writes |
+| `oauth_store.py` | Shared profile-local OAuth read/refresh/rotation primitive with cross-process locking |
+| `linear_client.py` | Linear GraphQL Agent Activity and inbound lifecycle operations using the shared OAuth store |
+| `mcp_client.py` | Narrow Streamable HTTP transport for Linear's official MCP endpoint |
+| `outbound_policy.py` | Fail-closed actor, organization, team, field, and sensitive-profile policy |
+| `outbound_ledger.py` | Content-minimizing operation-key ledger for mutation replay and ambiguous outcomes |
+| `linear_tools.py` | Approval-compatible Hermes model-tool registration and policy/transport orchestration |
 | `ledger.py` | Persistent semantic-dedup ledger |
 | `plugin.yaml` | Hermes plugin manifest |
 | `scripts/install_linear_oauth.py` | Attended localhost PKCE installer (legacy/interactive only) |
@@ -69,7 +76,9 @@ LINEAR_WEBHOOK_SECRET=<current-secret>
 LINEAR_WEBHOOK_SECRET_PREVIOUS=<previous-secret-during-rotation-only>
 ```
 
-The installer writes the OAuth file atomically with mode `0600`. Never log access or refresh tokens, and never copy them into the repository, chat, clipboard, Notion, or Linear.
+`LinearOAuthStore` is the only OAuth owner abstraction. The inbound GraphQL client and the outbound official MCP client use that same profile-local file, lock domain, expiry check, refresh-token rotation, and atomic persistence path. The lock file is profile-local and mode `0600`; credentials are re-read after lock acquisition so concurrent consumers do not refresh a stale token twice. Hermes native MCP OAuth is intentionally not configured for these app authorizations because its separate token store would create a second refresh owner.
+
+The installer and shared store write the OAuth file atomically with mode `0600`. Never log access or refresh tokens, and never copy them into the repository, chat, clipboard, Notion, or Linear.
 
 ## OAuth setup
 
@@ -131,6 +140,17 @@ gateway:
           running: In Progress
           blocked: Blocked
           done: Done
+        outbound_mcp:
+          enabled: false                    # Gate B: register no outbound tools by default
+          mutations_enabled: false          # Gate C/D: read-only before any writes
+          ledger_path: /Users/mutlupolatcan/.hermes/profiles/general/state/linear-outbound-mcp.sqlite3
+          endpoint: https://mcp.linear.app/mcp
+          expected_actor_id: <profile-app-user-uuid>
+          expected_organization_id: <installed-organization-uuid>
+          allowed_team_ids:
+            - <authoritative-team-uuid>
+          sensitive_mode: standard          # health/finance use metadata_only
+          metadata_templates: []            # exact approved strings only; no patterns
       home_channel:
         platform: linear
         chat_id: <dedicated-agent-session-id>
@@ -144,22 +164,22 @@ The plugin source is deployed to each profile-local runtime directory:
 /Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear/
 ```
 
-The tracked deployment allowlist is `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, and `plugin.yaml`. Copy only those files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. The current audit proves `45/45` allowlisted logic files match the tracked source and are mode `0600`; it does **not** prove exact-directory parity. Existing runtime directories also contain `__pycache__`, seven contain `tests/`, and `general/plugins/linear` is mode `0755` while the other eight are `0700`. Those are explicit follow-up drift, not silently cleaned up by this documentation change.
+The 0.6.0 tracked deployment allowlist is exactly `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, `oauth_store.py`, `mcp_client.py`, `outbound_policy.py`, `outbound_ledger.py`, `linear_tools.py`, and `plugin.yaml`. Copy only those ten files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. The previous 0.5.0 runtime acceptance proved `45/45` hashes for the former five-file allowlist. It is historical evidence, not a claim that the undeployed 0.6.0 source is already present in nine runtimes. Existing runtime directories also contain `__pycache__`, seven contain `tests/`, and `general/plugins/linear` is mode `0755` while the other eight are `0700`. Those are explicit follow-up drift, not silently cleaned up by this repository change.
 
 Deployment is an approval-gated operation, not a blind fleet copy. There is intentionally no partial shell recipe here: source review, promotion, rollback and runtime restart must remain one fail-closed procedure. For one named profile:
 
-1. **Pin the reviewed source.** Record the approved commit, require a clean worktree, export the five allowlisted files from that commit (not mutable working-tree paths), and verify the reviewed SHA-256 manifest.
+1. **Pin the reviewed source.** Record the approved commit, require a clean worktree, export the ten allowlisted files from that commit (not mutable working-tree paths), and verify the reviewed SHA-256 manifest.
 2. **Confine and serialize.** Validate every source, profile, plugin and backup ancestor as a real non-symlink directory under the expected roots; acquire a profile-specific exclusive lock before creating any stage or rollback path.
-3. **Stage completely.** Create a unique same-filesystem stage directory at mode `0700`; install exactly the five allowlisted files at `0600`; reject symlinks, missing files, extra entries or hash mismatch.
+3. **Stage completely.** Create a unique same-filesystem stage directory at mode `0700`; install exactly the ten allowlisted files at `0600`; reject symlinks, missing files, extra entries or hash mismatch.
 4. **Preserve rollback.** Create a unique non-existing rollback slot at mode `0700`, print its immutable coordinates before mutation, and preserve the complete previous target there.
 5. **Promote atomically.** Rename the complete staged directory into `/Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear`. A state-aware `EXIT`/`HUP`/`INT`/`TERM` handler must restore the checked rollback whenever promotion does not reach verified state, while preserving a failed candidate for audit.
-6. **Read back.** Verify target path confinement, exact five-file set, directory/file modes and source-manifest hashes after promotion. Release the lock only after this succeeds.
+6. **Read back.** Verify target path confinement, exact ten-file set, directory/file modes and source-manifest hashes after promotion. Release the lock only after this succeeds.
 7. **Restart and accept.** Mutlu sends `/restart` in only that profile's Telegram chat; then run its local `/health`, local/public `405/401/404`, signed lifecycle and ledger checks. Keep rollback until acceptance is complete.
 8. **Roll back symmetrically.** Stop or gate the named gateway, acquire the same profile lock, validate the exact printed rollback coordinates, preserve the failed current target, atomically restore the prior directory, read back its manifest/modes, release the lock, send `/restart`, and rerun acceptance. Never select “latest backup” heuristically.
 
 A future one-command deploy helper must implement and test every invariant above before replacing this explicit runbook. Creating that helper or cleaning runtime extras is separate code/runtime work and requires its own exact diff and approval.
 
-The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. The current accepted evidence is `45/45` logic hashes with all allowlisted files at `0600`; exact entry and directory-mode drift remains open as stated above.
+The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. The last production evidence is the 0.5.0 `45/45` logic-hash acceptance with all former allowlisted files at `0600`; exact entry and directory-mode drift remains open as stated above. A 0.6.0 deployment must produce a new ten-files-times-nine-profiles parity result rather than inheriting the old count.
 
 | Persona | Profile | Loopback | Public hostname |
 |---|---|---:|---|
@@ -174,6 +194,26 @@ The read-only fleet audit must report four dimensions separately: allowlisted so
 | Murat | `finance` | `127.0.0.1:8797` | `murat-linear.mutlupolatcan.com` |
 
 `data_change_events_enabled` and `dependency_wait_enabled` are live for standard profiles. Defne and Murat keep both flags `false` to preserve the sensitive-profile execution boundary; status writeback remains enabled for their explicit Agent Session lifecycle.
+
+## Official Linear MCP outbound tools
+
+Outbound tools are independently gated from the inbound webhook adapter. With `outbound_mcp.enabled: false`, plugin 0.6.0 registers no Linear model tools and preserves the 0.5.0 runtime behavior. With `enabled: true` and `mutations_enabled: false`, only `linear_get_issue` and `linear_list_issues` are exposed. `linear_save_issue` and `linear_save_comment` appear only when the separate mutation gate is literal boolean `true`, the required approval APIs exist, and the live Hermes config is exactly `approvals.mode: manual` plus `approvals.cron_mode: deny`. Any missing, unreadable, string-valued, or less strict setting leaves the profile read-only.
+
+Every call performs fail-closed profile checks:
+
+1. GraphQL and official MCP identities must resolve to the same app user.
+2. The actor and organization must match pinned profile IDs.
+3. Every issue read and mutation is checked against an authoritative GraphQL team lookup; list reads require an exact allowlisted team UUID. `get_issue(includeRelations: true)` is denied until cross-team relation filtering exists.
+4. Wrapper-only `operation_key`, `target_team_id`, and `approval_reference` fields are stripped before the vendor call.
+5. Unknown tools and fields are denied locally.
+6. Parent and relation issue references are independently resolved and must belong to the exact authoritative target team, even when the profile is allowed to use multiple teams.
+7. `metadata_only` profiles accept content-bearing fields only when their complete value exactly matches an approved template; actor, label, project, milestone, cycle, and state selectors must be UUIDs. Issue, comment, parent, and relation identifiers use canonical UUID/issue-reference formats; list limits are bounded integers. `priority`, `estimate`, and `dueDate` are not exposed in metadata-only mutations, and free-form list queries are denied. Pattern matching and silent redaction are intentionally not used.
+
+Mutation tools install a `pre_tool_call` hook only for early unsafe-config and approval-bypass blocking. The handler first applies local argument/team/sensitive-data policy, then independently invokes Hermes' native `request_tool_approval` API before constructing network clients, so denied model text cannot enter the prompt and another plugin's earlier hook directive cannot suppress the Linear approval gate. Registration preflights the complete tool-name set so a collision exposes no partial outbound surface. Approval mode is re-read uncached from the strict raw profile config through an `O_NOFOLLOW` descriptor with owner/mode/inode/size consistency checks; merged defaults and last-known-good cache are not accepted. Config and Hermes' canonical process/session bypass state are checked both before and after the awaited native approval. `/yolo`, `--yolo`, `HERMES_YOLO_MODE`, missing approval keys, parse/read/change failure, or any mode other than exact `manual` plus cron `deny` blocks the mutation. The approval allowlist grain is the tool name plus SHA-256 of `operation_key`; the prompt shows only preflighted profile/team metadata and omits issue/comment content. `approval_reference` is informational wrapper metadata and is never proof of approval. Bare non-interactive contexts fail closed.
+
+The mutation ledger is a dedicated `outbound_mcp.ledger_path`; both it and the inbound adapter's WAL-backed `database_path` must be present and absolute, and their canonical paths must be distinct. Invalid or missing separation leaves mutation tools unregistered, while read tools do not instantiate a ledger. It stores no issue title, description, comment body, or raw operation key. It persists only SHA-256 of the operation key, canonical payload SHA-256, profile/actor/team IDs, status, result ID/error code, and timestamps. Reusing a key with a different payload or identity is denied. A completed, proven terminal failure, or `outcome_unknown` operation is never automatically dispatched again. Mutation success requires one JSON text result containing a non-empty authoritative `id`; timeouts, lost sessions, malformed/id-less success responses, MCP/JSON-RPC errors, and HTTP `429`/`5xx` responses are outcome-unknown because the vendor may have committed before the response was lost. Business/transport mutation retries are prohibited; the sole exception is one same-request retry after shared-store token refresh on HTTP `401`. The ledger never calls `sqlite3.connect()` with a pathname: a pinned private parent-directory descriptor and cross-process flock protect secure `openat(O_NOFOLLOW)` reads, SQLite is deserialized in memory, and complete bytes are persisted with private temp creation, `fsync`, and same-directory `renameat`. Exact canonical SQL, `table_xinfo`, PK index/xinfo, foreign keys, triggers, status semantics, integrity, owner, and modes fail closed.
+
+The official endpoint and vendor schemas remain vendor-owned. Hermes exposes only the reviewed four-tool subset, accepts only the reviewed `2025-03-26` and `2025-06-18` protocol revisions, exhausts bounded `tools/list` cursor pagination, pins the exact current 52-name vendor tool set, and pins exact property sets, required-key omission semantics, primitive/array schemas, requiredness, and accepted forwarded-field constraints for the five required vendor contracts. The exposed `priority` schema is numeric, while local policy narrows it to Linear's integer `0..4` semantics and rejects strings, booleans, fractions, and out-of-range values. JSON-RPC IDs require exact integer type/value. Responses are streamed under explicit byte, nesting, node, SSE-event, content-item, and text-length bounds; exactly one matching SSE envelope is required. Mutation ambiguity remains `outcome_unknown`. Schema or protocol drift fails closed before any business operation. OAuth, GraphQL, MCP POST, and MCP session DELETE requests do not follow redirects while carrying bearer credentials.
 
 ## Localization boundary
 
@@ -266,9 +306,9 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected result: `71/71 OK` (`38` mobile PKCE + `33` native platform). `/health` exposes the active `data_event_types` allowlist so a rollout can verify the accepted event contract without inspecting source files.
+Expected source result for 0.6.0: `166/166 OK`. `/health` exposes the active inbound `data_event_types` allowlist so a rollout can verify that accepted event contract without inspecting source files.
 
-Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
+Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry, actor/team/content-policy denial, operation-key replay, payload-content minimization, tool registration gates, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
 ## Live acceptance criteria
 
@@ -286,11 +326,12 @@ Coverage includes invalid signatures, replay attempts, organization mismatch, se
 
 ## Rollback
 
-1. Set `dependency_wait_enabled: false`, `data_change_events_enabled: false`, and `issue_status_writeback_enabled: false`; queued evidence remains in SQLite.
-2. Disable the added Issue/Comment/Label/Project/ProjectUpdate data-change categories in the Linear application, retaining Agent Session events if the base canary remains healthy.
-3. If one adapter instance must roll back, disable only that persona's Linear application webhook and Cloudflare hostname route; do not stop the shared connector while another persona remains live.
-4. Set `gateway.platforms.linear.enabled: false`.
-5. Mutlu issues `/restart` from Telegram.
-6. Restore the pre-migration `linear-bridge.sqlite3*` backup only while the gateway is stopped. Do not delete the migrated database until pending/dead outbox rows and waiting executions have been audited.
+1. For an outbound-only rollback, set `outbound_mcp.mutations_enabled: false` first, then `outbound_mcp.enabled: false`; this removes model tools without disabling inbound Agent Sessions. Do not delete `linear_mcp_operations` rows, especially `outcome_unknown` evidence.
+2. Set `dependency_wait_enabled: false`, `data_change_events_enabled: false`, and `issue_status_writeback_enabled: false`; queued evidence remains in SQLite.
+3. Disable the added Issue/Comment/Label/Project/ProjectUpdate data-change categories in the Linear application, retaining Agent Session events if the base canary remains healthy.
+4. If one adapter instance must roll back, disable only that persona's Linear application webhook and Cloudflare hostname route; do not stop the shared connector while another persona remains live.
+5. Set `gateway.platforms.linear.enabled: false` only when both outbound and the inbound platform must stop.
+6. Mutlu issues `/restart` from Telegram.
+7. Restore the pre-migration `linear-bridge.sqlite3*` backup only while the gateway is stopped. Do not delete the migrated database until pending/dead outbox rows, waiting executions, and MCP operation rows have been audited.
 
 Rollback never touches the normal Tailscale app or Remote Desktop process. The retired Funnel sidecar, former bridge daemon, and built-in webhook route on `127.0.0.1:8644` remain disabled unless a separate architectural decision explicitly restores them.
