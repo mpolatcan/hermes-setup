@@ -177,7 +177,31 @@ Deployment is an approval-gated operation, not a blind fleet copy. There is inte
 7. **Restart and accept.** Mutlu sends `/restart` in only that profile's Telegram chat; then run its local `/health`, local/public `405/401/404`, signed lifecycle and ledger checks. Keep rollback until acceptance is complete.
 8. **Roll back symmetrically.** Stop or gate the named gateway, acquire the same profile lock, validate the exact printed rollback coordinates, preserve the failed current target, atomically restore the prior directory, read back its manifest/modes, release the lock, send `/restart`, and rerun acceptance. Never select “latest backup” heuristically.
 
-A future one-command deploy helper must implement and test every invariant above before replacing this explicit runbook. Creating that helper or cleaning runtime extras is separate code/runtime work and requires its own exact diff and approval.
+The reviewed one-command helper is [`scripts/deploy_plugin.py`](scripts/deploy_plugin.py). It implements the source-manifest, descriptor confinement, profile lock, private staging, durable pre-mutation coordinates, state-aware signal recovery, atomic promotion, exact read-back and symmetric rollback invariants above. It deliberately does **not** edit Hermes config or restart a gateway.
+
+For the reviewed 0.6.0 source commit, the exact single-profile promotion command is:
+
+```bash
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
+  integrations/linear-hermes-platform/scripts/deploy_plugin.py deploy \
+  --repo-root /Users/mutlupolatcan/.hermes/source/hermes-setup \
+  --profiles-root /Users/mutlupolatcan/.hermes/profiles \
+  --profile general \
+  --commit 92bc6b1d538008b1884758ff2a91ebb1d8ba5907
+```
+
+The helper writes and prints the immutable rollback path and tree digest before the first rename. Rollback must use those exact values; never discover a backup by recency:
+
+```bash
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
+  integrations/linear-hermes-platform/scripts/deploy_plugin.py rollback \
+  --profiles-root /Users/mutlupolatcan/.hermes/profiles \
+  --profile general \
+  --rollback-path '<exact rollback_path>' \
+  --rollback-digest '<exact rollback_digest>'
+```
+
+Runtime promotion, config mutation and `/restart` remain separate approval gates. Runtime extras are preserved inside the exact rollback tree rather than copied into the new ten-file target.
 
 The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. The last production evidence is the 0.5.0 `45/45` logic-hash acceptance with all former allowlisted files at `0600`; exact entry and directory-mode drift remains open as stated above. A 0.6.0 deployment must produce a new ten-files-times-nine-profiles parity result rather than inheriting the old count.
 

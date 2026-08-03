@@ -1,0 +1,648 @@
+#!/usr/bin/env python3
+"""Atomically deploy or roll back the reviewed Linear Hermes plugin.
+
+The helper never edits Hermes config and never restarts a gateway. It exports
+only a reviewed ten-file manifest from a clean, exact Git commit. Promotion and
+rollback use pinned directory descriptors, a profile lock, durable coordinates,
+and same-filesystem rename operations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import stat
+import subprocess
+import sys
+import time
+from typing import Any, Callable
+
+
+PLUGIN_RELATIVE = Path("integrations/linear-hermes-platform")
+ALLOWLIST = (
+    "__init__.py",
+    "adapter.py",
+    "ledger.py",
+    "linear_client.py",
+    "oauth_store.py",
+    "mcp_client.py",
+    "outbound_policy.py",
+    "outbound_ledger.py",
+    "linear_tools.py",
+    "plugin.yaml",
+)
+REVIEWED_MANIFESTS: dict[str, dict[str, str]] = {
+    "92bc6b1d538008b1884758ff2a91ebb1d8ba5907": {
+        "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+        "adapter.py": "679723f859f0a8baeb74dcba11961e5d57a9e892597da54d3b9a810dffedb3ad",
+        "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+        "linear_client.py": "70bff1072ff39c28917ccd0f015985495565db3b0ddce5c9311cf84212469e99",
+        "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+        "mcp_client.py": "3debd6bbc7ba7b6084d8bfb39045a0ed97f7a514266896f3e59bf1c0f6f0a2e7",
+        "outbound_policy.py": "963e81aa311766744a005c60aa96a59bb317e3a8f674168429feb3bedb04327d",
+        "outbound_ledger.py": "aa61090da20e580d12e0bd321b152dfc00123f478bde9c4954497f10c2d62b06",
+        "linear_tools.py": "4d350b871eca082105979d4a4078a865493fa3f1601f25dd40e4f796919e3041",
+        "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+    }
+}
+_PROFILE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+
+
+class DeploymentError(RuntimeError):
+    """Fail-closed deployment error safe for operator output."""
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _run_git(repo_root: Path, *args: str, binary: bool = False) -> bytes | str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+        text=not binary,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise DeploymentError(f"Git command failed: {' '.join(args[:2])}")
+    return result.stdout
+
+
+def _validate_dir_info(info: os.stat_result, label: str, *, exact_mode: int | None = None) -> None:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise DeploymentError(f"Directory type or owner is invalid: {label}")
+    mode = info.st_mode & 0o777
+    if exact_mode is not None:
+        if mode != exact_mode:
+            raise DeploymentError(f"Directory mode is invalid: {label}")
+    elif mode & 0o022:
+        raise DeploymentError(f"Directory permissions are unsafe: {label}")
+
+
+def _open_absolute_dir(path: Path, label: str) -> tuple[Path, int]:
+    try:
+        canonical = path.resolve(strict=True)
+        fd = os.open(canonical, _DIR_FLAGS)
+    except OSError as exc:
+        raise DeploymentError(f"Required directory is unavailable: {label}") from exc
+    try:
+        _validate_dir_info(os.fstat(fd), label)
+        return canonical, fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_child_dir(parent_fd: int, name: str, label: str, *, exact_mode: int | None = None) -> int:
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    except OSError as exc:
+        raise DeploymentError(f"Directory must be real and non-symlink: {label}") from exc
+    try:
+        _validate_dir_info(os.fstat(fd), label, exact_mode=exact_mode)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_profile_roots(profiles_root: Path, profile: str) -> tuple[Path, int, int, int, int]:
+    if not _PROFILE_RE.fullmatch(profile):
+        raise DeploymentError("Profile name is invalid")
+    canonical, profiles_fd = _open_absolute_dir(profiles_root, "profiles root")
+    try:
+        profile_fd = _open_child_dir(profiles_fd, profile, "profile root")
+        try:
+            plugins_fd = _open_child_dir(profile_fd, "plugins", "plugins root")
+            try:
+                state_fd = _open_child_dir(profile_fd, "state", "state root")
+            except Exception:
+                os.close(plugins_fd)
+                raise
+        except Exception:
+            os.close(profile_fd)
+            raise
+    except Exception:
+        os.close(profiles_fd)
+        raise
+    return canonical, profiles_fd, profile_fd, plugins_fd, state_fd
+
+
+def _close_many(*fds: int | None) -> None:
+    for fd in fds:
+        if fd is not None and fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _read_all(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise DeploymentError("Short write while staging plugin")
+        view = view[written:]
+
+
+def _tree_records_fd(directory_fd: int, prefix: str = "") -> list[str]:
+    records: list[str] = []
+    try:
+        names = sorted(os.listdir(directory_fd))
+    except OSError as exc:
+        raise DeploymentError("Plugin tree could not be enumerated") from exc
+    for name in names:
+        if name in {".", ".."} or "/" in name or "\0" in name:
+            raise DeploymentError("Plugin tree contains an invalid entry name")
+        relative = f"{prefix}/{name}" if prefix else name
+        try:
+            info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise DeploymentError("Plugin tree entry is unavailable") from exc
+        mode = info.st_mode & 0o777
+        if stat.S_ISLNK(info.st_mode):
+            raise DeploymentError("Plugin tree contains a symlink")
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = _open_child_dir(directory_fd, name, relative)
+            try:
+                records.append(f"d\0{relative}\0{mode:o}")
+                records.extend(_tree_records_fd(child_fd, relative))
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(info.st_mode):
+            try:
+                file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=directory_fd)
+            except OSError as exc:
+                raise DeploymentError("Plugin tree file is unavailable") from exc
+            try:
+                pinned = os.fstat(file_fd)
+                if pinned.st_dev != info.st_dev or pinned.st_ino != info.st_ino:
+                    raise DeploymentError("Plugin tree entry changed during verification")
+                records.append(f"f\0{relative}\0{mode:o}\0{_sha256(_read_all(file_fd))}")
+            finally:
+                os.close(file_fd)
+        else:
+            raise DeploymentError("Plugin tree contains an unsupported entry")
+    return records
+
+
+def _tree_digest_fd(directory_fd: int) -> str:
+    return _sha256("\n".join(_tree_records_fd(directory_fd)).encode())
+
+
+def _verify_candidate_fd(directory_fd: int, manifest: dict[str, str]) -> None:
+    _validate_dir_info(os.fstat(directory_fd), "candidate", exact_mode=0o700)
+    if set(manifest) != set(ALLOWLIST):
+        raise DeploymentError("Reviewed manifest does not match the deployment allowlist")
+    try:
+        entries = set(os.listdir(directory_fd))
+    except OSError as exc:
+        raise DeploymentError("Candidate entry set is unavailable") from exc
+    if entries != set(ALLOWLIST):
+        raise DeploymentError("Candidate entry set does not match the deployment allowlist")
+    for name in ALLOWLIST:
+        try:
+            file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=directory_fd)
+        except OSError as exc:
+            raise DeploymentError(f"Candidate entry is unavailable: {name}") from exc
+        try:
+            info = os.fstat(file_fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o600:
+                raise DeploymentError(f"Candidate entry mode, type or owner is invalid: {name}")
+            if _sha256(_read_all(file_fd)) != manifest[name]:
+                raise DeploymentError(f"Candidate hash mismatch: {name}")
+        finally:
+            os.close(file_fd)
+
+
+def _acquire_lock(state_fd: int, timeout: float) -> int:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open("linear-plugin-deploy.lock", flags, 0o600, dir_fd=state_fd)
+    except OSError as exc:
+        raise DeploymentError("Deployment lock is unavailable") from exc
+    try:
+        os.fchmod(fd, 0o600)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise DeploymentError("Deployment lock owner or type is invalid")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise DeploymentError("Deployment lock timed out")
+                time.sleep(0.05)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _unique_name(prefix: str) -> str:
+    return f"{prefix}{int(time.time())}-{secrets.token_hex(6)}"
+
+
+def _mkdir_private(parent_fd: int, name: str) -> int:
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        fd = _open_child_dir(parent_fd, name, name, exact_mode=0o700)
+        os.fsync(parent_fd)
+        return fd
+    except OSError as exc:
+        raise DeploymentError("Private deployment directory could not be created") from exc
+
+
+def _remove_tree_fd(parent_fd: int, name: str) -> None:
+    try:
+        child_fd = _open_child_dir(parent_fd, name, name)
+    except DeploymentError:
+        return
+    try:
+        for entry in os.listdir(child_fd):
+            info = os.stat(entry, dir_fd=child_fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                _remove_tree_fd(child_fd, entry)
+            else:
+                os.unlink(entry, dir_fd=child_fd)
+        os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(child_fd)
+
+
+def _write_coordinate_record(state_fd: int, name: str, payload: dict[str, str]) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(name, flags, 0o600, dir_fd=state_fd)
+    except OSError as exc:
+        raise DeploymentError("Rollback coordinate record could not be created") from exc
+    try:
+        os.fchmod(fd, 0o600)
+        _write_all(fd, (json.dumps(payload, sort_keys=True) + "\n").encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.fsync(state_fd)
+
+
+def _install_signal_guards(callback: Callable[[int], bool]) -> dict[int, Any]:
+    previous: dict[int, Any] = {}
+
+    def handler(signum: int, _frame: Any) -> None:
+        if callback(signum):
+            raise DeploymentError(f"Deployment interrupted by signal {signum}")
+
+    for signum in _HANDLED_SIGNALS:
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, handler)
+    return previous
+
+
+def _restore_signal_guards(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
+def deploy_reviewed(
+    *,
+    repo_root: Path,
+    profiles_root: Path,
+    profile: str,
+    commit: str,
+    lock_timeout: float = 8.0,
+    announce: Callable[[dict[str, str]], None] | None = None,
+    _post_promote_hook: Callable[[Path], None] | None = None,
+    _after_backup_hook: Callable[[], None] | None = None,
+    _after_verified_hook: Callable[[], None] | None = None,
+) -> dict[str, str]:
+    repo_root = repo_root.resolve(strict=True)
+    _, profiles_fd, profile_fd, plugins_fd, state_fd = _open_profile_roots(profiles_root, profile)
+    lock_fd: int | None = None
+    stage_fd: int | None = None
+    target_fd: int | None = None
+    stage_name: str | None = None
+    rollback_name: str | None = None
+    failed_name: str | None = None
+    previous_handlers: dict[int, Any] = {}
+    state = "preparing"
+    recovering = False
+
+    try:
+        manifest = REVIEWED_MANIFESTS.get(commit)
+        if manifest is None:
+            raise DeploymentError("Commit has no reviewed deployment manifest")
+        if set(manifest) != set(ALLOWLIST):
+            raise DeploymentError("Reviewed manifest is incomplete")
+        resolved = str(_run_git(repo_root, "rev-parse", f"{commit}^{{commit}}")).strip()
+        if resolved != commit:
+            raise DeploymentError("Commit must be an exact full reviewed SHA")
+        if str(_run_git(repo_root, "status", "--porcelain", "--untracked-files=all")).strip():
+            raise DeploymentError("Repository worktree is not clean")
+
+        lock_fd = _acquire_lock(state_fd, lock_timeout)
+        target_fd = _open_child_dir(plugins_fd, "linear", "linear target")
+        pinned_target = os.fstat(target_fd)
+
+        def recover(_signum: int = 0) -> bool:
+            nonlocal recovering, failed_name, state
+            if recovering:
+                return True
+            if state in {"verified", "recovered"}:
+                return False
+            recovering = True
+            old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _HANDLED_SIGNALS)
+            try:
+                names = set(os.listdir(plugins_fd))
+                if rollback_name and rollback_name in names:
+                    if "linear" in names:
+                        failed_name = _unique_name(".linear-failed-")
+                        os.rename("linear", failed_name, src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+                        os.fsync(plugins_fd)
+                    os.rename(rollback_name, "linear", src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+                    os.fsync(plugins_fd)
+                    restored_fd = _open_child_dir(plugins_fd, "linear", "restored target")
+                    try:
+                        restored = os.fstat(restored_fd)
+                        if restored.st_dev != pinned_target.st_dev or restored.st_ino != pinned_target.st_ino:
+                            raise DeploymentError("Recovered target inode does not match pinned rollback")
+                    finally:
+                        os.close(restored_fd)
+                    state = "recovered"
+                return True
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+                recovering = False
+
+        previous_handlers = _install_signal_guards(recover)
+        stage_name = _unique_name(".linear-stage-")
+        stage_fd = _mkdir_private(plugins_fd, stage_name)
+        for name in ALLOWLIST:
+            data = _run_git(repo_root, "show", f"{commit}:{(PLUGIN_RELATIVE / name).as_posix()}", binary=True)
+            assert isinstance(data, bytes)
+            if _sha256(data) != manifest[name]:
+                raise DeploymentError(f"Reviewed source hash mismatch: {name}")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            fd = os.open(name, flags, 0o600, dir_fd=stage_fd)
+            try:
+                os.fchmod(fd, 0o600)
+                _write_all(fd, data)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        os.fsync(stage_fd)
+        _verify_candidate_fd(stage_fd, manifest)
+        state = "staged"
+
+        rollback_name = _unique_name(".linear-rollback-")
+        if rollback_name in set(os.listdir(plugins_fd)):
+            raise DeploymentError("Rollback slot already exists")
+        rollback_digest = _tree_digest_fd(target_fd)
+        rollback_path = str(profiles_root.resolve(strict=True) / profile / "plugins" / rollback_name)
+        record_name = f"linear-plugin-deploy-{rollback_name.removeprefix('.linear-rollback-')}.json"
+        coordinates = {
+            "status": "prepared",
+            "profile": profile,
+            "commit": commit,
+            "rollback_path": rollback_path,
+            "rollback_digest": rollback_digest,
+        }
+        _write_coordinate_record(state_fd, record_name, coordinates)
+        if announce is not None:
+            announce(dict(coordinates))
+
+        os.rename("linear", rollback_name, src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+        os.fsync(plugins_fd)
+        rollback_fd = _open_child_dir(plugins_fd, rollback_name, "rollback slot")
+        try:
+            moved = os.fstat(rollback_fd)
+            if moved.st_dev != pinned_target.st_dev or moved.st_ino != pinned_target.st_ino:
+                raise DeploymentError("Rollback inode changed during promotion")
+            os.fchmod(rollback_fd, 0o700)
+            os.fsync(rollback_fd)
+        finally:
+            os.close(rollback_fd)
+        os.fsync(plugins_fd)
+        state = "backed_up"
+        if _after_backup_hook is not None:
+            _after_backup_hook()
+
+        os.rename(stage_name, "linear", src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+        os.fsync(plugins_fd)
+        state = "promoted"
+        os.close(stage_fd)
+        stage_fd = None
+        promoted_fd = _open_child_dir(plugins_fd, "linear", "promoted target", exact_mode=0o700)
+        try:
+            if _post_promote_hook is not None:
+                _post_promote_hook(profiles_root.resolve(strict=True) / profile / "plugins" / "linear")
+            _verify_candidate_fd(promoted_fd, manifest)
+            target_digest = _tree_digest_fd(promoted_fd)
+        finally:
+            os.close(promoted_fd)
+        state = "verified"
+        if _after_verified_hook is not None:
+            _after_verified_hook()
+        return {
+            **coordinates,
+            "status": "verified",
+            "target_path": str(profiles_root.resolve(strict=True) / profile / "plugins" / "linear"),
+            "target_digest": target_digest,
+            "record_path": str(profiles_root.resolve(strict=True) / profile / "state" / record_name),
+        }
+    except BaseException:
+        if "recover" in locals():
+            recover()
+        raise
+    finally:
+        if previous_handlers:
+            _restore_signal_guards(previous_handlers)
+        if stage_fd is not None:
+            os.close(stage_fd)
+        if target_fd is not None:
+            os.close(target_fd)
+        if stage_name is not None and stage_name in set(os.listdir(plugins_fd)):
+            _remove_tree_fd(plugins_fd, stage_name)
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+        _close_many(state_fd, plugins_fd, profile_fd, profiles_fd)
+
+
+def rollback_exact(
+    *,
+    profiles_root: Path,
+    profile: str,
+    rollback_path: Path,
+    rollback_digest: str,
+    lock_timeout: float = 8.0,
+    _post_restore_hook: Callable[[Path], None] | None = None,
+    _after_current_backup_hook: Callable[[], None] | None = None,
+    _during_recovery_hook: Callable[[], None] | None = None,
+) -> dict[str, str]:
+    canonical, profiles_fd, profile_fd, plugins_fd, state_fd = _open_profile_roots(profiles_root, profile)
+    lock_fd: int | None = None
+    rollback_fd: int | None = None
+    target_fd: int | None = None
+    failed_name: str | None = None
+    verified = False
+    recovering = False
+    previous_handlers: dict[int, Any] = {}
+    try:
+        lock_fd = _acquire_lock(state_fd, lock_timeout)
+        expected_parent = canonical / profile / "plugins"
+        supplied = rollback_path.absolute()
+        if supplied.parent != expected_parent or not supplied.name.startswith(".linear-rollback-"):
+            raise DeploymentError("Rollback coordinates are outside the named profile")
+        if not re.fullmatch(r"[0-9a-f]{64}", rollback_digest):
+            raise DeploymentError("Rollback digest is invalid")
+        rollback_fd = _open_child_dir(plugins_fd, supplied.name, "rollback slot", exact_mode=0o700)
+        if _tree_digest_fd(rollback_fd) != rollback_digest:
+            raise DeploymentError("Rollback tree digest does not match")
+        pinned_rollback = os.fstat(rollback_fd)
+        target_fd = _open_child_dir(plugins_fd, "linear", "current target")
+        pinned_target = os.fstat(target_fd)
+
+        def interrupt_rollback(_signum: int) -> bool:
+            return not (verified or recovering)
+
+        previous_handlers = _install_signal_guards(interrupt_rollback)
+        failed_name = _unique_name(".linear-failed-")
+        os.rename("linear", failed_name, src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+        os.fsync(plugins_fd)
+        moved_current_fd = _open_child_dir(plugins_fd, failed_name, "preserved current")
+        try:
+            moved = os.fstat(moved_current_fd)
+            if moved.st_dev != pinned_target.st_dev or moved.st_ino != pinned_target.st_ino:
+                raise DeploymentError("Current target inode changed during rollback")
+        finally:
+            os.close(moved_current_fd)
+        if _after_current_backup_hook is not None:
+            _after_current_backup_hook()
+
+        os.rename(supplied.name, "linear", src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+        os.fsync(plugins_fd)
+        restored_fd = _open_child_dir(plugins_fd, "linear", "restored rollback")
+        try:
+            moved = os.fstat(restored_fd)
+            if moved.st_dev != pinned_rollback.st_dev or moved.st_ino != pinned_rollback.st_ino:
+                raise DeploymentError("Rollback inode changed during restore")
+            if _post_restore_hook is not None:
+                _post_restore_hook(expected_parent / "linear")
+            if _tree_digest_fd(restored_fd) != rollback_digest:
+                raise DeploymentError("Restored rollback digest does not match")
+        finally:
+            os.close(restored_fd)
+        verified = True
+        return {
+            "status": "rolled_back",
+            "profile": profile,
+            "target_path": str(expected_parent / "linear"),
+            "failed_path": str(expected_parent / failed_name),
+            "rollback_digest": rollback_digest,
+        }
+    except BaseException:
+        recovering = True
+        try:
+            if failed_name is not None:
+                names = set(os.listdir(plugins_fd))
+                if failed_name in names:
+                    if "linear" in names:
+                        rejected = _unique_name(".linear-rollback-failed-")
+                        os.rename("linear", rejected, src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+                        os.fsync(plugins_fd)
+                    if _during_recovery_hook is not None:
+                        _during_recovery_hook()
+                    os.rename(failed_name, "linear", src_dir_fd=plugins_fd, dst_dir_fd=plugins_fd)
+                    os.fsync(plugins_fd)
+        finally:
+            recovering = False
+        raise
+    finally:
+        if previous_handlers:
+            _restore_signal_guards(previous_handlers)
+        _close_many(target_fd, rollback_fd)
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+        _close_many(state_fd, plugins_fd, profile_fd, profiles_fd)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    deploy = sub.add_parser("deploy")
+    deploy.add_argument("--repo-root", type=Path, required=True)
+    deploy.add_argument("--profiles-root", type=Path, required=True)
+    deploy.add_argument("--profile", required=True)
+    deploy.add_argument("--commit", required=True)
+    deploy.add_argument("--lock-timeout", type=float, default=8.0)
+    rollback = sub.add_parser("rollback")
+    rollback.add_argument("--profiles-root", type=Path, required=True)
+    rollback.add_argument("--profile", required=True)
+    rollback.add_argument("--rollback-path", type=Path, required=True)
+    rollback.add_argument("--rollback-digest", required=True)
+    rollback.add_argument("--lock-timeout", type=float, default=8.0)
+    return parser
+
+
+def _announce(payload: dict[str, str]) -> None:
+    print(json.dumps(payload, sort_keys=True), flush=True)
+    try:
+        os.fsync(sys.stdout.fileno())
+    except OSError:
+        pass
+
+
+def main() -> int:
+    args = _parser().parse_args()
+    try:
+        if args.action == "deploy":
+            result = deploy_reviewed(
+                repo_root=args.repo_root,
+                profiles_root=args.profiles_root,
+                profile=args.profile,
+                commit=args.commit,
+                lock_timeout=args.lock_timeout,
+                announce=_announce,
+            )
+        else:
+            result = rollback_exact(
+                profiles_root=args.profiles_root,
+                profile=args.profile,
+                rollback_path=args.rollback_path,
+                rollback_digest=args.rollback_digest,
+                lock_timeout=args.lock_timeout,
+            )
+    except DeploymentError as exc:
+        print(json.dumps({"status": "failed", "error": str(exc)}, sort_keys=True))
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
