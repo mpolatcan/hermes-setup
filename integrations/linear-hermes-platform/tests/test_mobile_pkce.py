@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -214,7 +215,7 @@ class MobilePkceFlowTests(unittest.TestCase):
         self.assertEqual(wrong_path, 404)
         self.assertEqual(preview_status, 200)
         self.assertEqual(preview_headers["Content-Type"], "text/html; charset=utf-8")
-        self.assertIn(b"Continue to Linear", preview_body)
+        self.assertIn("Linear ile Devam Et".encode(), preview_body)
         self.assertIsNone(state_after_preview)
         self.assertEqual(status, 303)
         self.assertTrue(headers["Location"].startswith("https://linear.app/oauth/authorize?"))
@@ -223,6 +224,35 @@ class MobilePkceFlowTests(unittest.TestCase):
         self.assertIn(b"https://linear.app/oauth/authorize?", body)
         self.assertNotIn(b"verifier-token", body)
         self.assertIsNone(server.grant)
+
+    def test_start_confirmation_is_mobile_fullscreen_and_touch_friendly(self) -> None:
+        flow = mobile_pkce.MobilePkceFlow(
+            client_id="linear-client-id-123",
+            public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+        )
+        server = mobile_pkce.create_server(
+            ("127.0.0.1", 0),
+            flow,
+            capability_factory=lambda: "mobile-capability",
+            bind_and_activate=False,
+        )
+        try:
+            status, headers, body = issue_http_request(server, server.start_path)
+        finally:
+            server.server_close()
+
+        rendered = body.decode("utf-8")
+        compact = re.sub(r"\s+", "", rendered)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn('name="viewport"', rendered)
+        self.assertIn("min-height:100svh", compact)
+        self.assertIn("min-height:56px", compact)
+        self.assertIn("width:100%", compact)
+        self.assertIn("Linear ile Devam Et", rendered)
+        self.assertRegex(compact, r"\.security-note\{[^}]*color:#8a8f98")
+        self.assertNotIn("fonts.googleapis.com", rendered)
+        self.assertIsNone(flow.state)
 
     def test_http_start_requires_exact_one_shot_capability(self) -> None:
         tokens = iter(["state-token", "verifier-token"])

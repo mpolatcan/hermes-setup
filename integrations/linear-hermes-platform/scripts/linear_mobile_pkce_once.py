@@ -181,6 +181,141 @@ class MobileCallbackServer(HTTPServer):
     terminal_error: PermissionError | None = None
 
 
+def _render_start_confirmation(action_path: str) -> bytes:
+    escaped_path = html.escape(action_path, quote=True)
+    return f"""<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Linear yetkilendirmesi</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; min-height: 100%; background: #08090a; }}
+    body {{
+      color: #f7f8f8;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      font-feature-settings: "cv01", "ss03";
+      -webkit-font-smoothing: antialiased;
+    }}
+    .auth-shell {{
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: max(24px, env(safe-area-inset-top))
+        max(20px, env(safe-area-inset-right))
+        max(24px, env(safe-area-inset-bottom))
+        max(20px, env(safe-area-inset-left));
+      background:
+        radial-gradient(circle at 50% -15%, rgba(113, 112, 255, .22), transparent 42%),
+        #08090a;
+    }}
+    .auth-card {{
+      width: min(100%, 420px);
+      padding: 32px;
+      border: 1px solid rgba(255, 255, 255, .08);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, .035);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .45), inset 0 1px rgba(255, 255, 255, .04);
+      text-align: center;
+    }}
+    .brand-mark {{
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 24px;
+      border: 1px solid rgba(255, 255, 255, .10);
+      border-radius: 15px;
+      background: linear-gradient(145deg, #7170ff, #5e6ad2);
+      box-shadow: 0 12px 30px rgba(94, 106, 210, .28);
+      font-size: 22px;
+      font-weight: 590;
+    }}
+    .eyebrow {{
+      margin: 0 0 12px;
+      color: #8a8f98;
+      font-size: 12px;
+      font-weight: 590;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(28px, 8vw, 34px);
+      font-weight: 510;
+      letter-spacing: -.7px;
+      line-height: 1.12;
+    }}
+    .description {{
+      margin: 16px auto 28px;
+      color: #8a8f98;
+      font-size: 16px;
+      line-height: 1.55;
+    }}
+    form {{ margin: 0; }}
+    .primary-action {{
+      width: 100%;
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 20px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 12px;
+      background: #5e6ad2;
+      color: #fff;
+      box-shadow: 0 12px 28px rgba(94, 106, 210, .28);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 590;
+      cursor: pointer;
+      transition: background .16s ease, transform .16s ease, box-shadow .16s ease;
+      -webkit-tap-highlight-color: transparent;
+    }}
+    .primary-action:hover {{ background: #7170ff; }}
+    .primary-action:active {{ transform: translateY(1px) scale(.995); }}
+    .primary-action:focus-visible {{
+      outline: 3px solid rgba(130, 143, 255, .45);
+      outline-offset: 3px;
+    }}
+    .arrow {{ font-size: 20px; line-height: 1; }}
+    .security-note {{
+      margin: 18px 0 0;
+      color: #8a8f98;
+      font-size: 13px;
+      line-height: 1.5;
+    }}
+    @media (max-width: 420px) {{
+      .auth-card {{ padding: 28px 22px; border-radius: 18px; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .primary-action {{ transition: none; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="brand-mark" aria-hidden="true">L</div>
+      <p class="eyebrow">Hermes × Linear</p>
+      <h1 id="auth-title">Defne’yi Linear’a bağla</h1>
+      <p class="description">Güvenli yetkilendirme akışını başlatmak için devam et.</p>
+      <form method="post" action="{escaped_path}">
+        <button class="primary-action" type="submit">
+          <span>Linear ile Devam Et</span><span class="arrow" aria-hidden="true">→</span>
+        </button>
+      </form>
+      <p class="security-note">Bu bağlantı tek kullanımlıdır ve kısa süre içinde sona erer.</p>
+    </section>
+  </main>
+</body>
+</html>""".encode("utf-8")
+
+
 class MobileCallbackHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args
@@ -255,13 +390,7 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
             if server.start_capability is None:
                 self._respond(404)
                 return
-            escaped_path = html.escape(server.start_path, quote=True)
-            body = (
-                '<!doctype html><meta charset="utf-8">'
-                "<title>Linear OAuth</title>"
-                f'<form method="post" action="{escaped_path}">'
-                '<button type="submit">Continue to Linear</button></form>'
-            ).encode("utf-8")
+            body = _render_start_confirmation(server.start_path)
             self._respond(
                 200,
                 body,
