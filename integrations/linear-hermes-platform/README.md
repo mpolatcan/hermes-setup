@@ -50,8 +50,10 @@ flowchart LR
 | `linear_client.py` | OAuth refresh and Linear GraphQL Agent Activity writes |
 | `ledger.py` | Persistent semantic-dedup ledger |
 | `plugin.yaml` | Hermes plugin manifest |
-| `scripts/install_linear_oauth.py` | PKCE S256 app-user OAuth installer |
+| `scripts/install_linear_oauth.py` | Attended localhost PKCE installer (legacy/interactive only) |
+| `scripts/linear_mobile_pkce_once.py` | One-shot mobile PKCE installer using 1Password exact-field resolution |
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
+| `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
 
 ## Credential architecture
 
@@ -74,21 +76,31 @@ The installer writes the OAuth file atomically with mode `0600`. Never log acces
 
 ## OAuth setup
 
-Configure this redirect URI in the Linear application:
+The attended localhost installer is legacy/interactive only and uses:
 
 ```text
 http://localhost:3000/oauth/callback
 ```
 
-Read the public Client ID from its approved source or 1Password reference without placing it on the clipboard, then run the installer through its non-clipboard input path. The client secret and webhook signing secret remain 1Password-backed.
+New profile rollouts use `linear_mobile_pkce_once.py` so consent can be completed from a phone without clipboard or Remote Desktop. Before running it, register the exact temporary HTTPS callback in the Linear application and route only that hostname/path through Cloudflare to the selected localhost port:
+
+```text
+https://<profile-oauth-host>/oauth/callback
+```
+
+The helper accepts only an exact `op://.../.../LINEAR_CLIENT_ID` reference; there is no raw `--client-id` or clipboard option. `OP_SERVICE_ACCOUNT_TOKEN` must be injected into the process by the profile-scoped Keychain/service-account bootstrap, never typed into chat, shell arguments, or logs.
 
 ```bash
 /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
-  integrations/linear-hermes-platform/scripts/install_linear_oauth.py \
-  --client-id "$LINEAR_CLIENT_ID"
+  integrations/linear-hermes-platform/scripts/linear_mobile_pkce_once.py \
+  --client-id-reference 'op://<profile-vault>/<profile-item>/LINEAR_CLIENT_ID' \
+  --public-base-url 'https://<profile-oauth-host>/oauth' \
+  --expected-organization-id '<organization-id>' \
+  --destination '/Users/mutlupolatcan/.hermes/profiles/<profile>/credentials/linear-oauth.json' \
+  --bind-port <temporary-local-port>
 ```
 
-The installer uses PKCE S256, opens browser consent, verifies the app-user identity, and writes the OAuth JSON file with mode `0600`. Do not pass a secret through command-line arguments; the Client ID is public metadata.
+Run that command only after the exact Linear redirect and temporary Cloudflare route have been reviewed and approved. The listener binds to `127.0.0.1`, prints a JSON-encoded one-shot `START_URL`, and shuts down after completion, denial, or timeout. The start URL contains a single-use random capability; do not log or publish it. The helper enforces PKCE S256, exact host/path gates, organization verification, profile-root and symlink confinement, atomic no-clobber installation, and mode `0600`. Remove the temporary public route after the flow. OAuth tokens, the PKCE verifier, and service-account credentials must never enter the repository, chat, clipboard, Notion, or Linear.
 
 ## Hermes configuration
 
