@@ -8,6 +8,8 @@
 flowchart LR
     phone["📱 Phone · Telegram app"]:::user --- tg(["Telegram cloud"]):::net
     tg --- mini["🖥️ Mac Mini M4<br/>native gateways · outbound only"]:::mini
+    linear["Linear Agent Sessions"]:::net --> cf["Cloudflare Named Tunnel<br/>exact webhook paths"]:::net
+    cf --> mini
     phone -. "optional · dashboard/HTTP only" .-> ts(["Tailnet · WireGuard"]):::net
     ts -. "bound to 100.x" .-> mini
     pub["🌐 Public internet / LAN"]:::danger -. blocked .- mini
@@ -23,7 +25,9 @@ Everything runs on **one machine** (the Mac Mini M4), and the primary interface 
 
 ### 8.1 Telegram needs no inbound ports and no Tailscale
 
-Each native gateway connects **outbound** to Telegram via **long polling**. Telegram's own infrastructure relays your messages, so the agents are reachable **from anywhere** — home, mobile data, traveling — **without exposing a single port** on the Mini and **without Tailscale**. This is the default and it covers ~100% of normal use. (Telegram's *webhook* mode would require an inbound HTTPS endpoint — we don't use it; long polling is what keeps the no-inbound-ports guarantee.)
+Each native gateway connects **outbound** to Telegram via **long polling**. Telegram's own infrastructure relays your messages, so Telegram access works from anywhere without an inbound Telegram port and without Tailscale. Telegram's webhook mode is not used.
+
+The production fleet has one separately approved inbound exception: Linear Agent Session webhooks. Cloudflare Named Tunnel `hermes-linear` routes each profile's exact public `/linear/webhook` path to a dedicated loopback listener (`127.0.0.1:8787–8793,8796–8797`). Unmatched paths terminate at `404`; unsigned webhook POSTs return `401`; webhook GET returns `405`. Cloudflare Access is not placed in front of these vendor callbacks because Linear cannot complete an interactive challenge. The former Tailscale Funnel sidecar is retired and is not a fallback. Tailscale remains private/admin mesh and Remote Desktop transport.
 
 Because agent-to-agent communication is now **local** (same install — see [Section 17](12-agent-comms.md)), there is also **no inbound network path between agents** to secure. The old per-gateway HTTP API + Tailscale mesh existed to let containers on two machines talk; that requirement is gone.
 
@@ -36,7 +40,7 @@ You only need Tailscale if you turn on a feature that **listens** and you want t
 
 Hermes has no auth on these by default, so any port reachable from the public internet is a complete-access port. If you enable one, **do not expose it publicly** — put it behind Tailscale. Nous Research's own guidance: *"Do not expose application ports publicly; use SSH tunnels, Caddy with HTTPS, or Tailscale."*
 
-If you never enable the dashboard or HTTP API, **skip this whole section** — Telegram is enough.
+If you never enable the dashboard or HTTP API, skip their Tailscale setup below. The approved Linear Cloudflare ingress is independent of those optional human/admin surfaces.
 
 #### 8.2.1 The web dashboard — build, multi-profile, persistence
 
@@ -118,7 +122,7 @@ If that succeeds, you have a public-facing agent — stop and fix the `host` bin
 
 ### 8.5 Risks worth knowing
 
-- **The default (Telegram only) exposes nothing** — the safest posture. Prefer it; enable listeners only when you actually want the dashboard.
+- **Telegram itself exposes no listener.** The production Linear exception is limited to nine exact Cloudflare hostname/path routes terminating on loopback; dashboard and raw HTTP API stay private.
 - **Tailscale ACLs are off by default** ("all tailnet members reach all ports"). Fine for a personal tailnet; tighten in the admin console for a shared one (work/family).
 - **Tailscale IP can change** if you remove/rejoin the tailnet. MagicDNS hostnames are more stable than raw IPs; re-bind config if it changes.
 - **Telegram bot tokens are the real perimeter.** Since Telegram is the front door, a leaked bot token = a path to that agent. Keep each token canonical in its persona-scoped 1Password item, map it only to that profile, and restrict each bot to your user ID (Sections 4, 9 and 15).

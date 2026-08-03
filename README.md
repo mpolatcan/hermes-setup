@@ -45,8 +45,8 @@ flowchart TB
     end
 
     tg <--> hermes
-    linear <--> funnel["Tailscale Funnel<br/>HMAC webhook"]:::net
-    funnel <--> Derya
+    linear <--> tunnel["Cloudflare Named Tunnel<br/>exact-path HMAC webhooks"]:::net
+    tunnel <--> hermes
     gen -. "conversational memory" .-> Honcho
     studio -. "conversational memory" .-> Honcho
     personal -. "conversational memory" .-> Honcho
@@ -162,9 +162,9 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 **🔍 Web stack — all 9 agents:** every agent searches via **TinyFish** (MCP, OAuth 2.1 PKCE — *no API key*) with **SearXNG** as automatic fallback. None is walled off from the web and search never hard-fails; an outage on either side degrades to the other. Wired uniformly by `scripts/wire-tinyfish.sh` — [docs/08](docs/08-web-search.md).
 
-### Linear control plane — Derya
+### Linear control plane — nine-profile fleet
 
-Linear is the human-visible command and discussion surface for Derya; Hermes remains the conversation and execution engine. A profile-local native platform plugin receives signed Agent Session webhooks on `127.0.0.1:8787`, converts them to Hermes `MessageEvent`s, and writes thought/response/error activities back through Linear GraphQL. Tailscale Funnel is the only public transport and proxies to loopback through an isolated userspace sidecar, leaving the App Store Tailscale session used by Remote Desktop untouched.
+Linear is the human-visible command and discussion surface; Hermes remains the conversation and execution engine. Nine profile-local native platform instances receive signed Agent Session webhooks on dedicated `127.0.0.1` ports, convert them to Hermes `MessageEvent`s, and write activities and lifecycle state back through Linear GraphQL. Cloudflare Named Tunnel is the narrow public ingress and routes only each profile's exact `/linear/webhook` path to loopback. Tailscale remains private/admin mesh and Remote Desktop transport; the retired Funnel sidecar is not a fallback.
 
 The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`. Delegation, typed follow-up prompts, responses, and Stop hard-cancel are live-tested. Source, deployment, security, rollback, and test instructions: [`integrations/linear-hermes-platform/README.md`](integrations/linear-hermes-platform/README.md).
 
@@ -318,7 +318,7 @@ flowchart TB
     classDef svc fill:#00838F,stroke:#006064,color:#fff
 ```
 
-State that lives **outside** the repo: 1Password vault items (canonical static credentials), `~/.hermes/profiles/<slug>/` (each agent's config with `op://` references, SOUL, sessions, memory, bootstrap `.op.env` where required, writable OAuth stores and local `state-snapshots/`), Derya's deployed Linear plugin + native OAuth store + SQLite ledger, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free source is in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/`, `~/.hermes/services/honcho-stack/` (Docker), verified Honcho dumps in `~/.hermes/backups/honcho/`, and launchd plists in `~/Library/LaunchAgents/ai.hermes.*`. Local quick snapshots are rollback state, not off-host disaster recovery.
+State that lives **outside** the repo: 1Password vault items (canonical static credentials), `~/.hermes/profiles/<slug>/` (each agent's config with ID-based `op://` references, SOUL, sessions, memory, writable OAuth stores, SQLite ledgers and local `state-snapshots/`), profile-scoped Keychain bootstrap identities consumed by the official 1Password SDK, the nine deployed Linear plugin copies, the deployed `~/.hermes/plugins/codex-usage` copy and profile symlinks (canonical credential-free sources are in this repo), `~/.hermes/honcho.json`, `~/.hermes/scripts/`, `~/.hermes/services/honcho-stack/` (Docker), verified Honcho dumps in `~/.hermes/backups/honcho/`, and launchd plists in `~/Library/LaunchAgents/ai.hermes.*`. Local quick snapshots are rollback state, not off-host disaster recovery.
 
 ---
 
@@ -326,6 +326,6 @@ State that lives **outside** the repo: 1Password vault items (canonical static c
 
 - **1Password is canonical.** Never put real credentials in the repository, chat, clipboard, Notion, Linear, `config.yaml`, `bot-tokens.env`, or profile `.env` files. Hermes resolves ID-based `op://` references at startup. Only the 1Password bootstrap identity and refresh/writeback OAuth stores remain local `0600` exceptions ([details](docs/15-credential-management.md)).
 - **Native = no container boundary, 9/9 shell-capable by design.** A `terminal`/`execute_code` command runs on your real Mac. All nine profiles resolve both tools; approvals are `off`. The live compensating controls are persona guardrails + credential stripping, Tirith on `general` and `researcher`, and the website blocklist on `coder` and `finance` — not a shell-restriction policy ([details](docs/09-security.md)).
-- **Telegram is the default front door** and needs no open ports (gateways connect outbound). Derya additionally accepts Linear Agent Session webhooks through a dedicated Tailscale Funnel route; the native adapter still binds only `127.0.0.1:8787` and validates HMAC, replay age, organization identity and rate limits. Don't expose the optional Hermes HTTP API/dashboard publicly ([details](docs/06-networking.md)).
-- **Services bind loopback only** — Honcho `127.0.0.1:8000`, Honcho Codex Adapter `127.0.0.1:18080`, SearXNG `127.0.0.1:8888`, Linear adapter `127.0.0.1:8787`; Funnel is the narrow authenticated exception, not a LAN listener.
+- **Telegram is the default front door** and needs no open ports (gateways connect outbound). All nine profiles additionally accept Linear Agent Session webhooks through exact-path Cloudflare Named Tunnel routes; each native adapter still binds only its dedicated `127.0.0.1` port and validates HMAC, replay age, organization identity and rate limits. Don't expose the optional Hermes HTTP API/dashboard publicly ([details](docs/06-networking.md)).
+- **Services bind loopback only** — Honcho `127.0.0.1:8000`, Honcho Codex Adapter `127.0.0.1:18080`, SearXNG `127.0.0.1:8888`, and Linear adapters `127.0.0.1:8787–8793,8796–8797`; Cloudflare is the narrow exact-path public ingress, not a LAN listener, while Tailscale remains private/admin mesh.
 - **When something breaks:** gateway-down alerting is a dumb launchd watchdog, no agent involved ([docs/10 §14.5](docs/10-operations.md)); the fleet-wide stop + key-rotation drill is [docs/09 §13.8](docs/09-security.md).

@@ -1,18 +1,15 @@
 # Linear–Hermes Native Platform Adapter
 
-A native Linear Agent Session platform plugin for Hermes Gateway. Linear is the human-facing task and discussion surface; Hermes remains the conversation and execution layer. The same adapter code runs as profile-local instances for Derya and Doruk. No separate bridge daemon or Hermes built-in webhook route is used.
+A native Linear Agent Session platform plugin for Hermes Gateway. Linear is the human-facing task and discussion surface; Hermes remains the conversation and execution layer. The same tracked adapter code runs as nine isolated profile-local instances. No separate bridge daemon or Hermes built-in webhook route is used.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     L["Linear Agent Session"]:::net -->|"HTTPS webhook + HMAC"| C["Cloudflare Named Tunnel<br/>hermes-linear"]:::net
-    C -->|"derya-linear hostname"| AD["Derya adapter<br/>127.0.0.1:8787"]:::svc
-    C -->|"doruk-linear hostname"| AR["Doruk adapter<br/>127.0.0.1:8788"]:::svc
-    AD -->|"MessageEvent"| GD["Hermes Gateway · Derya"]:::codex
-    AR -->|"MessageEvent"| GR["Hermes Gateway · Doruk"]:::codex
-    GD -->|"AgentActivity GraphQL"| L
-    GR -->|"AgentActivity GraphQL"| L
+    C -->|"nine exact host/path routes"| A["Profile-local adapters<br/>127.0.0.1:8787–8793,8796–8797"]:::svc
+    A -->|"MessageEvent"| G["Nine Hermes Gateways"]:::codex
+    G -->|"AgentActivity + lifecycle GraphQL"| L
 
     classDef net fill:#1976D2,stroke:#0D47A1,color:#fff
     classDef svc fill:#00838F,stroke:#006064,color:#fff
@@ -21,7 +18,7 @@ flowchart LR
 
 - Plugin registration: Hermes `ctx.register_platform()` API.
 - Public transport: Cloudflare Named Tunnel `hermes-linear`, managed by `ai.hermes.cloudflared`.
-- Listeners: Derya `127.0.0.1:8787`; Doruk `127.0.0.1:8788`.
+- Listeners: nine dedicated loopback ports; see the fleet table below.
 - Endpoint: `POST /linear/webhook`.
 - Health check: `GET /health`.
 - The retired Tailscale Funnel sidecar is not a fallback or rollback target. The normal Tailscale app remains private remote access only.
@@ -115,7 +112,6 @@ gateway:
         host: 127.0.0.1
         port: 8787
         webhook_path: /linear/webhook
-        credential_env_file: /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-bridge.env # optional legacy fallback
         oauth_file: /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-oauth.json
         database_path: /Users/mutlupolatcan/.hermes/profiles/general/state/linear-bridge.sqlite3
         max_body_bytes: 262144
@@ -129,7 +125,7 @@ gateway:
         data_change_events_enabled: true      # live since 0.5.0; selected data events are context/control only
         dependency_wait_enabled: true         # live; blocked sessions resume exactly once after blocker closure
         dependency_poll_seconds: 60           # recovery only; no LLM polling
-        issue_status_writeback_enabled: false # enable only after OPS-21 approval
+        issue_status_writeback_enabled: true
         issue_status_mapping:
           queued: Todo
           running: In Progress
@@ -145,8 +141,43 @@ gateway:
 The plugin source is deployed to each profile-local runtime directory:
 
 ```text
-/Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear-hermes-platform/
+/Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear/
 ```
+
+The tracked deployment allowlist is `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, and `plugin.yaml`. Copy only those files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. The current audit proves `45/45` allowlisted logic files match the tracked source and are mode `0600`; it does **not** prove exact-directory parity. Existing runtime directories also contain `__pycache__`, seven contain `tests/`, and `general/plugins/linear` is mode `0755` while the other eight are `0700`. Those are explicit follow-up drift, not silently cleaned up by this documentation change.
+
+Deployment is an approval-gated operation, not a blind fleet copy. There is intentionally no partial shell recipe here: source review, promotion, rollback and runtime restart must remain one fail-closed procedure. For one named profile:
+
+1. **Pin the reviewed source.** Record the approved commit, require a clean worktree, export the five allowlisted files from that commit (not mutable working-tree paths), and verify the reviewed SHA-256 manifest.
+2. **Confine and serialize.** Validate every source, profile, plugin and backup ancestor as a real non-symlink directory under the expected roots; acquire a profile-specific exclusive lock before creating any stage or rollback path.
+3. **Stage completely.** Create a unique same-filesystem stage directory at mode `0700`; install exactly the five allowlisted files at `0600`; reject symlinks, missing files, extra entries or hash mismatch.
+4. **Preserve rollback.** Create a unique non-existing rollback slot at mode `0700`, print its immutable coordinates before mutation, and preserve the complete previous target there.
+5. **Promote atomically.** Rename the complete staged directory into `/Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear`. A state-aware `EXIT`/`HUP`/`INT`/`TERM` handler must restore the checked rollback whenever promotion does not reach verified state, while preserving a failed candidate for audit.
+6. **Read back.** Verify target path confinement, exact five-file set, directory/file modes and source-manifest hashes after promotion. Release the lock only after this succeeds.
+7. **Restart and accept.** Mutlu sends `/restart` in only that profile's Telegram chat; then run its local `/health`, local/public `405/401/404`, signed lifecycle and ledger checks. Keep rollback until acceptance is complete.
+8. **Roll back symmetrically.** Stop or gate the named gateway, acquire the same profile lock, validate the exact printed rollback coordinates, preserve the failed current target, atomically restore the prior directory, read back its manifest/modes, release the lock, send `/restart`, and rerun acceptance. Never select “latest backup” heuristically.
+
+A future one-command deploy helper must implement and test every invariant above before replacing this explicit runbook. Creating that helper or cleaning runtime extras is separate code/runtime work and requires its own exact diff and approval.
+
+The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. The current accepted evidence is `45/45` logic hashes with all allowlisted files at `0600`; exact entry and directory-mode drift remains open as stated above.
+
+| Persona | Profile | Loopback | Public hostname |
+|---|---|---:|---|
+| Derya | `general` | `127.0.0.1:8787` | `derya-linear.mutlupolatcan.com` |
+| Doruk | `researcher` | `127.0.0.1:8788` | `doruk-linear.mutlupolatcan.com` |
+| Tuna | `assistant` | `127.0.0.1:8789` | `tuna-linear.mutlupolatcan.com` |
+| Naz | `coder` | `127.0.0.1:8790` | `naz-linear.mutlupolatcan.com` |
+| Ozan | `writer` | `127.0.0.1:8791` | `ozan-linear.mutlupolatcan.com` |
+| Sarp | `producer` | `127.0.0.1:8792` | `sarp-linear.mutlupolatcan.com` |
+| Nilay | `marketing` | `127.0.0.1:8793` | `nilay-linear.mutlupolatcan.com` |
+| Defne | `health` | `127.0.0.1:8796` | `defne-linear.mutlupolatcan.com` |
+| Murat | `finance` | `127.0.0.1:8797` | `murat-linear.mutlupolatcan.com` |
+
+`data_change_events_enabled` and `dependency_wait_enabled` are live for standard profiles. Defne and Murat keep both flags `false` to preserve the sensitive-profile execution boundary; status writeback remains enabled for their explicit Agent Session lifecycle.
+
+## Localization boundary
+
+Persona names are resolved from each installed Linear app actor at runtime and are never hard-coded in adapter logic. Protocol-facing activity and error text stays in English for consistent vendor/runtime behavior. Turkish copy is limited to the explicitly approved mobile OAuth confirmation UI and is covered by UI tests; credentials, capabilities, IDs, and machine-readable completion markers are not localized.
 
 A gateway restart is required after configuration or plugin changes. Restart only the changed profile. For Derya/general, the default safe operation is Mutlu issuing `/restart` from Telegram.
 
@@ -171,7 +202,7 @@ Execution-to-issue mapping:
 
 `ProcessingOutcome.FAILURE` and `ProcessingOutcome.CANCELLED` intentionally preserve the current issue state: a transport, model, or cancellation signal does not prove a dependency blocker or completion. Terminal human states (`completed` or `canceled`) and custom human workflow states are never overwritten. Bridge-owned transitions use `Todo(10) -> Blocked(15) -> In Progress(20) -> Done(40)`, allowing automatic `Blocked -> In Progress` resume. State names are resolved against the issue team at delivery time; IDs are not hard-coded.
 
-`issue_status_writeback_enabled` defaults to `false`. Enabling it is the separate OPS-21 approval and rollout action; the outbox code can be deployed and tested without changing issue states.
+The code default for `issue_status_writeback_enabled` remains fail-closed `false`; production explicitly enables it after the completed OPS-21 approval and fleet rollout. The outbox code can still be deployed and tested with writeback disabled in a canary configuration.
 
 
 ## Data-change events and dependency waiting
@@ -195,7 +226,7 @@ Stop and delegate-removal events cancel a pending wait. Interrupted `resuming` r
 
 ## Public ingress
 
-Cloudflare routes only the exact webhook path; unmatched paths return `404`. The active public endpoints are:
+Cloudflare routes only the exact webhook path; unmatched paths return `404`. The active public endpoints follow the fleet table above. Representative checks are:
 
 ```text
 https://derya-linear.mutlupolatcan.com/linear/webhook
@@ -205,10 +236,21 @@ https://doruk-linear.mutlupolatcan.com/linear/webhook
 Health and security checks:
 
 ```bash
-curl -fsS http://127.0.0.1:8787/health
-curl -fsS http://127.0.0.1:8788/health
-curl -sS -o /dev/null -w '%{http_code}\n' https://derya-linear.mutlupolatcan.com/linear/webhook
-curl -sS -o /dev/null -w '%{http_code}\n' https://doruk-linear.mutlupolatcan.com/linear/webhook
+personas=(derya doruk tuna naz ozan sarp nilay defne murat)
+ports=(8787 8788 8789 8790 8791 8792 8793 8796 8797)
+for index in {0..8}; do
+  persona=${personas[$index]}
+  port=${ports[$index]}
+  local_base="http://127.0.0.1:$port"
+  public_base="https://$persona-linear.mutlupolatcan.com"
+  curl -fsS "$local_base/health" >/dev/null
+  test "$(curl -sS -o /dev/null -w '%{http_code}' "$local_base/linear/webhook")" = 405
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$local_base/linear/webhook")" = 401
+  test "$(curl -sS -o /dev/null -w '%{http_code}' "$local_base/not-found")" = 404
+  test "$(curl -sS -o /dev/null -w '%{http_code}' "$public_base/linear/webhook")" = 405
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$public_base/linear/webhook")" = 401
+  test "$(curl -sS -o /dev/null -w '%{http_code}' "$public_base/not-found")" = 404
+done
 ```
 
 Unsigned webhook requests must return `401`; webhook `GET` must return `405`; hostname root paths must return `404`. Cloudflare Access is not placed in front of Linear webhooks because vendor delivery cannot complete an interactive Access challenge.
@@ -224,7 +266,7 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected result: `33/33 OK`. `/health` exposes the active `data_event_types` allowlist so a rollout can verify the accepted event contract without inspecting source files.
+Expected result: `71/71 OK` (`38` mobile PKCE + `33` native platform). `/health` exposes the active `data_event_types` allowlist so a rollout can verify the accepted event contract without inspecting source files.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
