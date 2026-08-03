@@ -29,18 +29,29 @@ SPEC.loader.exec_module(mobile_pkce)
 
 
 def issue_http_request(
-    server: object, path: str, host: str = "defne-linear.mutlupolatcan.com"
+    server: object,
+    path: str,
+    host: str = "defne-linear.mutlupolatcan.com",
+    *,
+    method: str = "GET",
+    extra_headers: tuple[tuple[str, str], ...] = (),
 ) -> tuple[int, dict[str, str], bytes]:
     client_socket, handler_socket = socket.socketpair()
     try:
+        rendered_extra_headers = "".join(
+            f"{name}: {value}\r\n" for name, value in extra_headers
+        )
         request = (
-            f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+            f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n"
+            f"{rendered_extra_headers}"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n"
         ).encode("ascii")
         client_socket.sendall(request)
         mobile_pkce.MobileCallbackHandler(
             handler_socket, ("127.0.0.1", 0), server
         )
         response = http.client.HTTPResponse(client_socket)
+        setattr(response, "_method", method)
         response.begin()
         return response.status, dict(response.getheaders()), response.read()
     finally:
@@ -177,17 +188,34 @@ class MobilePkceFlowTests(unittest.TestCase):
 
         try:
             wrong_host, _, _ = request(server.start_path, "wrong.example.com")
+            wrong_post_host, _, _ = issue_http_request(
+                server,
+                server.start_path,
+                "wrong.example.com",
+                method="POST",
+            )
             wrong_path, _, _ = request(
                 "/not-oauth", "defne-linear.mutlupolatcan.com"
             )
-            status, headers, body = request(
+            preview_status, preview_headers, preview_body = request(
                 server.start_path, "defne-linear.mutlupolatcan.com"
+            )
+            state_after_preview = flow.state
+            status, headers, body = issue_http_request(
+                server,
+                server.start_path,
+                method="POST",
             )
         finally:
             server.server_close()
 
         self.assertEqual(wrong_host, 404)
+        self.assertEqual(wrong_post_host, 404)
         self.assertEqual(wrong_path, 404)
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(preview_headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn(b"Continue to Linear", preview_body)
+        self.assertIsNone(state_after_preview)
         self.assertEqual(status, 303)
         self.assertTrue(headers["Location"].startswith("https://linear.app/oauth/authorize?"))
         self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
@@ -210,22 +238,33 @@ class MobilePkceFlowTests(unittest.TestCase):
             bind_and_activate=False,
         )
 
-        def request(path: str) -> tuple[int, str | None]:
-            status, headers, _ = issue_http_request(server, path)
+        def request(path: str, *, method: str = "GET") -> tuple[int, str | None]:
+            status, headers, _ = issue_http_request(server, path, method=method)
             return status, headers.get("Location")
 
         try:
             absent, absent_location = request("/oauth/start")
             wrong, wrong_location = request("/oauth/start/wrong-capability")
-            accepted, authorization_url = request(server.start_path)
-            replayed, replayed_location = request(server.start_path)
+            wrong_query, wrong_query_location = request(
+                f"{server.start_path}?preview=1", method="POST"
+            )
+            preview, preview_location = request(server.start_path)
+            accepted, authorization_url = request(server.start_path, method="POST")
+            replayed, replayed_location = request(server.start_path, method="POST")
+            replayed_get, replayed_get_location = request(server.start_path)
         finally:
             server.server_close()
 
-        self.assertEqual((absent, wrong, accepted, replayed), (404, 404, 303, 404))
+        self.assertEqual(
+            (absent, wrong, wrong_query, preview, accepted, replayed, replayed_get),
+            (404, 404, 404, 200, 303, 404, 404),
+        )
         self.assertIsNone(absent_location)
         self.assertIsNone(wrong_location)
+        self.assertIsNone(wrong_query_location)
+        self.assertIsNone(preview_location)
         self.assertIsNone(replayed_location)
+        self.assertIsNone(replayed_get_location)
         self.assertIsNotNone(authorization_url)
         assert authorization_url is not None
         self.assertNotIn("unguessable-capability", authorization_url)
@@ -250,6 +289,197 @@ class MobilePkceFlowTests(unittest.TestCase):
 
         self.assertEqual(status, 404)
 
+    def test_duplicate_host_headers_fail_closed_without_consuming_state(self) -> None:
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                flow = mobile_pkce.MobilePkceFlow(
+                    client_id="linear-client-id-123",
+                    public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+                )
+                server = mobile_pkce.create_server(
+                    ("127.0.0.1", 0),
+                    flow,
+                    capability_factory=lambda: "exact-capability",
+                    bind_and_activate=False,
+                )
+                try:
+                    status, _, _ = issue_http_request(
+                        server,
+                        server.start_path,
+                        method=method,
+                        extra_headers=(("Host", "wrong.example.com"),),
+                    )
+                finally:
+                    server.server_close()
+                self.assertEqual(status, 404)
+                self.assertEqual(server.start_capability, "exact-capability")
+                self.assertIsNone(flow.state)
+
+        tokens = iter(["expected-state", "server-only-verifier"])
+        flow = mobile_pkce.MobilePkceFlow(
+            client_id="linear-client-id-123",
+            public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+            token_factory=lambda: next(tokens),
+        )
+        server = mobile_pkce.create_server(
+            ("127.0.0.1", 0), flow, bind_and_activate=False
+        )
+        try:
+            self.assertEqual(issue_http_request(server, server.start_path)[0], 200)
+            self.assertEqual(
+                issue_http_request(server, server.start_path, method="POST")[0],
+                303,
+            )
+            status, _, _ = issue_http_request(
+                server,
+                "/oauth/callback?state=expected-state&code=authorization-code",
+                extra_headers=(("Host", "wrong.example.com"),),
+            )
+        finally:
+            server.server_close()
+        self.assertEqual(status, 404)
+        self.assertIsNone(server.grant)
+        self.assertFalse(flow.completed)
+        self.assertEqual(flow.state, "expected-state")
+
+    def test_noncanonical_host_case_fails_closed(self) -> None:
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                flow = mobile_pkce.MobilePkceFlow(
+                    client_id="linear-client-id-123",
+                    public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+                )
+                server = mobile_pkce.create_server(
+                    ("127.0.0.1", 0), flow, bind_and_activate=False
+                )
+                try:
+                    status, _, _ = issue_http_request(
+                        server,
+                        server.start_path,
+                        "DEFNE-LINEAR.MUTLUPOLATCAN.COM",
+                        method=method,
+                    )
+                finally:
+                    server.server_close()
+                self.assertEqual(status, 404)
+                self.assertIsNone(flow.state)
+
+    def test_double_slash_raw_targets_never_consume_capability_or_state(self) -> None:
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                flow = mobile_pkce.MobilePkceFlow(
+                    client_id="linear-client-id-123",
+                    public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+                )
+                server = mobile_pkce.create_server(
+                    ("127.0.0.1", 0),
+                    flow,
+                    capability_factory=lambda: "exact-capability",
+                    bind_and_activate=False,
+                )
+                try:
+                    status, _, _ = issue_http_request(
+                        server, "/" + server.start_path, method=method
+                    )
+                finally:
+                    server.server_close()
+                self.assertEqual(status, 404)
+                self.assertEqual(server.start_capability, "exact-capability")
+                self.assertIsNone(flow.state)
+
+        tokens = iter(["expected-state", "server-only-verifier"])
+        flow = mobile_pkce.MobilePkceFlow(
+            client_id="linear-client-id-123",
+            public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+            token_factory=lambda: next(tokens),
+        )
+        server = mobile_pkce.create_server(
+            ("127.0.0.1", 0), flow, bind_and_activate=False
+        )
+        try:
+            self.assertEqual(issue_http_request(server, server.start_path)[0], 200)
+            self.assertEqual(
+                issue_http_request(server, server.start_path, method="POST")[0],
+                303,
+            )
+            status, _, _ = issue_http_request(
+                server,
+                "//oauth/callback?state=expected-state&code=authorization-code",
+            )
+        finally:
+            server.server_close()
+        self.assertEqual(status, 404)
+        self.assertIsNone(server.grant)
+        self.assertEqual(flow.state, "expected-state")
+
+    def test_unsupported_methods_include_security_headers(self) -> None:
+        flow = mobile_pkce.MobilePkceFlow(
+            client_id="linear-client-id-123",
+            public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+        )
+        server = mobile_pkce.create_server(
+            ("127.0.0.1", 0), flow, bind_and_activate=False
+        )
+        try:
+            for method in ("HEAD", "OPTIONS"):
+                with self.subTest(method=method):
+                    status, headers, _ = issue_http_request(
+                        server, server.start_path, method=method
+                    )
+                    self.assertEqual(status, 501)
+                    self.assertEqual(headers["Cache-Control"], "no-store")
+                    self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        finally:
+            server.server_close()
+
+    def test_start_requires_exact_raw_request_target(self) -> None:
+        suffixes = ["?", ";params", "#fragment"]
+        for method in ("GET", "POST"):
+            for suffix in suffixes:
+                with self.subTest(method=method, suffix=suffix):
+                    flow = mobile_pkce.MobilePkceFlow(
+                        client_id="linear-client-id-123",
+                        public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+                    )
+                    server = mobile_pkce.create_server(
+                        ("127.0.0.1", 0),
+                        flow,
+                        capability_factory=lambda: "exact-capability",
+                        bind_and_activate=False,
+                    )
+                    try:
+                        status, _, _ = issue_http_request(
+                            server,
+                            f"{server.start_path}{suffix}",
+                            method=method,
+                        )
+                    finally:
+                        server.server_close()
+                    self.assertEqual(status, 404)
+                    self.assertEqual(server.start_capability, "exact-capability")
+                    self.assertIsNone(flow.state)
+
+        flow = mobile_pkce.MobilePkceFlow(
+            client_id="linear-client-id-123",
+            public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+        )
+        server = mobile_pkce.create_server(
+            ("127.0.0.1", 0),
+            flow,
+            capability_factory=lambda: "exact-capability",
+            bind_and_activate=False,
+        )
+        try:
+            absolute_target = (
+                "https://defne-linear.mutlupolatcan.com" + server.start_path
+            )
+            status, _, _ = issue_http_request(server, absolute_target, method="POST")
+        finally:
+            server.server_close()
+        self.assertEqual(status, 404)
+        self.assertEqual(server.start_capability, "exact-capability")
+        self.assertIsNone(flow.state)
+
     def test_http_callback_accepts_one_matching_state(self) -> None:
         tokens = iter(["expected-state", "server-only-verifier"])
         flow = mobile_pkce.MobilePkceFlow(
@@ -266,7 +496,11 @@ class MobilePkceFlowTests(unittest.TestCase):
             return status
 
         try:
-            self.assertEqual(request(server.start_path), 303)
+            self.assertEqual(request(server.start_path), 200)
+            self.assertEqual(
+                issue_http_request(server, server.start_path, method="POST")[0],
+                303,
+            )
             self.assertEqual(
                 request("/oauth/callback?state=wrong&code=ignored"), 400
             )
@@ -290,6 +524,40 @@ class MobilePkceFlowTests(unittest.TestCase):
         self.assertEqual(server.grant.code, "authorization-code")
         self.assertEqual(server.grant.verifier, "server-only-verifier")
 
+    def test_callback_rejects_raw_empty_params_and_fragment_delimiters(self) -> None:
+        malformed_targets = [
+            "/oauth/callback;?state=expected-state&code=authorization-code",
+            "/oauth/callback?state=expected-state&code=authorization-code#",
+        ]
+        for target in malformed_targets:
+            with self.subTest(target=target):
+                tokens = iter(["expected-state", "server-only-verifier"])
+                flow = mobile_pkce.MobilePkceFlow(
+                    client_id="linear-client-id-123",
+                    public_base_url="https://defne-linear.mutlupolatcan.com/oauth",
+                    token_factory=lambda: next(tokens),
+                )
+                server = mobile_pkce.create_server(
+                    ("127.0.0.1", 0), flow, bind_and_activate=False
+                )
+                try:
+                    self.assertEqual(
+                        issue_http_request(server, server.start_path)[0], 200
+                    )
+                    self.assertEqual(
+                        issue_http_request(
+                            server, server.start_path, method="POST"
+                        )[0],
+                        303,
+                    )
+                    status, _, _ = issue_http_request(server, target)
+                finally:
+                    server.server_close()
+                self.assertEqual(status, 404)
+                self.assertIsNone(server.grant)
+                self.assertFalse(flow.completed)
+                self.assertEqual(flow.state, "expected-state")
+
     def test_matching_oauth_denial_is_terminal_but_wrong_state_is_not(self) -> None:
         tokens = iter(["expected-state", "server-only-verifier"])
         flow = mobile_pkce.MobilePkceFlow(
@@ -301,7 +569,11 @@ class MobilePkceFlowTests(unittest.TestCase):
             ("127.0.0.1", 0), flow, bind_and_activate=False
         )
         try:
-            self.assertEqual(issue_http_request(server, server.start_path)[0], 303)
+            self.assertEqual(issue_http_request(server, server.start_path)[0], 200)
+            self.assertEqual(
+                issue_http_request(server, server.start_path, method="POST")[0],
+                303,
+            )
             self.assertEqual(
                 issue_http_request(
                     server, "/oauth/callback?state=wrong&error=access_denied"

@@ -185,6 +185,28 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args
 
+    def _has_exact_public_host(self, server: MobileCallbackServer) -> bool:
+        host_values = self.headers.get_all("Host", [])
+        return len(host_values) == 1 and host_values[0] == server.public_host
+
+    def _raw_request_target(self) -> str | None:
+        raw_requestline = getattr(self, "raw_requestline", b"")
+        if not isinstance(raw_requestline, bytes):
+            return None
+        try:
+            request_line = raw_requestline.decode("iso-8859-1").rstrip("\r\n")
+        except UnicodeDecodeError:
+            return None
+        parts = request_line.split(" ")
+        if len(parts) != 3 or not parts[1]:
+            return None
+        return parts[1]
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
+
     def _respond(
         self,
         status: int,
@@ -194,7 +216,6 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
         content_type: str | None = None,
     ) -> None:
         self.send_response(status)
-        self.send_header("Cache-Control", "no-store")
         if content_type is not None:
             self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -204,42 +225,64 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def _redirect_to_linear(self, server: MobileCallbackServer) -> None:
+        server.start_capability = None
+        authorization_url = server.flow.begin()
+        escaped_url = html.escape(authorization_url, quote=True)
+        body = (
+            '<!doctype html><meta charset="utf-8">'
+            "<title>Linear OAuth</title>"
+            "<p>Redirecting to Linear… "
+            f'<a href="{escaped_url}">Continue to Linear</a></p>'
+        ).encode("utf-8")
+        self._respond(
+            303,
+            body,
+            location=authorization_url,
+            content_type="text/html; charset=utf-8",
+        )
+
     def do_GET(self) -> None:
         server = self.server
         if not isinstance(server, MobileCallbackServer):
             self._respond(500)
             return
-        host = (self.headers.get("Host") or "").lower()
-        parsed = urllib.parse.urlparse(self.path)
-        if host != server.public_host:
+        if not self._has_exact_public_host(server):
             self._respond(404)
             return
-        if parsed.path == server.start_path:
-            if server.start_capability is None or parsed.query:
+        request_target = self._raw_request_target()
+        if request_target == server.start_path:
+            if server.start_capability is None:
                 self._respond(404)
                 return
-            server.start_capability = None
-            authorization_url = server.flow.begin()
-            escaped_url = html.escape(authorization_url, quote=True)
+            escaped_path = html.escape(server.start_path, quote=True)
             body = (
                 '<!doctype html><meta charset="utf-8">'
                 "<title>Linear OAuth</title>"
-                "<p>Redirecting to Linear… "
-                f'<a href="{escaped_url}">Continue to Linear</a></p>'
+                f'<form method="post" action="{escaped_path}">'
+                '<button type="submit">Continue to Linear</button></form>'
             ).encode("utf-8")
             self._respond(
-                303,
+                200,
                 body,
-                location=authorization_url,
                 content_type="text/html; charset=utf-8",
             )
             return
-        if parsed.path != server.callback_path:
+        if request_target is None:
+            self._respond(404)
+            return
+        callback_target, separator, callback_query = request_target.partition("?")
+        if (
+            callback_target != server.callback_path
+            or separator != "?"
+            or not callback_query
+            or "#" in callback_query
+        ):
             self._respond(404)
             return
         params = {
             key: values[0]
-            for key, values in urllib.parse.parse_qs(parsed.query).items()
+            for key, values in urllib.parse.parse_qs(callback_query).items()
             if values
         }
         try:
@@ -257,7 +300,18 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
         self._respond(200, b"Linear OAuth complete. You can close this page.")
 
     def do_POST(self) -> None:
-        self._respond(405)
+        server = self.server
+        if not isinstance(server, MobileCallbackServer):
+            self._respond(500)
+            return
+        if (
+            not self._has_exact_public_host(server)
+            or self._raw_request_target() != server.start_path
+            or server.start_capability is None
+        ):
+            self._respond(404)
+            return
+        self._redirect_to_linear(server)
 
 
 def create_server(
