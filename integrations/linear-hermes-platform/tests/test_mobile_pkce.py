@@ -250,6 +250,17 @@ class MobilePkceFlowTests(unittest.TestCase):
         self.assertIn("min-height:56px", compact)
         self.assertIn("width:100%", compact)
         self.assertIn("Linear ile Devam Et", rendered)
+        self.assertIn(
+            "Sunucu süresi en az bir saat olarak ayarlanır.",
+            rendered,
+        )
+        self.assertIn('class="linear-logo"', rendered)
+        self.assertIn('viewBox="0 0 24 24"', rendered)
+        self.assertIn(
+            "M2.886 4.18A11.982 11.982 0 0 1 11.99 0",
+            rendered,
+        )
+        self.assertNotIn("<img", rendered)
         self.assertRegex(compact, r"\.security-note\{[^}]*color:#8a8f98")
         self.assertNotIn("fonts.googleapis.com", rendered)
         self.assertIsNone(flow.state)
@@ -916,7 +927,7 @@ class MobilePkceCliTests(unittest.TestCase):
             args = SimpleNamespace(
                 destination=destination,
                 bind_port=8796,
-                timeout_seconds=600,
+                timeout_seconds=3600,
             )
 
             with self.assertRaises(FileExistsError):
@@ -935,7 +946,7 @@ class MobilePkceCliTests(unittest.TestCase):
                 args = SimpleNamespace(
                     destination=destination,
                     bind_port=8796,
-                    timeout_seconds=600,
+                    timeout_seconds=3600,
                 )
                 with self.assertRaises(ValueError):
                     mobile_pkce.validate_runtime_inputs(args)
@@ -946,7 +957,12 @@ class MobilePkceCliTests(unittest.TestCase):
             destination = (
                 profiles_root / "defne" / "credentials" / "linear-oauth.json"
             )
-            invalid_values = [(0, 600), (65536, 600), (8796, 29), (8796, 1801)]
+            invalid_values = [
+                (0, 3600),
+                (65536, 3600),
+                (8796, 3599),
+                (8796, 86401),
+            ]
             for bind_port, timeout_seconds in invalid_values:
                 with self.subTest(
                     bind_port=bind_port, timeout_seconds=timeout_seconds
@@ -960,6 +976,34 @@ class MobilePkceCliTests(unittest.TestCase):
                         mobile_pkce.validate_runtime_inputs(
                             args, profiles_root=profiles_root
                         )
+            for timeout_seconds in (3600, 86400):
+                with self.subTest(timeout_seconds=timeout_seconds):
+                    args = SimpleNamespace(
+                        destination=destination,
+                        bind_port=8796,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    mobile_pkce.validate_runtime_inputs(
+                        args, profiles_root=profiles_root
+                    )
+
+    def test_cli_timeout_defaults_to_one_hour(self) -> None:
+        args = mobile_pkce.parse_args(
+            [
+                "--client-id-reference",
+                "op://vault/item/LINEAR_CLIENT_ID",
+                "--public-base-url",
+                "https://defne-linear.mutlupolatcan.com/oauth",
+                "--expected-organization-id",
+                "organization-1",
+                "--destination",
+                "/tmp/profiles/defne/credentials/linear-oauth.json",
+                "--bind-port",
+                "8796",
+            ]
+        )
+
+        self.assertEqual(args.timeout_seconds, 3600)
 
     def test_run_keeps_secret_inputs_out_of_user_output(self) -> None:
         service_token = "fake-scoped-service-token"
@@ -1022,7 +1066,7 @@ class MobilePkceCliTests(unittest.TestCase):
                 expected_organization_id="organization-1",
                 destination=destination,
                 bind_port=8796,
-                timeout_seconds=600,
+                timeout_seconds=3600,
             )
             result = mobile_pkce.run(
                 args,
@@ -1112,7 +1156,7 @@ class MobilePkceCliTests(unittest.TestCase):
                 expected_organization_id="organization-1",
                 destination=destination,
                 bind_port=8796,
-                timeout_seconds=600,
+                timeout_seconds=3600,
             )
             result = mobile_pkce.run(
                 args,
@@ -1145,12 +1189,12 @@ class MobilePkceCliTests(unittest.TestCase):
                 self.handled += 1
 
         fake_server = FakeServer()
-        times = iter([0.0, 0.0, 601.0])
+        times = iter([0.0, 0.0, 3601.0])
 
         with self.assertRaises(TimeoutError):
             mobile_pkce.wait_for_grant(
                 fake_server,
-                timeout_seconds=600,
+                timeout_seconds=3600,
                 monotonic_fn=lambda: next(times),
             )
 
@@ -1178,7 +1222,7 @@ class MobilePkceCliTests(unittest.TestCase):
         with self.assertRaises(PermissionError) as raised:
             mobile_pkce.wait_for_grant(
                 fake_server,
-                timeout_seconds=600,
+                timeout_seconds=3600,
                 monotonic_fn=lambda: next(times),
             )
 

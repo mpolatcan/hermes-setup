@@ -216,23 +216,28 @@ def _render_start_confirmation(action_path: str) -> bytes:
       width: min(100%, 420px);
       padding: 32px;
       border: 1px solid rgba(255, 255, 255, .08);
-      border-radius: 22px;
-      background: rgba(255, 255, 255, .035);
-      box-shadow: 0 24px 80px rgba(0, 0, 0, .45), inset 0 1px rgba(255, 255, 255, .04);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .02);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .35), inset 0 1px rgba(255, 255, 255, .03);
       text-align: center;
     }}
     .brand-mark {{
-      width: 52px;
-      height: 52px;
+      width: 48px;
+      height: 48px;
       display: grid;
       place-items: center;
       margin: 0 auto 24px;
-      border: 1px solid rgba(255, 255, 255, .10);
-      border-radius: 15px;
-      background: linear-gradient(145deg, #7170ff, #5e6ad2);
-      box-shadow: 0 12px 30px rgba(94, 106, 210, .28);
-      font-size: 22px;
-      font-weight: 590;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 12px;
+      background: #5e6ad2;
+      color: #f7f8f8;
+      box-shadow: 0 10px 28px rgba(94, 106, 210, .24);
+    }}
+    .linear-logo {{
+      width: 26px;
+      height: 26px;
+      display: block;
+      fill: currentColor;
     }}
     .eyebrow {{
       margin: 0 0 12px;
@@ -265,7 +270,7 @@ def _render_start_confirmation(action_path: str) -> bytes:
       gap: 10px;
       padding: 14px 20px;
       border: 1px solid rgba(255, 255, 255, .12);
-      border-radius: 12px;
+      border-radius: 8px;
       background: #5e6ad2;
       color: #fff;
       box-shadow: 0 12px 28px rgba(94, 106, 210, .28);
@@ -290,7 +295,7 @@ def _render_start_confirmation(action_path: str) -> bytes:
       line-height: 1.5;
     }}
     @media (max-width: 420px) {{
-      .auth-card {{ padding: 28px 22px; border-radius: 18px; }}
+      .auth-card {{ padding: 28px 22px; border-radius: 12px; }}
     }}
     @media (prefers-reduced-motion: reduce) {{
       .primary-action {{ transition: none; }}
@@ -300,16 +305,21 @@ def _render_start_confirmation(action_path: str) -> bytes:
 <body>
   <main class="auth-shell">
     <section class="auth-card" aria-labelledby="auth-title">
-      <div class="brand-mark" aria-hidden="true">L</div>
+      <div class="brand-mark">
+        <svg class="linear-logo" role="img" viewBox="0 0 24 24" aria-label="Linear">
+          <title>Linear</title>
+          <path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"/>
+        </svg>
+      </div>
       <p class="eyebrow">Hermes × Linear</p>
-      <h1 id="auth-title">Defne’yi Linear’a bağla</h1>
+      <h1 id="auth-title">Linear’a bağlan</h1>
       <p class="description">Güvenli yetkilendirme akışını başlatmak için devam et.</p>
       <form method="post" action="{escaped_path}">
         <button class="primary-action" type="submit">
           <span>Linear ile Devam Et</span><span class="arrow" aria-hidden="true">→</span>
         </button>
       </form>
-      <p class="security-note">Bu bağlantı tek kullanımlıdır ve kısa süre içinde sona erer.</p>
+      <p class="security-note">Bu bağlantı tek kullanımlıdır. Sunucu süresi en az bir saat olarak ayarlanır.</p>
     </section>
   </main>
 </body>
@@ -706,7 +716,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--expected-organization-id", required=True)
     parser.add_argument("--destination", required=True, type=Path)
     parser.add_argument("--bind-port", required=True, type=int)
-    parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--timeout-seconds", type=int, default=3600)
     return parser.parse_args(argv)
 
 
@@ -719,8 +729,8 @@ def validate_runtime_inputs(
     validate_credential_destination(destination, profiles_root=profiles_root)
     if not 1 <= args.bind_port <= 65535:
         raise ValueError("Bind port must be between 1 and 65535")
-    if not 30 <= args.timeout_seconds <= 1800:
-        raise ValueError("Timeout must be between 30 and 1800 seconds")
+    if not 3600 <= args.timeout_seconds <= 86400:
+        raise ValueError("Timeout must be between 3600 and 86400 seconds")
 
 
 def wait_for_grant(
