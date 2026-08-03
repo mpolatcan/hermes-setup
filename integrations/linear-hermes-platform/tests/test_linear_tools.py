@@ -88,6 +88,27 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
         self.assertTrue(all(item["is_async"] for item in ctx.tools.values()))
 
+    def test_registered_read_handler_serializes_result_for_registry_contract(self):
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=self.extra(mutations=False))
+        handler = ctx.tools["linear_list_issues"]["handler"]
+        graphql = mock.MagicMock()
+        graphql.connect = mock.AsyncMock()
+        graphql.close = mock.AsyncMock()
+        mcp = mock.MagicMock()
+        mcp.connect = mock.AsyncMock()
+        mcp.close = mock.AsyncMock()
+        expected = {"content": [{"type": "text", "text": "[]"}]}
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+            mock.patch("linear_tools.execute_with_clients", new=mock.AsyncMock(return_value=expected)),
+        ):
+            result = asyncio.run(handler({"team": "Operations"}))
+        self.assertIsInstance(result, str)
+        self.assertEqual(json.loads(result), expected)
+
     def test_mutation_flag_registers_narrow_four_tool_surface(self):
         ctx = FakeContext()
         register_outbound_tools(ctx, extra=self.extra(mutations=True))
@@ -219,7 +240,7 @@ class RegistrationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(
-            result,
+            json.loads(result),
             {"error": "linear_policy_denied", "reason": "approval_policy_unsafe"},
         )
 
@@ -267,7 +288,7 @@ class RegistrationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(
-            result,
+            json.loads(result),
             {"error": "linear_policy_denied", "reason": "human_approval_required"},
         )
 
@@ -289,7 +310,7 @@ class RegistrationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(
-            result,
+            json.loads(result),
             {"error": "linear_policy_denied", "reason": "team_not_allowed"},
         )
 
@@ -315,7 +336,7 @@ class RegistrationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(
-            result,
+            json.loads(result),
             {"error": "linear_policy_denied", "reason": "approval_policy_changed"},
         )
 

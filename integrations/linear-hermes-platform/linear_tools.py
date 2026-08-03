@@ -543,7 +543,11 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                 if ledger is not None:
                     await asyncio.to_thread(ledger.close)
 
-        return handler
+        async def registry_handler(args: dict[str, Any], **kwargs) -> str:
+            result = await handler(args, **kwargs)
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+        return registry_handler
 
     mutations_enabled = (
         outbound.get("mutations_enabled") is True
