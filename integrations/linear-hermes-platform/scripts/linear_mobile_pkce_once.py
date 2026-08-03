@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import html
 import importlib
 import json
 import os
@@ -190,9 +191,12 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
         body: bytes = b"",
         *,
         location: str | None = None,
+        content_type: str | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Cache-Control", "no-store")
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         if location is not None:
             self.send_header("Location", location)
@@ -215,7 +219,20 @@ class MobileCallbackHandler(BaseHTTPRequestHandler):
                 self._respond(404)
                 return
             server.start_capability = None
-            self._respond(302, location=server.flow.begin())
+            authorization_url = server.flow.begin()
+            escaped_url = html.escape(authorization_url, quote=True)
+            body = (
+                '<!doctype html><meta charset="utf-8">'
+                "<title>Linear OAuth</title>"
+                "<p>Redirecting to Linear… "
+                f'<a href="{escaped_url}">Continue to Linear</a></p>'
+            ).encode("utf-8")
+            self._respond(
+                303,
+                body,
+                location=authorization_url,
+                content_type="text/html; charset=utf-8",
+            )
             return
         if parsed.path != server.callback_path:
             self._respond(404)

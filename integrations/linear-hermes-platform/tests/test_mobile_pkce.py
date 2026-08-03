@@ -188,8 +188,11 @@ class MobilePkceFlowTests(unittest.TestCase):
 
         self.assertEqual(wrong_host, 404)
         self.assertEqual(wrong_path, 404)
-        self.assertEqual(status, 302)
+        self.assertEqual(status, 303)
         self.assertTrue(headers["Location"].startswith("https://linear.app/oauth/authorize?"))
+        self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn(b"Continue to Linear", body)
+        self.assertIn(b"https://linear.app/oauth/authorize?", body)
         self.assertNotIn(b"verifier-token", body)
         self.assertIsNone(server.grant)
 
@@ -219,7 +222,7 @@ class MobilePkceFlowTests(unittest.TestCase):
         finally:
             server.server_close()
 
-        self.assertEqual((absent, wrong, accepted, replayed), (404, 404, 302, 404))
+        self.assertEqual((absent, wrong, accepted, replayed), (404, 404, 303, 404))
         self.assertIsNone(absent_location)
         self.assertIsNone(wrong_location)
         self.assertIsNone(replayed_location)
@@ -263,7 +266,7 @@ class MobilePkceFlowTests(unittest.TestCase):
             return status
 
         try:
-            self.assertEqual(request(server.start_path), 302)
+            self.assertEqual(request(server.start_path), 303)
             self.assertEqual(
                 request("/oauth/callback?state=wrong&code=ignored"), 400
             )
@@ -298,7 +301,7 @@ class MobilePkceFlowTests(unittest.TestCase):
             ("127.0.0.1", 0), flow, bind_and_activate=False
         )
         try:
-            self.assertEqual(issue_http_request(server, server.start_path)[0], 302)
+            self.assertEqual(issue_http_request(server, server.start_path)[0], 303)
             self.assertEqual(
                 issue_http_request(
                     server, "/oauth/callback?state=wrong&error=access_denied"
