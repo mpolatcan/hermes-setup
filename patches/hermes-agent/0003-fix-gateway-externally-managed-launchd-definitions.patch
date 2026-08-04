@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mutlu Polatcan <mutlupolatcan@gmail.com>
+Date: Tue, 4 Aug 2026 12:55:00 +0300
+Subject: [PATCH] fix(gateway): support externally managed launchd definitions
+
+---
+diff --git a/hermes_cli/gateway.py b/hermes_cli/gateway.py
+index 6e298ea..59feb1c 100644
+--- a/hermes_cli/gateway.py
++++ b/hermes_cli/gateway.py
+@@ -8,6 +8,7 @@ import asyncio
+ import json
+ import logging
+ import os
++import plistlib
+ import shlex
+ import shutil
+ import signal
+@@ -4054,13 +4055,47 @@ def generate_launchd_plist() -> str:
+ """
+ 
+ 
++_LAUNCHD_EXTERNAL_MANAGEMENT_KEY = "HermesManagedExternally"
++
++
++def launchd_plist_is_externally_managed() -> bool:
++    """Return whether the installed plist explicitly opts out of Hermes rewrites.
++
++    Custom launchd definitions may wrap Hermes with a credential bootstrap or
++    another operator-owned supervisor.  Only a real plist boolean opts out;
++    malformed files and string-like values fail closed into the normal strict
++    comparison and repair path.
++    """
++    plist_path = get_launchd_plist_path()
++    if not plist_path.is_file():
++        return False
++    try:
++        with plist_path.open("rb") as handle:
++            installed = plistlib.load(handle)
++    # plistlib's typed XML decoders raise inconsistent built-ins for malformed
++    # values (for example ValueError for integers and AttributeError for dates).
++    # This read-only classifier must fail closed regardless of parser detail.
++    except Exception:
++        return False
++    return (
++        isinstance(installed, dict)
++        and installed.get(_LAUNCHD_EXTERNAL_MANAGEMENT_KEY) is True
++        and installed.get("Label") == get_launchd_label()
++    )
++
++
+ def launchd_plist_is_current() -> bool:
+     """Check if the installed launchd plist matches the currently generated one."""
+     plist_path = get_launchd_plist_path()
+     if not plist_path.exists():
+         return False
++    if launchd_plist_is_externally_managed():
++        return True
+ 
+-    installed = plist_path.read_text(encoding="utf-8")
++    try:
++        installed = plist_path.read_text(encoding="utf-8")
++    except (OSError, UnicodeError):
++        return False
+     expected = generate_launchd_plist()
+     return _normalize_launchd_plist_for_comparison(
+         installed
+@@ -4545,7 +4580,9 @@ def launchd_status(deep: bool = False):
+ 
+     # ── Report ──
+     print(f"Launchd plist: {plist_path}")
+-    if launchd_plist_is_current():
++    if launchd_plist_is_externally_managed():
++        print("✓ Service definition is externally managed; Hermes will not rewrite it")
++    elif launchd_plist_is_current():
+         print("✓ Service definition matches the current Hermes install")
+     else:
+         print("⚠ Service definition is stale relative to the current Hermes install")
+diff --git a/tests/hermes_cli/test_gateway_service.py b/tests/hermes_cli/test_gateway_service.py
+index 7a79116..ffb85fb 100644
+--- a/tests/hermes_cli/test_gateway_service.py
++++ b/tests/hermes_cli/test_gateway_service.py
+@@ -1,6 +1,7 @@
+ """Tests for gateway service management helpers."""
+ 
+ import os
++import plistlib
+ import subprocess
+ from pathlib import Path
+ from types import SimpleNamespace
+@@ -991,6 +992,206 @@ class TestLaunchdServiceRecovery:
+         assert "stale" in output.lower()
+         assert "not loaded" in output.lower()
+ 
++    def test_external_launchd_definition_is_preserved_and_reported(
++        self, tmp_path, monkeypatch, capsys
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        original = """<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict>
++<key>Label</key><string>ai.hermes.gateway</string>
++<key>HermesManagedExternally</key><true/>
++<key>ProgramArguments</key><array><string>/bin/zsh</string><string>/safe-wrapper</string></array>
++</dict></plist>
++"""
++        plist_path.write_text(original, encoding="utf-8")
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(
++            gateway_cli,
++            "generate_launchd_plist",
++            lambda: (_ for _ in ()).throw(AssertionError("external plist must not be regenerated")),
++        )
++        monkeypatch.setattr(
++            gateway_cli.subprocess,
++            "run",
++            lambda *args, **kwargs: SimpleNamespace(
++                returncode=113, stdout="", stderr="Could not find service"
++            ),
++        )
++
++        assert gateway_cli.launchd_plist_is_current() is True
++        assert gateway_cli.refresh_launchd_plist_if_needed() is False
++        assert plist_path.read_text(encoding="utf-8") == original
++
++        gateway_cli.launchd_status()
++        output = capsys.readouterr().out.lower()
++        assert "externally managed" in output
++        assert "stale" not in output
++
++    def test_valid_binary_external_launchd_definition_is_preserved(
++        self, tmp_path, monkeypatch
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        original = plistlib.dumps(
++            {
++                "Label": gateway_cli.get_launchd_label(),
++                "HermesManagedExternally": True,
++                "ProgramArguments": ["/bin/zsh", "/safe-wrapper"],
++            },
++            fmt=plistlib.FMT_BINARY,
++        )
++        plist_path.write_bytes(original)
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(
++            gateway_cli,
++            "generate_launchd_plist",
++            lambda: (_ for _ in ()).throw(AssertionError("valid external binary plist must not be regenerated")),
++        )
++
++        assert gateway_cli.launchd_plist_is_current() is True
++        assert gateway_cli.refresh_launchd_plist_if_needed() is False
++        assert plist_path.read_bytes() == original
++
++    def test_external_launchd_definition_survives_normal_install_and_start(
++        self, tmp_path, monkeypatch, capsys
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        original = (
++            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
++            "<plist version=\"1.0\"><dict>"
++            f"<key>Label</key><string>{gateway_cli.get_launchd_label()}</string>"
++            "<key>HermesManagedExternally</key><true/>"
++            "<key>ProgramArguments</key><array>"
++            "<string>/bin/zsh</string><string>/safe-wrapper</string>"
++            "</array></dict></plist>"
++        )
++        plist_path.write_text(original, encoding="utf-8")
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(
++            gateway_cli,
++            "generate_launchd_plist",
++            lambda: (_ for _ in ()).throw(AssertionError("normal lifecycle must preserve external plist")),
++        )
++        calls = []
++        monkeypatch.setattr(
++            gateway_cli.subprocess,
++            "run",
++            lambda cmd, **kwargs: calls.append(cmd)
++            or SimpleNamespace(returncode=0, stdout="", stderr=""),
++        )
++
++        gateway_cli.launchd_install()
++        gateway_cli.launchd_start()
++
++        assert plist_path.read_text(encoding="utf-8") == original
++        service_mutations = [
++            cmd for cmd in calls if "kickstart" in cmd or "bootout" in cmd or "bootstrap" in cmd
++        ]
++        assert service_mutations == [
++            [
++                "launchctl",
++                "kickstart",
++                f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}",
++            ]
++        ]
++        assert "already installed" in capsys.readouterr().out.lower()
++
++    def test_force_install_explicitly_overwrites_external_launchd_definition(
++        self, tmp_path, monkeypatch
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        plist_path.write_text(
++            "<plist><dict>"
++            f"<key>Label</key><string>{gateway_cli.get_launchd_label()}</string>"
++            "<key>HermesManagedExternally</key><true/>"
++            "</dict></plist>",
++            encoding="utf-8",
++        )
++        replacement = "<plist><dict><key>Replacement</key><true/></dict></plist>"
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: replacement)
++        monkeypatch.setattr(
++            gateway_cli, "_refuse_temp_home_service_write", lambda definition, kind: False
++        )
++        monkeypatch.setattr(
++            gateway_cli.subprocess,
++            "run",
++            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
++        )
++
++        gateway_cli.launchd_install(force=True)
++
++        assert plist_path.read_text(encoding="utf-8") == replacement
++
++    @pytest.mark.parametrize(
++        "marker",
++        ["<false/>", "<string>true</string>", "<string>broken"],
++    )
++    def test_external_launchd_marker_fails_closed(
++        self, marker, tmp_path, monkeypatch
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        plist_path.write_text(
++            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
++            "<plist version=\"1.0\"><dict>"
++            f"<key>Label</key><string>{gateway_cli.get_launchd_label()}</string>"
++            f"<key>HermesManagedExternally</key>{marker}"
++            "</dict></plist>",
++            encoding="utf-8",
++        )
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "different")
++
++        assert gateway_cli.launchd_plist_is_current() is False
++
++    @pytest.mark.parametrize("label", [None, "ai.hermes.unrelated"])
++    def test_external_launchd_marker_requires_the_current_label(
++        self, label, tmp_path, monkeypatch
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        label_xml = f"<key>Label</key><string>{label}</string>" if label else ""
++        plist_path.write_text(
++            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
++            "<plist version=\"1.0\"><dict>"
++            f"{label_xml}<key>HermesManagedExternally</key><true/>"
++            "</dict></plist>",
++            encoding="utf-8",
++        )
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "different")
++
++        assert gateway_cli.launchd_plist_is_current() is False
++
++    @pytest.mark.parametrize(
++        "content",
++        [
++            (
++                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
++                "<plist version=\"1.0\"><dict>"
++                "<key>HermesManagedExternally</key><true/>"
++                "<key>Broken</key><integer>bad</integer>"
++                "</dict></plist>"
++            ).encode(),
++            (
++                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
++                "<plist version=\"1.0\"><dict>"
++                "<key>HermesManagedExternally</key><true/>"
++                "<key>Broken</key><date>not-a-date</date>"
++                "</dict></plist>"
++            ).encode(),
++            b"\xff\xfe\x00not-a-plist",
++        ],
++    )
++    def test_malformed_launchd_plist_fails_closed_without_crashing(
++        self, content, tmp_path, monkeypatch
++    ):
++        plist_path = tmp_path / "ai.hermes.gateway.plist"
++        plist_path.write_bytes(content)
++        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
++        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "different")
++
++        assert gateway_cli.launchd_plist_is_current() is False
++
+     def test_launchd_domain_uses_user_domain(self, monkeypatch):
+         # The user/<uid> domain (not gui/<uid>) is the one reachable from
+         # non-Aqua/background sessions on macOS 26+ (issue #23387).

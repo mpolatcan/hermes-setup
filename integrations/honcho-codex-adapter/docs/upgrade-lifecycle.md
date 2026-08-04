@@ -56,6 +56,10 @@ flowchart LR
 3. Run `scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python`.
    The stage script repeats the patch check and fails closed before compatibility
    or adapter tests if any patch remains applicable or conflicts.
+   When the externally-managed launchd patch is locally owned, also run its
+   focused marker/rewrite/status regressions and the complete gateway service
+   and status suites. A candidate gate does not authorize adding
+   `HermesManagedExternally=true` to a live plist.
 4. Review every manifest mismatch. Never regenerate the manifest merely to make the
    gate green; first inspect source and behavior changes.
 5. If the mismatch is understood and the adapter has been updated, run the test suite
@@ -66,8 +70,9 @@ flowchart LR
 7. Run the authenticated deterministic probe, all Dream envelope checks, the
    disposable effect canary, full Dream E2E, and the 11 Honcho completion-guard tests.
 8. Require zero fixture residue and preserve logs without credentials.
-9. Show the exact production launcher diff and restart command. Promotion requires a
-   fresh explicit operator approval.
+9. Show the exact production runtime pointer, launcher/plist diff, rollback coordinates,
+   and restart command. Runtime promotion, plist marker insertion, and restart are
+   separate explicit operator approvals.
 10. After promotion, verify one listener, both health endpoints, the four-route
    catalog, all nine Honcho routes, recent logs, and the deterministic probe.
 

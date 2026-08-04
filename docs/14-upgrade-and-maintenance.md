@@ -147,6 +147,14 @@ Authenticated self-hosted Honcho instances on loopback/LAN need a separate expli
 patches/hermes-agent/0002-fix-honcho-authenticated-local-env-credentials.patch
 ```
 
+The fleet's macOS LaunchAgents intentionally use a Keychain → 1Password SDK bootstrap wrapper instead of Hermes' generated direct-Python `ProgramArguments`. Exact generated-plist comparison therefore reports a false stale definition and `gateway start` can overwrite the credential boundary. The owned compatibility patch adds an explicit, fail-closed plist opt-out:
+
+```text
+patches/hermes-agent/0003-fix-gateway-externally-managed-launchd-definitions.patch
+```
+
+Only a native plist boolean `HermesManagedExternally=true` together with an exact `Label == get_launchd_label()` match opts out. Valid XML and binary plist encodings are supported by macOS and preserve the same typed contract. Missing/wrong labels, missing/false/string-valued markers, typed-malformed XML, and invalid binary/non-plist bytes remain on the strict comparison/repair path without crashing status/install/start. With a valid marker, normal status/install/start paths report the definition as externally managed and do not rewrite it; an explicit forced install remains the operator-controlled escape hatch. Before adding the marker to a live plist, preserve its SHA-256 and rollback copy, verify the wrapper's fail-closed credential bootstrap, and use a separate plist/reload/restart approval gate.
+
 After each Hermes Agent upgrade, classify all owned patches before promotion:
 
 ```bash
@@ -155,7 +163,7 @@ python3 scripts/manage_hermes_agent_patches.py \
   --mode check
 ```
 
-Only `already-applied` and `upstreamed` pass. Use explicit `--mode apply` only against the side-by-side candidate; the manager rejects dirty worktrees and reports `applicable` versus `conflict` separately. `integrations/honcho-codex-adapter/scripts/stage_hermes_upgrade.sh` repeats this check fail-closed. For the local-auth patch, run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart affected processes and require a real authenticated Honcho canary. Roll back by reversing the patch, removing `authRequired` from affected `honcho.json` files, and restarting those processes; never replace the flag with a literal `apiKey` in profile files.
+Only `already-applied` and `upstreamed` pass. Use explicit `--mode apply` only against the side-by-side candidate; the manager rejects dirty worktrees and reports `applicable` versus `conflict` separately. `integrations/honcho-codex-adapter/scripts/stage_hermes_upgrade.sh` repeats this check fail-closed. For the local-auth patch, run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart affected processes and require a real authenticated Honcho canary. For the externally-managed launchd patch, run the focused marker/rewrite/status regressions plus the complete gateway service and status suites; then validate one general-only marked plist canary without touching the other eight LaunchAgents. Roll back by restoring the previous immutable runtime pointer and the exact pre-marker plist copy, then restart only the approved profile and repeat PID, health, platform, and secret-boundary acceptance. Never replace the Honcho flag with a literal `apiKey` in profile files.
 
 Quicksilver retirement is deliberately gated:
 
