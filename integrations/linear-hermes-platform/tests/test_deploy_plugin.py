@@ -39,6 +39,19 @@ FIX_MANIFEST = {
     "outbound_policy.py": "963e81aa311766744a005c60aa96a59bb317e3a8f674168429feb3bedb04327d",
     "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
 }
+GOVERNANCE_COMMIT = "f553c648988f870aa9de1bd8b34999c74ea05c6e"
+GOVERNANCE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "7d0355e3b381dcbac2e718ca0dc0f38fcfd9946a7fe0275178de587bb570be6a",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "44f52019888b93ce0b144b09570eaf10eaba5b2593b0f11efac4fd81e6bf1189",
+    "linear_tools.py": "b02f477d6df4cfe18e93abc80ba5851dea4fc021b733ac44a18083f836da821c",
+    "mcp_client.py": "3debd6bbc7ba7b6084d8bfb39045a0ed97f7a514266896f3e59bf1c0f6f0a2e7",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "aa61090da20e580d12e0bd321b152dfc00123f478bde9c4954497f10c2d62b06",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
 
 
 def load_helper():
@@ -87,6 +100,10 @@ class DeployPluginTests(unittest.TestCase):
     def test_tool_result_contract_fix_commit_is_reviewed(self) -> None:
         helper = load_helper()
         self.assertEqual(helper.REVIEWED_MANIFESTS[FIX_COMMIT], FIX_MANIFEST)
+
+    def test_human_final_acceptance_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(helper.REVIEWED_MANIFESTS[GOVERNANCE_COMMIT], GOVERNANCE_MANIFEST)
 
     def test_deploy_promotes_exact_allowlist_and_preserves_rollback(self) -> None:
         helper = load_helper()
