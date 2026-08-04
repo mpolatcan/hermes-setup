@@ -268,6 +268,11 @@ query LinearNativeIssueState($id: String!) {
         )
         if not target or not target.get("id"):
             raise LinearAPIError(f"Linear workflow state not found: {target_state_name}")
+        target_type = str(target.get("type") or "").casefold()
+        if target_type not in {"backlog", "unstarted", "started"}:
+            raise LinearAPIError(
+                f"Refusing terminal workflow state for automated writeback: {target_state_name}"
+            )
         mutation = """
 mutation LinearNativeIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success issue { id state { id name } } }

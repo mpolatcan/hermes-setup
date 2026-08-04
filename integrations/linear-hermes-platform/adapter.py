@@ -269,9 +269,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             "queued": str(configured_states.get("queued") or "Todo"),
             "running": str(configured_states.get("running") or "In Progress"),
             "blocked": str(configured_states.get("blocked") or "Blocked"),
-            "done": str(configured_states.get("done") or "Done"),
         }
-        self._status_ranks = {"queued": 10, "blocked": 15, "running": 20, "done": 40}
+        self._status_ranks = {"queued": 10, "blocked": 15, "running": 20}
         self._invalid_signature_limiter = _PreAuthLimiter(
             int(extra.get("preauth_rate_limit_per_minute") or 120)
         )
@@ -932,21 +931,18 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if self._ledger is None or event.source is None:
             return
         await self._wait_for_thought(event.source.chat_id)
-        issue_id = str(event.metadata.get("linear_issue_id") or "")
         delivery_key = str(event.metadata.get("linear_delivery_key") or event.message_id or uuid.uuid4())
-        if outcome == ProcessingOutcome.SUCCESS:
-            self._enqueue_status(event.source.chat_id, issue_id, "done", delivery_key)
-        elif outcome == ProcessingOutcome.FAILURE:
+        if outcome == ProcessingOutcome.FAILURE:
             self._enqueue_activity(
                 event.source.chat_id,
                 "error",
                 "Hermes encountered an error while processing the task. The issue state was preserved for retry or human triage.",
                 item_key=f"error:{delivery_key}",
             )
-        # FAILURE and CANCELLED preserve the current issue state. A transport or
-        # model error is not evidence that a dependency has blocked the work.
-        # CANCELLED intentionally preserves the current issue state; cancellation
-        # is not enough evidence to classify the work as blocked or done.
+        # SUCCESS preserves the issue state for the human final-acceptance gate.
+        # The durable response activity carries the evidence Mutlu reviews before
+        # moving the issue to Done/Completed. FAILURE and CANCELLED also preserve
+        # the current state; neither is evidence for a terminal transition.
         await self._drain_outbox_once()
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

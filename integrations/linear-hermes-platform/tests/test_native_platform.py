@@ -682,7 +682,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.adapter._ledger.get_outbox_item(item_id)["state"], "delivered")
 
-    async def test_response_precedes_done_status_writeback(self):
+    async def test_success_preserves_issue_state_for_mutlu_final_acceptance(self):
         self.adapter._status_writeback_enabled = True
         self.adapter._enqueue_activity("session-status", "response", "finished")
         event = MessageEvent(
@@ -701,10 +701,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._drain_outbox_once()
         self.assertEqual(
             self.adapter._linear.calls,
-            [
-                ("session-status", "response", "finished"),
-                ("issue-20", "state", "Done"),
-            ],
+            [("session-status", "response", "finished")],
         )
 
 
@@ -771,6 +768,41 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "issue-1", "Done", 40, {"Todo": 10, "Blocked": 15, "In Progress": 20, "Done": 40}
         )
         self.assertEqual(state_id, "review-1")
+        self.assertEqual(len(calls), 1)
+
+    async def test_configured_bridge_state_must_be_authoritatively_non_terminal(self):
+        client = LinearClient("/unused")
+        calls = []
+
+        async def fake_graphql(query, variables=None):
+            calls.append(query)
+            if "LinearNativeIssueState" in query:
+                return {
+                    "issue": {
+                        "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                        "team": {
+                            "states": {
+                                "nodes": [
+                                    {
+                                        "id": "unsafe-1",
+                                        "name": "In Progress",
+                                        "type": "completed",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            raise AssertionError("terminal state mutation dispatched")
+
+        client.graphql = fake_graphql
+        with self.assertRaisesRegex(LinearAPIError, "terminal workflow state"):
+            await client.update_issue_state(
+                "issue-1",
+                "In Progress",
+                20,
+                {"Todo": 10, "Blocked": 15, "In Progress": 20},
+            )
         self.assertEqual(len(calls), 1)
 
 

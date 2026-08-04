@@ -217,23 +217,37 @@ The read-only fleet audit must report four dimensions separately: allowlisted so
 | Defne | `health` | `127.0.0.1:8796` | `defne-linear.mutlupolatcan.com` |
 | Murat | `finance` | `127.0.0.1:8797` | `murat-linear.mutlupolatcan.com` |
 
-`data_change_events_enabled` and `dependency_wait_enabled` are live for standard profiles. Defne and Murat keep both flags `false` to preserve the sensitive-profile execution boundary; status writeback remains enabled for their explicit Agent Session lifecycle.
+`data_change_events_enabled` and `dependency_wait_enabled` are live for standard profiles. Defne and Murat keep both flags `false` to preserve the sensitive-profile execution boundary; their explicit Agent Session lifecycle may write only non-terminal `Todo`, `Blocked`, and `In Progress` states. Successful completion preserves the issue state for Mutlu's final acceptance.
 
 ## Official Linear MCP outbound tools
 
-Outbound tools are independently gated from the inbound webhook adapter. With `outbound_mcp.enabled: false`, plugin 0.6.0 registers no Linear model tools and preserves the 0.5.0 runtime behavior. With `enabled: true` and `mutations_enabled: false`, only `linear_get_issue` and `linear_list_issues` are exposed. `linear_save_issue` and `linear_save_comment` appear only when the separate mutation gate is literal boolean `true`, the required approval APIs exist, and the live Hermes config is exactly `approvals.mode: manual` plus `approvals.cron_mode: deny`. Any missing, unreadable, string-valued, or less strict setting leaves the profile read-only.
+Outbound tools are independently gated from the inbound webhook adapter. With `outbound_mcp.enabled: false`, plugin 0.6.0 registers no Linear model tools and preserves the 0.5.0 runtime behavior. With `enabled: true` and `mutations_enabled: false`, only `linear_get_issue` and `linear_list_issues` are exposed. Mutation tools require both literal `mutations_enabled: true` and an explicit profile-local `allowed_mutation_tools` list. Derya/general may receive `linear_save_issue` plus `linear_save_comment` for coordination; specialist profiles may receive only `linear_save_comment`. A missing, empty, malformed, or unknown allowlist leaves the profile read-only. This gate is independent of the profile-global Hermes approval mode so ordinary terminal, cron, recovery, and coordination workflows are not forced into manual approval.
+
+This source patch alone authorizes no live profile. Profile config rollout, plugin promotion, and gateway restart are separate operator-approval gates. The reviewed target shapes are:
+
+```yaml
+# Derya / general
+outbound_mcp:
+  mutations_enabled: true
+  allowed_mutation_tools: [linear_save_issue, linear_save_comment]
+
+# Specialist profile
+outbound_mcp:
+  mutations_enabled: true
+  allowed_mutation_tools: [linear_save_comment]
+```
 
 Every call performs fail-closed profile checks:
 
 1. GraphQL and official MCP identities must resolve to the same app user.
 2. The actor and organization must match pinned profile IDs.
 3. Every issue read and mutation is checked against an authoritative GraphQL team lookup; list reads require an exact allowlisted team UUID. `get_issue(includeRelations: true)` is denied until cross-team relation filtering exists.
-4. Wrapper-only `operation_key`, `target_team_id`, and `approval_reference` fields are stripped before the vendor call.
+4. Wrapper-only `operation_key` and `target_team_id` fields are stripped before the vendor call.
 5. Unknown tools and fields are denied locally.
 6. Parent and relation issue references are independently resolved and must belong to the exact authoritative target team, even when the profile is allowed to use multiple teams.
 7. `metadata_only` profiles accept content-bearing fields only when their complete value exactly matches an approved template; actor, label, project, milestone, cycle, and state selectors must be UUIDs. Issue, comment, parent, and relation identifiers use canonical UUID/issue-reference formats; list limits are bounded integers. `priority`, `estimate`, and `dueDate` are not exposed in metadata-only mutations, and free-form list queries are denied. Pattern matching and silent redaction are intentionally not used.
 
-Mutation tools install a `pre_tool_call` hook only for early unsafe-config and approval-bypass blocking. The handler first applies local argument/team/sensitive-data policy, then independently invokes Hermes' native `request_tool_approval` API before constructing network clients, so denied model text cannot enter the prompt and another plugin's earlier hook directive cannot suppress the Linear approval gate. Registration preflights the complete tool-name set so a collision exposes no partial outbound surface. Approval mode is re-read uncached from the strict raw profile config through an `O_NOFOLLOW` descriptor with owner/mode/inode/size consistency checks; merged defaults and last-known-good cache are not accepted. Config and Hermes' canonical process/session bypass state are checked both before and after the awaited native approval. `/yolo`, `--yolo`, `HERMES_YOLO_MODE`, missing approval keys, parse/read/change failure, or any mode other than exact `manual` plus cron `deny` blocks the mutation. The approval allowlist grain is the tool name plus SHA-256 of `operation_key`; the prompt shows only preflighted profile/team metadata and omits issue/comment content. `approval_reference` is informational wrapper metadata and is never proof of approval. Bare non-interactive contexts fail closed.
+Mutation authorization is capability-based rather than prompt-based. Registration preflights the complete tool-name set so a collision exposes no partial outbound surface, then applies the profile-local mutation allowlist. Derya may create issues, add same-team relations, delegate work, and write coordination comments without per-operation approval. Specialists report follow-up needs in their issue activity; Derya owns cross-agent task routing. The model-facing `linear_save_issue` schema does not expose `state`, and local policy rejects every attempted state transition even if a caller bypasses schema validation. No agent tool can therefore move an issue to `Done` or `Completed`; Mutlu performs the final review and terminal transition in Linear. Team, actor, organization, sensitive-data, authoritative relation, and idempotency gates remain fail-closed.
 
 The mutation ledger is a dedicated `outbound_mcp.ledger_path`; both it and the inbound adapter's WAL-backed `database_path` must be present and absolute, and their canonical paths must be distinct. Invalid or missing separation leaves mutation tools unregistered, while read tools do not instantiate a ledger. It stores no issue title, description, comment body, or raw operation key. It persists only SHA-256 of the operation key, canonical payload SHA-256, profile/actor/team IDs, status, result ID/error code, and timestamps. Reusing a key with a different payload or identity is denied. A completed, proven terminal failure, or `outcome_unknown` operation is never automatically dispatched again. Mutation success requires one JSON text result containing a non-empty authoritative `id`; timeouts, lost sessions, malformed/id-less success responses, MCP/JSON-RPC errors, and HTTP `429`/`5xx` responses are outcome-unknown because the vendor may have committed before the response was lost. Business/transport mutation retries are prohibited; the sole exception is one same-request retry after shared-store token refresh on HTTP `401`. The ledger never calls `sqlite3.connect()` with a pathname: a pinned private parent-directory descriptor and cross-process flock protect secure `openat(O_NOFOLLOW)` reads, SQLite is deserialized in memory, and complete bytes are persisted with private temp creation, `fsync`, and same-directory `renameat`. Exact canonical SQL, `table_xinfo`, PK index/xinfo, foreign keys, triggers, status semantics, integrity, owner, and modes fail closed.
 
@@ -251,7 +265,7 @@ The normal acknowledgment uses the installed Linear app actor name (`Derya`, `Do
 
 All outbound `agentActivityCreate` and `issueUpdate` operations are inserted into the same SQLite database before network delivery. The outbox row contains a stable ID, Agent Session aggregate key, per-session sequence, operation, JSON payload, state (`pending`, `in_flight`, `delivered`, or `dead`), attempt count, next-attempt time, and delivery/error timestamps.
 
-Delivery is ordered per Agent Session. A later `Done` write cannot overtake the response activity that proves completion. Stale `in_flight` rows are reclaimed after restart. Retryable failures use exponential backoff capped by `outbox_max_delay_seconds`; Linear `retry_after` wins when supplied. Non-retryable failures become dead letters and appear in `/health` as `status: degraded` without turning the liveness endpoint into a restart loop.
+Delivery is ordered per Agent Session. The response activity containing completion evidence is persisted before the human review gate. Stale `in_flight` rows are reclaimed after restart. Retryable failures use exponential backoff capped by `outbox_max_delay_seconds`; Linear `retry_after` wins when supplied. Non-retryable failures become dead letters and appear in `/health` as `status: degraded` without turning the liveness endpoint into a restart loop.
 
 Activity creates use the client-generated `AgentActivityCreateInput.id`, so replay after an ambiguous timeout reuses the same Linear entity ID. Issue state assignment is naturally idempotent. Producer retries use stable outbox IDs for thought, error, and status operations; normal responses receive one persisted UUID when accepted.
 
@@ -262,9 +276,8 @@ Execution-to-issue mapping:
 | `queued` | `Todo` | Accepted `created` Agent Session event |
 | `running` | `In Progress` | Thought acknowledgement persisted |
 | `blocked` | `Blocked` | An unresolved Linear `blocks` relation is durably recorded |
-| `done` | `Done` | Successful response durably accepted |
 
-`ProcessingOutcome.FAILURE` and `ProcessingOutcome.CANCELLED` intentionally preserve the current issue state: a transport, model, or cancellation signal does not prove a dependency blocker or completion. Terminal human states (`completed` or `canceled`) and custom human workflow states are never overwritten. Bridge-owned transitions use `Todo(10) -> Blocked(15) -> In Progress(20) -> Done(40)`, allowing automatic `Blocked -> In Progress` resume. State names are resolved against the issue team at delivery time; IDs are not hard-coded.
+`ProcessingOutcome.SUCCESS`, `ProcessingOutcome.FAILURE`, and `ProcessingOutcome.CANCELLED` preserve the current issue state. A successful run produces durable response evidence for Mutlu's review but is not itself authority to close the issue. Terminal human states (`completed` or `canceled`) and custom human workflow states are never overwritten. Bridge-owned transitions are limited to `Todo(10) -> Blocked(15) -> In Progress(20)`, allowing automatic `Blocked -> In Progress` resume. State names are resolved against the issue team at delivery time; IDs are not hard-coded. The resolved target's authoritative Linear type must be `backlog`, `unstarted`, or `started`; `completed`, `canceled`, missing, and unknown types fail closed before `issueUpdate`.
 
 The code default for `issue_status_writeback_enabled` remains fail-closed `false`; production explicitly enables it after the completed OPS-21 approval and fleet rollout. The outbox code can still be deployed and tested with writeback disabled in a canary configuration.
 
@@ -330,9 +343,9 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected source result for 0.6.0: `166/166 OK`. `/health` exposes the active inbound `data_event_types` allowlist so a rollout can verify that accepted event contract without inspecting source files.
+Expected source result for 0.6.0: `181/181 OK`. `/health` exposes the active inbound `data_event_types` allowlist so a rollout can verify that accepted event contract without inspecting source files.
 
-Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry, actor/team/content-policy denial, operation-key replay, payload-content minimization, tool registration gates, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, response-before-Done ordering, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
+Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry, actor/team/content-policy denial, operation-key replay, payload-content minimization, profile mutation capability registration, model-facing state-transition denial, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, success-state preservation for Mutlu's final acceptance, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
 ## Live acceptance criteria
 
@@ -350,7 +363,7 @@ Coverage includes invalid signatures, replay attempts, organization mismatch, se
 
 ## Rollback
 
-1. For an outbound-only rollback, set `outbound_mcp.mutations_enabled: false` first, then `outbound_mcp.enabled: false`; this removes model tools without disabling inbound Agent Sessions. Do not delete `linear_mcp_operations` rows, especially `outcome_unknown` evidence.
+1. For an outbound-only rollback, clear `outbound_mcp.allowed_mutation_tools`, then set `outbound_mcp.mutations_enabled: false`, then `outbound_mcp.enabled: false`; this removes model tools without disabling inbound Agent Sessions. Do not delete `linear_mcp_operations` rows, especially `outcome_unknown` evidence.
 2. Set `dependency_wait_enabled: false`, `data_change_events_enabled: false`, and `issue_status_writeback_enabled: false`; queued evidence remains in SQLite.
 3. Disable the added Issue/Comment/Label/Project/ProjectUpdate data-change categories in the Linear application, retaining Agent Session events if the base canary remains healthy.
 4. If one adapter instance must roll back, disable only that persona's Linear application webhook and Cloudflare hostname route; do not stop the shared connector while another persona remains live.

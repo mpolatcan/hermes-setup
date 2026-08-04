@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import io
 import json
 import os
 import stat
@@ -36,7 +34,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     from outbound_ledger import OutboundLedger, OutboundLedgerError
     from outbound_policy import OutboundPolicy
 
-WRAPPER_FIELDS = frozenset({"operation_key", "target_team_id", "approval_reference"})
+WRAPPER_FIELDS = frozenset({"operation_key", "target_team_id"})
 TOOL_MAP = {
     "linear_get_issue": ("get_issue", False),
     "linear_list_issues": ("list_issues", False),
@@ -85,7 +83,6 @@ SAVE_ISSUE_SCHEMA = {
             "title": {"type": "string"},
             "team": {"type": "string"},
             "description": {"type": "string"},
-            "state": {"type": "string"},
             "priority": {"type": "number"},
             "assignee": {"type": "string"},
             "delegate": {"type": "string"},
@@ -102,7 +99,6 @@ SAVE_ISSUE_SCHEMA = {
             "removeBlocks": {"type": "array", "items": {"type": "string"}},
             "removeBlockedBy": {"type": "array", "items": {"type": "string"}},
             "removeRelatedTo": {"type": "array", "items": {"type": "string"}},
-            "approval_reference": {"type": "string"},
         },
         "required": ["operation_key", "target_team_id"],
         "additionalProperties": False,
@@ -119,7 +115,6 @@ SAVE_COMMENT_SCHEMA = {
             "id": {"type": "string"},
             "issueId": {"type": "string"},
             "body": {"type": "string"},
-            "approval_reference": {"type": "string"},
         },
         "required": ["operation_key", "target_team_id", "issueId", "body"],
         "additionalProperties": False,
@@ -316,84 +311,6 @@ def _policy_from_outbound(outbound: dict[str, Any]) -> OutboundPolicy:
     )
 
 
-def _approval_runtime_supported() -> bool:
-    try:
-        from hermes_cli.plugins import resolve_pre_tool_block
-        from tools.approval import request_tool_approval
-    except (ImportError, AttributeError):
-        return False
-    return callable(resolve_pre_tool_block) and callable(request_tool_approval)
-
-
-def _human_approval_config_safe() -> bool:
-    try:
-        from hermes_cli.config import get_config_path
-        from utils import fast_safe_load
-
-        config_path = Path(get_config_path())
-        path_stat = config_path.lstat()
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(config_path, flags)
-        try:
-            opened_stat = os.fstat(fd)
-            if (
-                not stat.S_ISREG(opened_stat.st_mode)
-                or opened_stat.st_uid != os.getuid()
-                or opened_stat.st_mode & 0o022
-                or (opened_stat.st_dev, opened_stat.st_ino)
-                != (path_stat.st_dev, path_stat.st_ino)
-                or opened_stat.st_size > 1_048_576
-            ):
-                return False
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = os.read(fd, 65_536)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > 1_048_576:
-                    return False
-                chunks.append(chunk)
-            final_stat = os.fstat(fd)
-        finally:
-            os.close(fd)
-        final_path_stat = config_path.lstat()
-        identity = (opened_stat.st_dev, opened_stat.st_ino)
-        if (
-            identity != (final_stat.st_dev, final_stat.st_ino)
-            or identity != (final_path_stat.st_dev, final_path_stat.st_ino)
-            or opened_stat.st_mtime_ns != final_stat.st_mtime_ns
-            or opened_stat.st_size != final_stat.st_size
-            or total != final_stat.st_size
-        ):
-            return False
-        config = fast_safe_load(io.StringIO(b"".join(chunks).decode("utf-8"))) or {}
-    except Exception:
-        return False
-    if not isinstance(config, dict):
-        return False
-    approvals = config.get("approvals") or {}
-    if not isinstance(approvals, dict):
-        return False
-    if "mode" not in approvals or "cron_mode" not in approvals:
-        return False
-    mode = approvals.get("mode")
-    cron_mode = approvals.get("cron_mode")
-    return mode == "manual" and cron_mode == "deny"
-
-
-def _approval_bypass_active() -> bool:
-    try:
-        from tools.approval import is_approval_bypass_active
-    except (ImportError, AttributeError):
-        return True
-    try:
-        return bool(is_approval_bypass_active())
-    except Exception:
-        return True
-
-
 def _tool_names_available(names: list[str]) -> bool:
     try:
         from tools.registry import registry
@@ -403,46 +320,6 @@ def _tool_names_available(names: list[str]) -> bool:
         return all(registry.get_entry(name) is None for name in names)
     except Exception:
         return False
-
-
-def _approval_request_parts(
-    *, tool_name: str, profile_id: str, args: dict[str, Any]
-) -> tuple[str, str]:
-    operation_key = str(args.get("operation_key") or "missing-operation-key")
-    target_team_id = str(args.get("target_team_id") or "unspecified-team")
-    operation_hash = hashlib.sha256(operation_key.encode("utf-8")).hexdigest()
-    message = (
-        f"Approve {tool_name} for profile {profile_id} and team {target_team_id}. "
-        "Content is intentionally hidden."
-    )
-    return message, f"linear-mcp:{tool_name}:{operation_hash}"
-
-
-def _request_tool_approval_sync(tool_name: str, message: str, rule_key: str) -> dict[str, Any]:
-    from tools.approval import request_tool_approval
-
-    result = request_tool_approval(tool_name, message, rule_key=rule_key)
-    return result if isinstance(result, dict) else {}
-
-
-async def _request_mutation_approval(
-    *, tool_name: str, profile_id: str, args: dict[str, Any]
-) -> bool:
-    message, rule_key = _approval_request_parts(
-        tool_name=tool_name,
-        profile_id=profile_id,
-        args=args,
-    )
-    try:
-        result = await asyncio.to_thread(
-            _request_tool_approval_sync,
-            tool_name,
-            message,
-            rule_key,
-        )
-    except Exception:
-        return False
-    return result.get("approved") is True
 
 
 def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None:
@@ -497,25 +374,6 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                         "error": "linear_policy_denied",
                         "reason": preflight.reason,
                     }
-                if not _human_approval_config_safe() or _approval_bypass_active():
-                    return {
-                        "error": "linear_policy_denied",
-                        "reason": "approval_policy_unsafe",
-                    }
-                if not await _request_mutation_approval(
-                    tool_name=model_tool,
-                    profile_id=profile_id,
-                    args=safe_args,
-                ):
-                    return {
-                        "error": "linear_policy_denied",
-                        "reason": "human_approval_required",
-                    }
-                if not _human_approval_config_safe() or _approval_bypass_active():
-                    return {
-                        "error": "linear_policy_denied",
-                        "reason": "approval_policy_changed",
-                    }
             store = LinearOAuthStore(oauth_file)
             graphql = LinearClient(oauth_store=store)
             mcp = LinearMCPClient(store, endpoint=endpoint)
@@ -549,41 +407,29 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
 
         return registry_handler
 
+    configured_mutation_tools = outbound.get("allowed_mutation_tools")
+    allowed_mutation_tools: list[str] = []
+    known_mutation_tools = {"linear_save_issue", "linear_save_comment"}
+    if (
+        isinstance(configured_mutation_tools, list)
+        and all(isinstance(name, str) for name in configured_mutation_tools)
+        and set(configured_mutation_tools) <= known_mutation_tools
+    ):
+        allowed_mutation_tools = [
+            name
+            for name in ("linear_save_issue", "linear_save_comment")
+            if name in configured_mutation_tools
+        ]
     mutations_enabled = (
         outbound.get("mutations_enabled") is True
         and ledger_path_safe
-        and _approval_runtime_supported()
-        and _human_approval_config_safe()
+        and bool(allowed_mutation_tools)
     )
     names = ["linear_get_issue", "linear_list_issues"]
     if mutations_enabled:
-        names.extend(["linear_save_issue", "linear_save_comment"])
+        names.extend(allowed_mutation_tools)
     if not _tool_names_available(names):
         return
-    if mutations_enabled:
-        def require_mutation_approval(
-            tool_name: str = "",
-            args: dict[str, Any] | None = None,
-            **_kwargs,
-        ) -> dict[str, str] | None:
-            if tool_name not in {"linear_save_issue", "linear_save_comment"}:
-                return None
-            if not _human_approval_config_safe():
-                return {
-                    "action": "block",
-                    "message": "Linear mutation approval policy is not safely configured.",
-                }
-            if _approval_bypass_active():
-                return {
-                    "action": "block",
-                    "message": "Linear mutations are disabled while approval bypass is active.",
-                }
-            return None
-
-        # Register the gate before exposing either mutation tool. If hook
-        # registration fails, no mutation tool can remain partially exposed.
-        ctx.register_hook("pre_tool_call", require_mutation_approval)
-
     for name in names:
         vendor_tool, mutation = TOOL_MAP[name]
         ctx.register_tool(

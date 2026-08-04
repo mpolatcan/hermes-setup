@@ -38,12 +38,9 @@ SAVE_ISSUE_FIELDS = frozenset(
         "removeRelatedTo",
         "target_team_id",
         "operation_key",
-        "approval_reference",
     }
 )
-SAVE_COMMENT_FIELDS = frozenset(
-    {"id", "issueId", "body", "target_team_id", "operation_key", "approval_reference"}
-)
+SAVE_COMMENT_FIELDS = frozenset({"id", "issueId", "body", "target_team_id", "operation_key"})
 SENSITIVE_TEXT_FIELDS = frozenset({"title", "description", "body", "comment"})
 METADATA_UUID_ONLY_FIELDS = frozenset(
     {"state", "assignee", "delegate", "labels", "label", "project", "milestone", "cycle"}
@@ -167,6 +164,8 @@ class OutboundPolicy:
                 return PolicyDecision("deny", "team_argument_required")
             if requested_team and requested_team != target_team_id:
                 return PolicyDecision("deny", "team_argument_mismatch")
+            if "state" in arguments:
+                return PolicyDecision("deny", "state_transition_not_allowed")
             priority = arguments.get("priority")
             if priority is not None and (
                 isinstance(priority, bool)

@@ -56,6 +56,20 @@ class OutboundPolicyTests(unittest.TestCase):
         )
         self.assertEqual((decision.action, decision.reason), ("deny", "team_argument_mismatch"))
 
+    def test_model_facing_issue_tool_cannot_change_any_workflow_state(self):
+        for state in ("Done", "Completed", "In Progress", "state-uuid"):
+            with self.subTest(state=state):
+                decision = self.standard().evaluate(
+                    "save_issue",
+                    {"id": "OPS-1", "target_team_id": "ops-1", "state": state},
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("deny", "state_transition_not_allowed"),
+                )
+
     def test_priority_requires_linear_integer_semantics(self):
         policy = self.standard()
         base = {"id": "OPS-1", "target_team_id": "ops-1"}

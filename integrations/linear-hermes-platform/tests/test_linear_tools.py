@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sys
 import tempfile
@@ -14,12 +13,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from linear_tools import (  # noqa: E402
-    _human_approval_config_safe,
-    _request_mutation_approval,
-    execute_with_clients,
-    register_outbound_tools,
-)
+from linear_tools import execute_with_clients, register_outbound_tools  # noqa: E402
 from mcp_client import LinearMCPToolError  # noqa: E402
 from outbound_ledger import OperationReservation, OutboundLedger  # noqa: E402
 from outbound_policy import OutboundPolicy  # noqa: E402
@@ -43,31 +37,16 @@ class FakeContext:
 
 
 class RegistrationTests(unittest.TestCase):
-    def setUp(self):
-        self.approval_config = mock.patch(
-            "linear_tools._human_approval_config_safe",
-            create=True,
-            return_value=True,
-        )
-        self.approval_config.start()
-        self.approval_bypass = mock.patch(
-            "linear_tools._approval_bypass_active",
-            create=True,
-            return_value=False,
-        )
-        self.approval_bypass.start()
-
-    def tearDown(self):
-        self.approval_bypass.stop()
-        self.approval_config.stop()
-
-    def extra(self, *, enabled=True, mutations=False):
+    def extra(self, *, enabled=True, mutations=False, allowed_mutation_tools=None):
+        if allowed_mutation_tools is None:
+            allowed_mutation_tools = ["linear_save_issue", "linear_save_comment"]
         return {
             "oauth_file": "/tmp/credential",
             "database_path": "/tmp/database",
             "outbound_mcp": {
                 "enabled": enabled,
                 "mutations_enabled": mutations,
+                "allowed_mutation_tools": allowed_mutation_tools,
                 "ledger_path": "/tmp/outbound-linear-mcp.sqlite3",
                 "endpoint": "https://mcp.linear.app/mcp",
                 "expected_actor_id": "actor-1",
@@ -116,29 +95,44 @@ class RegistrationTests(unittest.TestCase):
             set(ctx.tools),
             {"linear_get_issue", "linear_list_issues", "linear_save_issue", "linear_save_comment"},
         )
-        self.assertEqual(
-            ctx.tools["linear_save_issue"]["schema"]["parameters"]["properties"]["priority"],
-            {"type": "number"},
+        issue_properties = ctx.tools["linear_save_issue"]["schema"]["parameters"]["properties"]
+        self.assertEqual(issue_properties["priority"], {"type": "number"})
+        self.assertNotIn("state", issue_properties)
+        self.assertNotIn("approval_reference", issue_properties)
+        self.assertNotIn(
+            "approval_reference",
+            ctx.tools["linear_save_comment"]["schema"]["parameters"]["properties"],
         )
-        directive = ctx.hooks["pre_tool_call"](
-            tool_name="linear_save_comment",
-            args={
-                "operation_key": "op-approval-1",
-                "target_team_id": "ops-1",
-                "body": "must-not-appear-in-approval",
-            },
-        )
-        self.assertIsNone(directive)
-        self.assertEqual(ctx.events[0], ("hook", "pre_tool_call"))
+        self.assertEqual(ctx.hooks, {})
+        self.assertEqual(ctx.events[0], ("tool", "linear_get_issue"))
 
-    def test_read_tool_does_not_request_approval(self):
+    def test_mutation_tools_require_an_explicit_per_profile_allowlist(self):
+        ctx = FakeContext()
+        extra = self.extra(mutations=True)
+        del extra["outbound_mcp"]["allowed_mutation_tools"]
+        register_outbound_tools(ctx, extra=extra)
+        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
+    def test_malformed_or_unknown_mutation_allowlists_fail_closed(self):
+        cases = (
+            "linear_save_issue",
+            ["linear_save_issue", 1],
+            ["linear_save_issue", "linear_delete_issue"],
+            ["linear_delete_issue"],
+            [],
+        )
+        for allowed_mutation_tools in cases:
+            with self.subTest(allowed_mutation_tools=allowed_mutation_tools):
+                ctx = FakeContext()
+                extra = self.extra(mutations=True)
+                extra["outbound_mcp"]["allowed_mutation_tools"] = allowed_mutation_tools
+                register_outbound_tools(ctx, extra=extra)
+                self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
+    def test_registration_does_not_add_global_approval_hooks(self):
         ctx = FakeContext()
         register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        directive = ctx.hooks["pre_tool_call"](
-            tool_name="linear_get_issue",
-            args={"id": "OPS-1"},
-        )
-        self.assertIsNone(directive)
+        self.assertEqual(ctx.hooks, {})
 
     def test_string_false_does_not_enable_tools_or_mutations(self):
         ctx = FakeContext()
@@ -153,11 +147,19 @@ class RegistrationTests(unittest.TestCase):
         register_outbound_tools(ctx, extra=extra)
         self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
 
-    def test_unsupported_approval_runtime_never_registers_mutations(self):
+    def test_profile_allowlist_can_expose_comment_without_issue_coordination(self):
         ctx = FakeContext()
-        with mock.patch("linear_tools._approval_runtime_supported", return_value=False):
-            register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+        register_outbound_tools(
+            ctx,
+            extra=self.extra(
+                mutations=True,
+                allowed_mutation_tools=["linear_save_comment"],
+            ),
+        )
+        self.assertEqual(
+            set(ctx.tools),
+            {"linear_get_issue", "linear_list_issues", "linear_save_comment"},
+        )
         self.assertEqual(ctx.hooks, {})
 
     def test_tool_name_collision_registers_no_outbound_surface(self):
@@ -167,195 +169,14 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(ctx.tools, {})
         self.assertEqual(ctx.hooks, {})
 
-    def test_non_manual_approval_config_never_registers_mutations(self):
+    def test_non_manual_global_approval_mode_does_not_disable_allowlisted_mutations(self):
         ctx = FakeContext()
-        with mock.patch("linear_tools._human_approval_config_safe", return_value=False):
-            register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+        register_outbound_tools(ctx, extra=self.extra(mutations=True))
+        self.assertEqual(
+            set(ctx.tools),
+            {"linear_get_issue", "linear_list_issues", "linear_save_issue", "linear_save_comment"},
+        )
         self.assertEqual(ctx.hooks, {})
-
-    def test_approval_config_requires_explicit_manual_and_cron_deny(self):
-        unsafe = [
-            {},
-            {"approvals": {}},
-            {"approvals": {"mode": "manual"}},
-            {"approvals": {"cron_mode": "deny"}},
-            {"approvals": {"mode": "smart", "cron_mode": "deny"}},
-            {"approvals": {"mode": "manual", "cron_mode": "approve"}},
-        ]
-        with tempfile.TemporaryDirectory() as tempdir:
-            config_path = Path(tempdir) / "config.yaml"
-            for config in unsafe:
-                config_path.write_text(json.dumps(config), encoding="utf-8")
-                config_path.chmod(0o600)
-                with (
-                    self.subTest(config=config),
-                    mock.patch("hermes_cli.config.get_config_path", return_value=config_path),
-                ):
-                    self.assertFalse(_human_approval_config_safe())
-            config_path.write_text(
-                json.dumps({"approvals": {"mode": "manual", "cron_mode": "deny"}}),
-                encoding="utf-8",
-            )
-            config_path.chmod(0o600)
-            with mock.patch("hermes_cli.config.get_config_path", return_value=config_path):
-                self.assertTrue(_human_approval_config_safe())
-
-    def test_registered_hook_blocks_live_config_or_yolo_bypass(self):
-        ctx = FakeContext()
-        register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        hook = ctx.hooks["pre_tool_call"]
-        with mock.patch("linear_tools._human_approval_config_safe", return_value=False):
-            self.assertEqual(
-                hook(tool_name="linear_save_issue", args={}),
-                {
-                    "action": "block",
-                    "message": "Linear mutation approval policy is not safely configured.",
-                },
-            )
-        with mock.patch("linear_tools._approval_bypass_active", return_value=True):
-            self.assertEqual(
-                hook(tool_name="linear_save_issue", args={}),
-                {
-                    "action": "block",
-                    "message": "Linear mutations are disabled while approval bypass is active.",
-                },
-            )
-
-    def test_mutation_handler_rechecks_approval_policy_before_client_creation(self):
-        ctx = FakeContext()
-        register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        handler = ctx.tools["linear_save_issue"]["handler"]
-        with (
-            mock.patch("linear_tools._human_approval_config_safe", return_value=False),
-            mock.patch("linear_tools.LinearOAuthStore", side_effect=AssertionError("client created")),
-        ):
-            result = asyncio.run(
-                handler(
-                    {
-                        "operation_key": "op-handler-gate",
-                        "target_team_id": "ops-1",
-                        "id": "OPS-1",
-                    }
-                )
-            )
-        self.assertEqual(
-            json.loads(result),
-            {"error": "linear_policy_denied", "reason": "approval_policy_unsafe"},
-        )
-
-    def test_handler_native_approval_uses_hashed_operation_key_and_hides_content(self):
-        with mock.patch(
-            "linear_tools._request_tool_approval_sync",
-            return_value={"approved": True},
-        ) as approval:
-            allowed = asyncio.run(
-                _request_mutation_approval(
-                    tool_name="linear_save_comment",
-                    profile_id="general",
-                    args={
-                        "operation_key": "op-approval-1",
-                        "target_team_id": "ops-1",
-                        "body": "must-not-appear-in-approval",
-                    },
-                )
-            )
-        self.assertTrue(allowed)
-        tool_name, message, rule_key = approval.call_args.args
-        self.assertEqual(tool_name, "linear_save_comment")
-        self.assertNotIn("must-not-appear", message)
-        self.assertEqual(
-            rule_key,
-            "linear-mcp:linear_save_comment:"
-            + hashlib.sha256(b"op-approval-1").hexdigest(),
-        )
-
-    def test_handler_denies_when_native_approval_is_not_attested(self):
-        ctx = FakeContext()
-        register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        handler = ctx.tools["linear_save_issue"]["handler"]
-        with (
-            mock.patch("linear_tools._request_mutation_approval", return_value=False),
-            mock.patch("linear_tools.LinearOAuthStore", side_effect=AssertionError("client created")),
-        ):
-            result = asyncio.run(
-                handler(
-                    {
-                        "operation_key": "op-handler-gate",
-                        "target_team_id": "ops-1",
-                        "id": "OPS-1",
-                    }
-                )
-            )
-        self.assertEqual(
-            json.loads(result),
-            {"error": "linear_policy_denied", "reason": "human_approval_required"},
-        )
-
-    def test_handler_preflights_team_before_approval_prompt(self):
-        ctx = FakeContext()
-        register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        handler = ctx.tools["linear_save_issue"]["handler"]
-        with mock.patch(
-            "linear_tools._request_mutation_approval",
-            side_effect=AssertionError("approval requested"),
-        ):
-            result = asyncio.run(
-                handler(
-                    {
-                        "operation_key": "op-preflight",
-                        "target_team_id": "private-health-text",
-                        "id": "OPS-1",
-                    }
-                )
-            )
-        self.assertEqual(
-            json.loads(result),
-            {"error": "linear_policy_denied", "reason": "team_not_allowed"},
-        )
-
-    def test_handler_rechecks_config_after_native_approval(self):
-        ctx = FakeContext()
-        register_outbound_tools(ctx, extra=self.extra(mutations=True))
-        handler = ctx.tools["linear_save_issue"]["handler"]
-        with (
-            mock.patch(
-                "linear_tools._human_approval_config_safe",
-                side_effect=[True, False],
-            ),
-            mock.patch("linear_tools._request_mutation_approval", return_value=True),
-            mock.patch("linear_tools.LinearOAuthStore", side_effect=AssertionError("client created")),
-        ):
-            result = asyncio.run(
-                handler(
-                    {
-                        "operation_key": "op-post-approval",
-                        "target_team_id": "ops-1",
-                        "id": "OPS-1",
-                    }
-                )
-            )
-        self.assertEqual(
-            json.loads(result),
-            {"error": "linear_policy_denied", "reason": "approval_policy_changed"},
-        )
-
-    def test_approval_config_ignores_cached_raw_config(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-            config_path = Path(tempdir) / "config.yaml"
-            config_path.write_text(
-                "approvals:\n  mode: smart\n  cron_mode: approve\n",
-                encoding="utf-8",
-            )
-            config_path.chmod(0o600)
-            with (
-                mock.patch("hermes_cli.config.get_config_path", return_value=config_path),
-                mock.patch(
-                    "hermes_cli.config.read_raw_config",
-                    return_value={"approvals": {"mode": "manual", "cron_mode": "deny"}},
-                ),
-            ):
-                self.assertFalse(_human_approval_config_safe())
 
     def test_mutations_require_distinct_outbound_ledger_path(self):
         for ledger_path in ("", "relative-outbound.sqlite3", "/tmp/database"):
