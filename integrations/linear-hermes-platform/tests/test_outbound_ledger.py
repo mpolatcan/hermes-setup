@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 import subprocess
 import sys
 import tempfile
@@ -124,6 +125,47 @@ class OutboundLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(OutboundLedgerError, "parent"):
             OutboundLedger(str(missing_path))
         self.assertFalse(missing_path.parent.exists())
+
+    def test_owner_unwritable_parent_is_rejected_before_lock_creation(self):
+        parent = Path(self.tempdir.name) / "owner-unwritable"
+        parent.mkdir(mode=0o700)
+        parent.chmod(0o500)
+        try:
+            with self.assertRaisesRegex(OutboundLedgerError, "parent"):
+                OutboundLedger(str(parent / "ledger.sqlite3"))
+            self.assertFalse((parent / ".ledger.sqlite3.lock").exists())
+        finally:
+            parent.chmod(0o700)
+
+    def test_existing_ledger_requires_exact_0600_mode(self):
+        self.ledger.close()
+        for mode in (0o400, 0o700):
+            with self.subTest(mode=oct(mode)):
+                self.path.chmod(mode)
+                with self.assertRaisesRegex(OutboundLedgerError, "private"):
+                    OutboundLedger(str(self.path))
+                self.path.chmod(0o600)
+
+    def test_opened_parent_descriptor_revalidates_exact_mode(self):
+        self.ledger.close()
+        parent = self.path.parent
+        canonical_parent = parent.resolve()
+        real_open = os.open
+        raced = False
+
+        def race_parent_mode(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal raced
+            if not raced and dir_fd is None and Path(path) == canonical_parent:
+                raced = True
+                parent.chmod(0o500)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        try:
+            with mock.patch("outbound_ledger.os.open", side_effect=race_parent_mode):
+                with self.assertRaisesRegex(OutboundLedgerError, "parent changed"):
+                    OutboundLedger(str(self.path))
+        finally:
+            parent.chmod(0o700)
 
     def test_incompatible_existing_schema_is_rejected(self):
         self.ledger.close()

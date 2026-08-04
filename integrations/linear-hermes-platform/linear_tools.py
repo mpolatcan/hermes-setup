@@ -322,6 +322,41 @@ def _tool_names_available(names: list[str]) -> bool:
         return False
 
 
+def _canonical_paths_distinct(first: str, second: str) -> bool:
+    try:
+        return Path(first).resolve(strict=False) != Path(second).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _outbound_ledger_runtime_path_safe(database_path: str) -> bool:
+    supplied = Path(database_path)
+    if not supplied.is_absolute() or supplied.name in {"", ".", ".."}:
+        return False
+    try:
+        parent = supplied.parent.resolve(strict=True)
+        parent_stat = parent.stat()
+        if (
+            not stat.S_ISDIR(parent_stat.st_mode)
+            or parent_stat.st_uid != os.getuid()
+            or stat.S_IMODE(parent_stat.st_mode) != 0o700
+        ):
+            return False
+        try:
+            entry = supplied.lstat()
+        except FileNotFoundError:
+            return True
+        return bool(
+            stat.S_ISREG(entry.st_mode)
+            and not stat.S_ISLNK(entry.st_mode)
+            and entry.st_uid == os.getuid()
+            and stat.S_IMODE(entry.st_mode) == 0o600
+            and entry.st_size > 0
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None:
     extra = dict(extra if extra is not None else _load_linear_extra())
     outbound = dict(extra.get("outbound_mcp") or {})
@@ -345,8 +380,8 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
         and Path(inbound_database_path).is_absolute()
         and outbound_ledger_path
         and Path(outbound_ledger_path).is_absolute()
-        and Path(outbound_ledger_path).resolve(strict=False)
-        != Path(inbound_database_path).resolve(strict=False)
+        and _canonical_paths_distinct(outbound_ledger_path, inbound_database_path)
+        and _outbound_ledger_runtime_path_safe(outbound_ledger_path)
     )
 
     def check_fn() -> bool:

@@ -77,12 +77,12 @@ class OutboundLedger:
         try:
             canonical_parent = supplied_path.parent.resolve(strict=True)
             parent_stat = canonical_parent.stat()
-        except OSError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             raise OutboundLedgerError("Outbound ledger parent is unavailable") from exc
         if (
             not stat.S_ISDIR(parent_stat.st_mode)
             or parent_stat.st_uid != os.getuid()
-            or parent_stat.st_mode & 0o077
+            or stat.S_IMODE(parent_stat.st_mode) != 0o700
         ):
             raise OutboundLedgerError("Outbound ledger parent is not private to this user")
 
@@ -105,6 +105,8 @@ class OutboundLedger:
                 (opened_parent.st_dev, opened_parent.st_ino)
                 != (parent_stat.st_dev, parent_stat.st_ino)
                 or not stat.S_ISDIR(opened_parent.st_mode)
+                or opened_parent.st_uid != os.getuid()
+                or stat.S_IMODE(opened_parent.st_mode) != 0o700
             ):
                 raise OutboundLedgerError("Outbound ledger parent changed during open")
             lock_flags = (
@@ -124,7 +126,7 @@ class OutboundLedger:
             if (
                 not stat.S_ISREG(lock_stat.st_mode)
                 or lock_stat.st_uid != os.getuid()
-                or lock_stat.st_mode & 0o077
+                or stat.S_IMODE(lock_stat.st_mode) != 0o600
             ):
                 raise OutboundLedgerError("Outbound ledger lock file is unsafe")
         except Exception:
@@ -181,7 +183,7 @@ class OutboundLedger:
         if (
             not stat.S_ISREG(file_stat.st_mode)
             or file_stat.st_uid != os.getuid()
-            or file_stat.st_mode & 0o077
+            or stat.S_IMODE(file_stat.st_mode) != 0o600
         ):
             raise OutboundLedgerError("Outbound ledger file is not private to this user")
 

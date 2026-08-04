@@ -37,17 +37,25 @@ class FakeContext:
 
 
 class RegistrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.root.chmod(0o700)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
     def extra(self, *, enabled=True, mutations=False, allowed_mutation_tools=None):
         if allowed_mutation_tools is None:
             allowed_mutation_tools = ["linear_save_issue", "linear_save_comment"]
         return {
-            "oauth_file": "/tmp/credential",
-            "database_path": "/tmp/database",
+            "oauth_file": str(self.root / "credential"),
+            "database_path": str(self.root / "database"),
             "outbound_mcp": {
                 "enabled": enabled,
                 "mutations_enabled": mutations,
                 "allowed_mutation_tools": allowed_mutation_tools,
-                "ledger_path": "/tmp/outbound-linear-mcp.sqlite3",
+                "ledger_path": str(self.root / "outbound-linear-mcp.sqlite3"),
                 "endpoint": "https://mcp.linear.app/mcp",
                 "expected_actor_id": "actor-1",
                 "expected_organization_id": "org-1",
@@ -187,6 +195,22 @@ class RegistrationTests(unittest.TestCase):
                 register_outbound_tools(ctx, extra=extra)
                 self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
 
+    def test_symlink_loop_in_ledger_path_preserves_read_only_tools(self):
+        loop = self.root / "ledger-loop"
+        loop.symlink_to(loop)
+        extra = self.extra(mutations=True)
+        extra["outbound_mcp"]["ledger_path"] = str(loop)
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
+    def test_embedded_nul_in_ledger_path_preserves_read_only_tools(self):
+        extra = self.extra(mutations=True)
+        extra["outbound_mcp"]["ledger_path"] = "/tmp/outbound\x00ledger.sqlite3"
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
     def test_mutations_require_absolute_inbound_database_path(self):
         for database_path in ("", "relative-inbound.sqlite3"):
             with self.subTest(database_path=database_path):
@@ -195,6 +219,55 @@ class RegistrationTests(unittest.TestCase):
                 ctx = FakeContext()
                 register_outbound_tools(ctx, extra=extra)
                 self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
+    def test_mutations_require_private_usable_ledger_parent(self):
+        cases = (
+            "missing_parent",
+            "public_parent",
+            "unwritable_parent",
+            "empty_existing_ledger",
+            "unreadable_existing_ledger",
+            "symlinked_existing_ledger",
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                root = self.root / case
+                root.mkdir(mode=0o700)
+                extra = self.extra(mutations=True)
+                ledger = root / "outbound.sqlite3"
+                extra["outbound_mcp"]["ledger_path"] = str(ledger)
+                if case == "missing_parent":
+                    root.rmdir()
+                elif case == "public_parent":
+                    root.chmod(0o755)
+                elif case == "unwritable_parent":
+                    root.chmod(0o500)
+                elif case == "empty_existing_ledger":
+                    ledger.write_bytes(b"")
+                    ledger.chmod(0o600)
+                elif case == "unreadable_existing_ledger":
+                    ledger.write_bytes(b"not-empty")
+                    ledger.chmod(0o400)
+                else:
+                    target = root / "target.sqlite3"
+                    target.write_bytes(b"not-empty")
+                    target.chmod(0o600)
+                    ledger.symlink_to(target)
+                ctx = FakeContext()
+                register_outbound_tools(ctx, extra=extra)
+                self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
+
+    def test_private_parent_alias_is_canonicalized_for_registration(self):
+        real_parent = self.root / "real-parent"
+        real_parent.mkdir(mode=0o700)
+        alias_parent = self.root / "alias-parent"
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+        extra = self.extra(mutations=True)
+        extra["outbound_mcp"]["ledger_path"] = str(alias_parent / "outbound.sqlite3")
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        self.assertIn("linear_save_issue", ctx.tools)
+        self.assertIn("linear_save_comment", ctx.tools)
 
     def test_non_official_endpoint_and_sensitive_misconfiguration_register_nothing(self):
         ctx = FakeContext()
@@ -222,6 +295,42 @@ class RegistrationTests(unittest.TestCase):
             ctx = FakeContext()
             register_outbound_tools(ctx, extra=extra)
             self.assertFalse(ctx.tools["linear_get_issue"]["check_fn"]())
+
+    def test_ledger_permission_change_after_registration_fails_before_vendor_dispatch(self):
+        ledger_parent = self.root / "runtime-change"
+        ledger_parent.mkdir(mode=0o700)
+        extra = self.extra(mutations=True)
+        extra["outbound_mcp"]["ledger_path"] = str(ledger_parent / "outbound.sqlite3")
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        handler = ctx.tools["linear_save_comment"]["handler"]
+        ledger_parent.chmod(0o500)
+        graphql = mock.MagicMock()
+        graphql.close = mock.AsyncMock()
+        mcp = mock.MagicMock()
+        mcp.close = mock.AsyncMock()
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+        ):
+            result = json.loads(
+                asyncio.run(
+                    handler(
+                        {
+                            "operation_key": "runtime-permission-change",
+                            "target_team_id": "ops-1",
+                            "issueId": "OPS-1",
+                            "body": "Canary",
+                        }
+                    )
+                )
+            )
+        self.assertEqual(
+            result,
+            {"error": "linear_tool_failed", "reason": "OutboundLedgerError"},
+        )
+        mcp.call_tool.assert_not_called()
 
 
 class FakeGraphQL:
