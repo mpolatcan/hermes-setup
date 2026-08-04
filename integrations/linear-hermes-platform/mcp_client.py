@@ -17,6 +17,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
 OFFICIAL_LINEAR_MCP_ENDPOINT = "https://mcp.linear.app/mcp"
 INITIAL_PROTOCOL_VERSION = "2025-03-26"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18"})
+OFFICIAL_LINEAR_INPUT_SCHEMA_URI = "https://json-schema.org/draft/2020-12/schema"
 REQUIRED_TOOLS = frozenset({"get_user", "get_issue", "list_issues", "save_issue", "save_comment"})
 EXPECTED_VENDOR_TOOL_NAMES = frozenset(
     {
@@ -297,6 +298,13 @@ class LinearMCPClient:
         missing = sorted(self.required_tools - set(self.tool_schemas))
         if missing:
             raise LinearMCPError(f"Linear MCP missing required tools: {', '.join(missing)}")
+        for tool_name, tool in self.tool_schemas.items():
+            schema = tool.get("inputSchema")
+            if (
+                not isinstance(schema, dict)
+                or schema.get("$schema") != OFFICIAL_LINEAR_INPUT_SCHEMA_URI
+            ):
+                raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}")
         for tool_name, required_fields in REQUIRED_TOOL_INPUT_FIELDS.items():
             schema = self.tool_schemas[tool_name].get("inputSchema")
             properties = schema.get("properties") if isinstance(schema, dict) else None
@@ -312,7 +320,7 @@ class LinearMCPClient:
             if (
                 not isinstance(schema, dict)
                 or set(schema) != expected_root_keys
-                or schema.get("$schema") != "http://json-schema.org/draft-07/schema#"
+                or schema.get("$schema") != OFFICIAL_LINEAR_INPUT_SCHEMA_URI
                 or schema.get("type") != "object"
                 or schema.get("additionalProperties") is not False
                 or not isinstance(properties, dict)

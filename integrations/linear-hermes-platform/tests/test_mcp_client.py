@@ -112,7 +112,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             {
                 "name": name,
                 "inputSchema": {
-                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
@@ -129,7 +129,12 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             for name, tool_fields in fields.items()
         ]
         self.tools.extend(
-            {"name": name, "inputSchema": {}}
+            {
+                "name": name,
+                "inputSchema": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                },
+            }
             for name in sorted(EXPECTED_VENDOR_TOOL_NAMES - set(fields))
         )
         self.tools_pages = None
@@ -268,6 +273,42 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await client.close()
+
+    async def test_current_vendor_draft_2020_12_schema_is_accepted(self):
+        for tool in self.tools:
+            schema = tool.get("inputSchema") or {}
+            if "$schema" in schema:
+                schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+        client = self.client()
+        try:
+            await client.connect()
+            self.assertEqual(set(client.tool_schemas), {tool["name"] for tool in self.tools})
+        finally:
+            await client.close()
+
+    async def test_non_required_tool_schema_uri_contract_fails_closed(self):
+        cases = ("missing", "non_object", "legacy_draft_07", "unknown_uri")
+        for case in cases:
+            with self.subTest(case=case):
+                target = next(tool for tool in self.tools if tool["name"] == "get_team")
+                if case == "missing":
+                    target.pop("inputSchema")
+                elif case == "non_object":
+                    target["inputSchema"] = []
+                elif case == "legacy_draft_07":
+                    target["inputSchema"]["$schema"] = (
+                        "http://json-schema.org/draft-07/schema#"
+                    )
+                else:
+                    target["inputSchema"]["$schema"] = "https://example.invalid/schema"
+                client = self.client()
+                try:
+                    with self.assertRaisesRegex(LinearMCPError, "schema drift"):
+                        await client.connect()
+                finally:
+                    await client.close()
+                await self.asyncTearDown()
+                await self.asyncSetUp()
 
     async def test_missing_required_tool_fails_closed(self):
         self.tools = [tool for tool in self.tools if tool["name"] != "save_comment"]
