@@ -65,6 +65,19 @@ LEDGER_HARDENING_MANIFEST = {
     "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
     "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
 }
+MCP_SCHEMA_COMMIT = "ae223f9cf10c1c78fed949dcdec890582fc49610"
+MCP_SCHEMA_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "7d0355e3b381dcbac2e718ca0dc0f38fcfd9946a7fe0275178de587bb570be6a",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "44f52019888b93ce0b144b09570eaf10eaba5b2593b0f11efac4fd81e6bf1189",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
 
 
 def load_helper():
@@ -123,6 +136,10 @@ class DeployPluginTests(unittest.TestCase):
         self.assertEqual(
             helper.REVIEWED_MANIFESTS[LEDGER_HARDENING_COMMIT],
             LEDGER_HARDENING_MANIFEST,
+        )
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[MCP_SCHEMA_COMMIT],
+            MCP_SCHEMA_MANIFEST,
         )
 
     def test_deploy_promotes_exact_allowlist_and_preserves_rollback(self) -> None:
