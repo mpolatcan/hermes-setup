@@ -451,7 +451,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             int(outbox.get("dead", 0))
             or int(waiting.get("failed", 0))
             or int(closures.get("failed", 0))
-            or int(closures.get("pending_session_binding", 0))
+            or int(closures.get("blocked_dispatch", 0))
             or self._oauth_revoked
         )
         status = "degraded" if healthy and degraded else ("ok" if healthy else "starting")
@@ -459,7 +459,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.7.0",
+                "version": "0.8.0",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -546,15 +546,51 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 )
                 return web.json_response({"status": "duplicate"}, status=200)
             claimed = True
+            event_actor_id, _ = _actor(payload)
+            if (
+                event_actor_id
+                and self._linear.actor_id
+                and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+            ):
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "ignored_self"}, status=200)
             if action == "created" and issue_id:
                 async with self._issue_lock(issue_id):
+                    pending_closure = self._ledger.get_pending_closure_event(issue_id)
+                    if pending_closure is not None:
+                        closure_status = await self._reconcile_human_completion(
+                            pending_closure["event"],
+                            issue_id,
+                            _issue_locked=True,
+                            _proposed_session_id=agent_session_id,
+                        )
+                        if closure_status in {"closure_queued", "closure_duplicate"}:
+                            self._ledger.mark_done(delivery_key)
+                            return web.json_response({"status": closure_status}, status=200)
+                        if closure_status == "closure_obsolete":
+                            self._ledger.clear_pending_closure_event(
+                                issue_id, pending_closure["event_revision"]
+                            )
+                        else:
+                            self._ledger.bind_issue_session(issue_id, agent_session_id)
+                            self._ledger.release(delivery_key)
+                            claimed = False
+                            return web.json_response(
+                                {"status": "closure_deferred"}, status=503
+                            )
                     self._ledger.bind_issue_session(issue_id, agent_session_id)
+            if action == "prompted" and issue_id:
+                async with self._issue_lock(issue_id):
                     pending_closure = self._ledger.get_pending_closure_event(issue_id)
                     if pending_closure is not None:
                         closure_status = await self._reconcile_human_completion(
                             pending_closure["event"], issue_id, _issue_locked=True
                         )
-                        if closure_status in {"closure_queued", "closure_duplicate"}:
+                        if closure_status in {
+                            "terminal_fenced",
+                            "closure_queued",
+                            "closure_duplicate",
+                        }:
                             self._ledger.mark_done(delivery_key)
                             return web.json_response({"status": closure_status}, status=200)
                         if closure_status == "closure_obsolete":
@@ -693,6 +729,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         *,
         _issue_locked: bool = False,
         _session_locked: bool = False,
+        _proposed_session_id: str | None = None,
     ) -> str | None:
         """Normalize one verified human started→completed transition into a durable response."""
         if (
@@ -751,8 +788,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     issue_id,
                     _issue_locked=True,
                     _session_locked=_session_locked,
+                    _proposed_session_id=_proposed_session_id,
                 )
-        session_id = self._ledger.get_issue_session(issue_id) or ""
+        persisted_session_id = self._ledger.get_issue_session(issue_id) or ""
+        session_id = persisted_session_id or str(_proposed_session_id or "")
         if session_id and not _session_locked:
             async with self._session_lock(session_id):
                 return await self._reconcile_human_completion(
@@ -760,6 +799,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     issue_id,
                     _issue_locked=True,
                     _session_locked=True,
+                    _proposed_session_id=_proposed_session_id,
                 )
         context = await self._linear.get_issue_closure_context(issue_id)
         state = context.get("state") or {}
@@ -815,8 +855,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     "updatedFrom": {"stateId": previous_state_id},
                 },
             )
-            logger.info("[linear] closure deferred issue=%s reason=session_unbound", issue_id)
-            return "closure_deferred"
+            logger.info("[linear] terminal fenced issue=%s reason=session_unbound", issue_id)
+            return "terminal_fenced"
+        if not persisted_session_id:
+            self._ledger.bind_issue_session(issue_id, session_id)
         material = "\0".join(
             (
                 issue_id,

@@ -39,8 +39,23 @@ flowchart LR
   - `prompted`: action + Agent Session ID + Agent Activity ID
   - fallback: raw-body hash
 - Linear `webhookId` is subscription metadata and is not used as event identity.
-- Human terminal reconciliation uses a second durable key over the authoritative issue, completion timestamp, workflow state, human assignee, delegate, and team. Duplicate webhook revisions therefore converge on one final response activity.
+- Human terminal reconciliation uses a second durable key over the authoritative issue revision (`updatedAt`), workflow state, human assignee, delegate, and team. Provider `completedAt` is audit-only. Duplicate webhook revisions therefore converge on one final response activity.
 - Linear issue, comment, and prompt content is labeled as untrusted user input, never as trusted instructions.
+
+## Agent Session creation and execution policy
+
+An Agent Session and a Hermes execution are different objects. Linear creates the native Agent Session when a human delegates or explicitly mentions an app-user; this adapter never calls an `agentSessionCreate` mutation. The adapter may bind an accepted vendor session to an issue, but binding alone is not permission to run a model.
+
+| Incoming signal | Session behavior | Hermes execution behavior |
+|---|---|---|
+| `AgentSessionEvent.created` from a human delegate/mention or an authorized different app-user handoff | Accept and durably bind the vendor-created session | Start only when lifecycle, dependency, dedup, and terminal-fence guards allow it. A blocked/parked issue waits; a fenced terminal issue reconciles closure and dispatches nothing. |
+| `AgentSessionEvent.prompted` with a normal human follow-up | Reuse the existing vendor session; never create another one | Start one follow-up execution after dedup and closure guards. |
+| `AgentSessionEvent.prompted` with `signal=stop` | Reuse the existing session | Cancel/stop the existing execution; never turn the stop text into a model prompt. |
+| Human `Issue/update` from `started` to `completed` | Never create a session | With a durable binding, enqueue one closure activity. Without a binding, persist a healthy terminal fence; no model dispatch and no requirement for the human to mention the agent. |
+| Other issue status, relation, dependency, notification, project, label, attachment, comment, or reaction event | Never create a session | Observe/context-only, or resume an already-bound durable dependency wait. Never dispatch a new session. |
+| Event authored by this adapter's own installed app-user | No session change | Ignore for execution to prevent self-trigger loops. A different authorized app-user may still initiate an explicit cross-agent handoff. |
+
+The no-session terminal fence is intentionally durable: if a late vendor-created session arrives while the issue is still terminal, the adapter consumes the fence into closure reconciliation and suppresses the main execution. If the issue has been reopened, live read-back marks the old fence obsolete and the legitimate `created` flow may continue. An unbound fence is normal health (`terminal_fences`); only a bound session whose terminal verification cannot complete is an operational fault (`blocked_dispatch`) and degrades `/health`.
 
 ## Files
 
@@ -167,7 +182,7 @@ The plugin source is deployed to each profile-local runtime directory:
 /Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear/
 ```
 
-The 0.7.0 tracked deployment allowlist is exactly `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, `oauth_store.py`, `mcp_client.py`, `outbound_policy.py`, `outbound_ledger.py`, `linear_tools.py`, and `plugin.yaml`. Copy only those ten files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. The previous 0.5.0 runtime acceptance proved `45/45` hashes for the former five-file allowlist. It is historical evidence, not a claim that the undeployed 0.7.0 source is already present in nine runtimes. Existing runtime directories also contain `__pycache__`, seven contain `tests/`, and `general/plugins/linear` is mode `0755` while the other eight are `0700`. Those are explicit follow-up drift, not silently cleaned up by this repository change.
+The 0.8.0 tracked deployment allowlist is exactly `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, `oauth_store.py`, `mcp_client.py`, `outbound_policy.py`, `outbound_ledger.py`, `linear_tools.py`, and `plugin.yaml`. Copy only those ten files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. Earlier runtime acceptances are historical evidence, not proof that 0.8.0 is deployed. Exact entry sets, symlink status, directory/file modes, and source/runtime hashes must be established by a fresh live audit for each target.
 
 Deployment is an approval-gated operation, not a blind fleet copy. There is intentionally no partial shell recipe here: source review, promotion, rollback and runtime restart must remain one fail-closed procedure. For one named profile:
 
@@ -182,7 +197,7 @@ Deployment is an approval-gated operation, not a blind fleet copy. There is inte
 
 The reviewed one-command helper is [`scripts/deploy_plugin.py`](scripts/deploy_plugin.py). It implements the source-manifest, descriptor confinement, profile lock, private staging, durable pre-mutation coordinates, state-aware signal recovery, atomic promotion, exact read-back and symmetric rollback invariants above. It deliberately does **not** edit Hermes config or restart a gateway.
 
-For the reviewed 0.7.0 source commit, the exact single-profile promotion command uses the new reviewed commit SHA:
+For the reviewed 0.8.0 source commit, the exact single-profile promotion command uses the new reviewed commit SHA:
 
 ```bash
 /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
@@ -190,7 +205,7 @@ For the reviewed 0.7.0 source commit, the exact single-profile promotion command
   --repo-root /Users/mutlupolatcan/.hermes/source/hermes-setup \
   --profiles-root /Users/mutlupolatcan/.hermes/profiles \
   --profile general \
-  --commit '<reviewed-0.7.0-commit-sha>'
+  --commit '<reviewed-0.8.0-commit-sha>'
 ```
 
 The helper writes and prints the immutable rollback path and tree digest before the first rename. Rollback must use those exact values; never discover a backup by recency:
@@ -206,7 +221,7 @@ The helper writes and prints the immutable rollback path and tree digest before 
 
 Runtime promotion, config mutation and `/restart` remain separate approval gates. Runtime extras are preserved inside the exact rollback tree rather than copied into the new ten-file target.
 
-The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. The last production evidence is the 0.5.0 `45/45` logic-hash acceptance with all former allowlisted files at `0600`; exact entry and directory-mode drift remains open as stated above. A 0.7.0 deployment must produce a new reviewed manifest for the named target rather than inheriting the old count.
+The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. A 0.8.0 deployment must produce a new reviewed manifest for the named target rather than inheriting an older acceptance count.
 
 | Persona | Profile | Loopback | Public hostname |
 |---|---|---:|---|
@@ -289,7 +304,7 @@ The code default for `issue_status_writeback_enabled` remains fail-closed `false
 
 `AgentSessionEvent` remains the only direct execution trigger. When `data_change_events_enabled` is true, signed `Issue`, `IssueRelation`, `Comment`, `IssueLabel`, `Project`, `ProjectUpdate`, `AppUserNotification`, `PermissionChange`, and OAuth revoke events pass organization validation and semantic dedup, but ordinary comments and project updates are context-only and do not start an LLM run. The sole Issue/update control exception is optional human terminal reconciliation: it writes no `MessageEvent`, does not rerun the deliverable, does not reopen the issue, and does not mutate terminal state. Inbox notification timestamps may use the documented ISO `createdAt` field. Explicit agent mentions must produce Linear's native Agent Session event; this is a live canary requirement, not a comment parser assumption. Events authored by the current Linear app actor are ignored to prevent self-trigger loops. An `issueUnassignedFromYou` notification cancels a durable wait, while OAuth revocation degrades `/health`.
 
-When `closure_reconciliation_enabled` is true, the adapter accepts only a signed Issue/update whose `updatedFrom.stateId` resolves authoritatively to a `started` workflow state and whose live state is `completed`. Live GraphQL read-back must also prove the exact allowlisted team, signed webhook actor equals the current human assignee, installed app actor equals the current delegate, the webhook state ID equals the live terminal state ID, and live issue `updatedAt` exactly equals the signed webhook revision. Linear `issue.history` and `completedAt` are deliberately supplementary audit fields rather than mandatory policy inputs because reopened issues can expose an earlier terminal transition and retain the earlier completion timestamp even when current state and `updatedAt` are fresh. The issue-to-Agent-Session mapping must have been recorded locally from an accepted `AgentSessionEvent.created`; closure does not query the internal `Issue.agentSessions` field. Missing or mismatched evidence fails closed. The adapter atomically inserts canonical evidence plus one deterministic `response` activity into SQLite, wakes the background outbox worker, and returns without draining the global outbox in the webhook; restart recovery reclaims the same item, and later session bindings do not change the closure key. `/health` reports pending/completed/failed closure counts and degrades on failed closure dead letters. No Notion write occurs in the webhook path; only accepted live canary evidence is promoted later through the normal knowledge gate.
+When `closure_reconciliation_enabled` is true, the adapter accepts only a signed Issue/update whose `updatedFrom.stateId` resolves authoritatively to a `started` workflow state and whose live state is `completed`. Live GraphQL read-back must also prove the exact allowlisted team, signed webhook actor equals the current human assignee, installed app actor equals the current delegate, the webhook state ID equals the live terminal state ID, and live issue `updatedAt` exactly equals the signed webhook revision. Linear `issue.history` and `completedAt` are deliberately supplementary audit fields rather than mandatory policy inputs because reopened issues can expose an earlier terminal transition and retain the earlier completion timestamp even when current state and `updatedAt` are fresh. A locally recorded issue-to-Agent-Session binding is required only for writing a Linear Agent Activity, not for accepting the human terminal transition. Without a binding, the adapter stores a terminal fence and returns `terminal_fenced`; this is a healthy settled control-plane state, not a request to create a session. Missing or mismatched authoritative evidence still fails closed. With a binding, the adapter atomically inserts canonical evidence plus one deterministic `response` activity into SQLite, wakes the background outbox worker, and returns without draining the global outbox in the webhook; restart recovery reclaims the same item, and later session bindings do not change the closure key. `/health` reports pending/completed/failed closure counts, healthy `terminal_fences`, and degraded `blocked_dispatch` or failed closure dead letters. The deprecated `pending_session_binding` field remains a compatibility alias for `blocked_dispatch`; it no longer counts healthy unbound fences. No Notion write occurs in the webhook path; only accepted live canary evidence is promoted later through the normal knowledge gate.
 
 Agent output remains an immutable Agent Activity. Linear renders `response` and `elicitation` activities into the issue comment thread for human visibility; later execution context is reconstructed from frozen Agent Activities rather than editable comments.
 
@@ -304,7 +319,7 @@ When `dependency_wait_enabled` is true, a newly delegated issue is queried for i
 
 On resume, the adapter prepends its verified current dependency state before Linear's frozen creation `promptContext`. The snapshot may still contain historical `blocked-by` content; the trusted resume directive prevents that stale state from sending the execution back into wait.
 
-Stop and delegate-removal events cancel a pending wait. Interrupted `resuming` rows return to `waiting` on adapter restart. `/health` reports waiting counts, oldest wait age, and the latest wait error; failed waits degrade health without causing a restart loop. The additive SQLite schema is versioned with `PRAGMA user_version=4`; version 3 adds issue/session linkage and durable closure evidence, while version 4 adds a payload-minimized terminal-event fence so a verified human `Done` arriving before `AgentSessionEvent.created` survives restart and prevents the later session from rerunning the main deliverable. Back up `linear-bridge.sqlite3*` before first migration and retain the backup until live acceptance completes.
+Stop and delegate-removal events cancel a pending wait. Interrupted `resuming` rows return to `waiting` on adapter restart. `/health` reports waiting counts, oldest wait age, and the latest wait error; failed waits degrade health without causing a restart loop. The additive SQLite schema is versioned with `PRAGMA user_version=4`; version 3 adds issue/session linkage and durable closure evidence, while version 4 adds a payload-minimized terminal-event fence so a verified human `Done` arriving before `AgentSessionEvent.created` survives restart and prevents the later session from rerunning the main deliverable. The same table is classified by binding state: no binding is a healthy `terminal_fences` tombstone; an existing binding plus unresolved terminal verification is a degraded `blocked_dispatch`. Back up `linear-bridge.sqlite3*` before first migration and retain the backup until live acceptance completes.
 
 ## Public ingress
 
@@ -348,7 +363,7 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected source result for 0.7.0: `212/212 OK`. `/health` exposes the active inbound `data_event_types` allowlist plus closure counts so a rollout can verify the accepted event contract and closure drain state without inspecting source files.
+Expected source result for 0.8.0: `225/225 OK`. `/health` exposes the active inbound `data_event_types` allowlist plus closure counts so a rollout can verify the accepted event contract and closure drain state without inspecting source files.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry, actor/team/content-policy denial, operation-key replay, payload-content minimization, profile mutation capability registration, model-facing state-transition denial, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, success-state preservation for Mutlu's final acceptance, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, human closure actor/team/delegate denial, closure duplicate suppression, closure restart recovery, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 

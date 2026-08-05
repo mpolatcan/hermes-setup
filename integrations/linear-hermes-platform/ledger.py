@@ -382,14 +382,29 @@ class DeliveryLedger:
             rows = self._db.execute(
                 "SELECT state, COUNT(*) FROM closure_reconciliations GROUP BY state"
             ).fetchall()
-            pending_session_binding = int(
-                self._db.execute("SELECT COUNT(*) FROM pending_closure_events").fetchone()[0]
+            terminal_fences = int(
+                self._db.execute(
+                    "SELECT COUNT(*) FROM pending_closure_events p "
+                    "LEFT JOIN issue_session_bindings b ON b.issue_id = p.issue_id "
+                    "WHERE b.issue_id IS NULL"
+                ).fetchone()[0]
+            )
+            blocked_dispatch = int(
+                self._db.execute(
+                    "SELECT COUNT(*) FROM pending_closure_events p "
+                    "INNER JOIN issue_session_bindings b ON b.issue_id = p.issue_id"
+                ).fetchone()[0]
             )
         result = {
             "pending": 0,
             "completed": 0,
             "failed": 0,
-            "pending_session_binding": pending_session_binding,
+            "terminal_fences": terminal_fences,
+            "blocked_dispatch": blocked_dispatch,
+            # Compatibility alias for pre-0.8 health consumers. It now means a
+            # bound dispatch blocked on terminal verification, never an
+            # optional unbound session.
+            "pending_session_binding": blocked_dispatch,
         }
         result.update({str(state): int(count) for state, count in rows})
         return result

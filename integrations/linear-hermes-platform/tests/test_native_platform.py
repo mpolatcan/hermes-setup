@@ -622,6 +622,89 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(self.adapter._linear.calls, [])
 
+    async def test_prompted_event_with_terminal_fence_never_dispatches(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-prompted-terminal-fence"
+        terminal_event = {
+            "actor": {"id": "user-1"},
+            "data": {
+                "id": issue_id,
+                "updatedAt": "2026-08-05T08:00:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            "updatedFrom": {"stateId": "started-1"},
+        }
+        self.adapter._ledger.stage_pending_closure_event(issue_id, 1.0, terminal_event)
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-05T08:00:00.000Z",
+            "completed_at": "2026-08-05T08:00:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        prompted = self.make_payload(
+            webhookId="webhook-prompted-terminal-fence",
+            action="prompted",
+            actor={"id": "user-1", "name": "Mutlu"},
+            agentActivity={"id": "activity-terminal-follow-up", "body": "run again"},
+            agentSession={
+                "id": "session-prompted-terminal-fence",
+                "issue": {"id": issue_id, "identifier": "OPS-73", "title": "Closed"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(prompted))
+
+        self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.get_issue_session(issue_id), None)
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
+
+    async def test_self_authored_agent_session_event_is_ignored(self):
+        payload = self.make_payload(
+            webhookId="webhook-self-agent-session",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-self-agent-session",
+                "issue": {"id": "issue-self-agent-session", "identifier": "OPS-80"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "ignored_self")
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_issue_session("issue-self-agent-session"), None
+        )
+
+    async def test_different_app_actor_agent_session_handoff_is_accepted(self):
+        payload = self.make_payload(
+            webhookId="webhook-other-app-handoff",
+            actor={"id": "agent-doruk", "name": "Doruk"},
+            agentSession={
+                "id": "session-other-app-handoff",
+                "issue": {"id": "issue-other-app-handoff", "identifier": "OPS-81"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.user_id, "agent-doruk")
+        self.assertEqual(
+            self.adapter._ledger.get_issue_session("issue-other-app-handoff"),
+            "session-other-app-handoff",
+        )
+
 
     async def test_blocked_delegation_waits_without_starting_hermes(self):
         self.adapter._linear.blockers["issue-8"] = [
@@ -835,9 +918,15 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
         deferred = await self.adapter._handle_webhook(self.request_for(completed))
 
-        self.assertEqual(json.loads(deferred.text)["status"], "closure_deferred")
+        self.assertEqual(json.loads(deferred.text)["status"], "terminal_fenced")
         self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
         self.assertEqual(self.events, [])
+        self.adapter._running = True
+        fenced_health = json.loads((await self.adapter._health(None)).text)
+        self.assertEqual(fenced_health["status"], "ok")
+        self.assertEqual(fenced_health["closures"]["terminal_fences"], 1)
+        self.assertEqual(fenced_health["closures"]["blocked_dispatch"], 0)
+        self.assertEqual(fenced_health["closures"]["pending_session_binding"], 0)
 
         created = self.make_payload(
             webhookId="webhook-out-of-order-created",
@@ -925,9 +1014,14 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(self.events, [])
         self.assertFalse(created_task.done())
+        self.adapter._running = True
+        reconciling_health = json.loads((await self.adapter._health(None)).text)
+        self.assertEqual(reconciling_health["status"], "ok")
+        self.assertEqual(reconciling_health["closures"]["terminal_fences"], 0)
+        self.assertEqual(reconciling_health["closures"]["blocked_dispatch"], 0)
         linear.release_read.set()
 
-        self.assertEqual(json.loads((await done_task).text)["status"], "closure_deferred")
+        self.assertEqual(json.loads((await done_task).text)["status"], "terminal_fenced")
         self.assertEqual(json.loads((await created_task).text)["status"], "closure_queued")
         self.assertEqual(self.events, [])
         self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
@@ -1016,6 +1110,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events, [])
         self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
         self.assertEqual(health_body["status"], "degraded")
+        self.assertEqual(health_body["closures"]["terminal_fences"], 0)
+        self.assertEqual(health_body["closures"]["blocked_dispatch"], 1)
         self.assertEqual(health_body["closures"]["pending_session_binding"], 1)
 
     async def test_closure_accepts_current_signed_transition_without_history(self):
