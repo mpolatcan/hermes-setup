@@ -407,6 +407,24 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertEqual(child["ALPHA_KEY"], SECRET_A)
         self.assertEqual(child["BETA_KEY"], SECRET_B)
 
+    def test_desktop_reference_scope_includes_optional_honcho_root_only(self) -> None:
+        selected = bootstrap.select_references_for_command(
+            "desktop",
+            [],
+            {
+                bootstrap.DESKTOP_SESSION_TOKEN_ENV: REF_A,
+                bootstrap.HONCHO_ROOT_ENV: REF_B,
+                "UNRELATED_SECRET": "op://vault/item/unrelated",
+            },
+        )
+        self.assertEqual(
+            selected,
+            {
+                bootstrap.DESKTOP_SESSION_TOKEN_ENV: REF_A,
+                bootstrap.HONCHO_ROOT_ENV: REF_B,
+            },
+        )
+
     def test_desktop_mode_execs_general_app_with_only_loopback_session_environment(self) -> None:
         class ExecCaptured(Exception):
             pass
@@ -453,6 +471,8 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
         self.assertNotIn("LINEAR_CLIENT_SECRET", child)
         self.assertNotIn("HERMES_DASHBOARD_SESSION_TOKEN", child)
         self.assertNotIn("HONCHO_JWT_ROOT", child)
+        self.assertIn("HONCHO_API_KEY", child)
+        self.assertEqual(len(child["HONCHO_API_KEY"].split(".")), 3)
         self.assertEqual(child["HERMES_DESKTOP_REMOTE_TOKEN"], SECRET_A)
         self.assertEqual(child["HERMES_DESKTOP_REMOTE_URL"], "http://127.0.0.1:9120")
 
@@ -584,7 +604,10 @@ class GatewaySdkBootstrapTests(unittest.TestCase):
             bootstrap.select_references_for_command("desktop", ["--unsafe"], references)
         self.assertEqual(
             bootstrap.select_references_for_command("desktop", [], references),
-            {"HERMES_DASHBOARD_SESSION_TOKEN": REF_A},
+            {
+                "HERMES_DASHBOARD_SESSION_TOKEN": REF_A,
+                "HONCHO_JWT_ROOT": REF_B,
+            },
         )
 
         with tempfile.TemporaryDirectory() as tmp:

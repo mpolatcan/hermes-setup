@@ -302,7 +302,11 @@ def select_references_for_command(
         reference = references.get(DESKTOP_SESSION_TOKEN_ENV)
         if reference is None:
             raise BootstrapError("missing Desktop session token mapping")
-        return {DESKTOP_SESSION_TOKEN_ENV: reference}
+        selected = {DESKTOP_SESSION_TOKEN_ENV: reference}
+        honcho_reference = references.get(HONCHO_ROOT_ENV)
+        if honcho_reference is not None:
+            selected[HONCHO_ROOT_ENV] = honcho_reference
+        return selected
 
     parse_maintenance_send_args(command_args)
 
