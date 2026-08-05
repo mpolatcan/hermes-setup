@@ -123,6 +123,18 @@ REVIEWED_MANIFESTS: dict[str, dict[str, str]] = {
         "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
         "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
     },
+    "d63a1e441ba3ef98c0f593116cce317a0fb566c9": {
+        "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+        "adapter.py": "f7695ea3d48c3f2cfe7e881467ca8211961a7f1e0b4db72e42e0956de8487a43",
+        "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+        "linear_client.py": "7cc114f486cb99e37a1419b30abe315683931f83420e3d4d6da7e398128c5c92",
+        "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+        "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+        "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+        "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+        "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+        "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+    },
 }
 _PROFILE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
