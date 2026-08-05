@@ -363,7 +363,7 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected source result for 0.8.0: `225/225 OK`. `/health` exposes the active inbound `data_event_types` allowlist plus closure counts so a rollout can verify the accepted event contract and closure drain state without inspecting source files.
+Expected source result for 0.8.0: `226/226 OK`. `/health` exposes the active inbound `data_event_types` allowlist plus closure counts so a rollout can verify the accepted event contract and closure drain state without inspecting source files.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry, actor/team/content-policy denial, operation-key replay, payload-content minimization, profile mutation capability registration, model-facing state-transition denial, typed `agentActivity.content.body`, delegation, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, success-state preservation for Mutlu's final acceptance, durable waiting recovery, resume-once claims, blocker filtering, context-only data events, self-event suppression, human closure actor/team/delegate denial, closure duplicate suppression, closure restart recovery, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 
