@@ -106,6 +106,10 @@ class RegistrationTests(unittest.TestCase):
         issue_properties = ctx.tools["linear_save_issue"]["schema"]["parameters"]["properties"]
         self.assertEqual(issue_properties["priority"], {"type": "number"})
         self.assertNotIn("state", issue_properties)
+        self.assertEqual(
+            issue_properties["lifecycle_action"],
+            {"type": "string", "enum": ["start"]},
+        )
         self.assertNotIn("approval_reference", issue_properties)
         self.assertNotIn(
             "approval_reference",
@@ -337,15 +341,23 @@ class FakeGraphQL:
     actor_id = "actor-1"
     organization_id = "org-1"
 
-    def __init__(self, issue_team="ops-1", issue_teams=None) -> None:
+    def __init__(self, issue_team="ops-1", issue_teams=None, start_contexts=None) -> None:
         self.issue_team = issue_team
         self.issue_teams = issue_teams or {}
+        self.start_contexts = list(start_contexts or [])
 
     async def get_issue_team_id(self, issue_id):
         return self.issue_teams.get(issue_id, self.issue_team)
 
     async def get_comment_team_id(self, _comment_id):
         return self.issue_team
+
+    async def get_issue_start_context(self, _issue_id):
+        if not self.start_contexts:
+            raise AssertionError("unexpected lifecycle context read")
+        if len(self.start_contexts) == 1:
+            return self.start_contexts[0]
+        return self.start_contexts.pop(0)
 
 
 class FakeMCP:
@@ -442,6 +454,181 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         forwarded = mutation_calls[0][1]
         self.assertNotIn("operation_key", forwarded)
         self.assertNotIn("target_team_id", forwarded)
+
+    async def test_semantic_start_uses_lowest_position_started_state_and_reads_back(self):
+        before = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "delegate": {"id": "actor-1"},
+            "started_states": [
+                {"id": "review-1", "name": "Review", "type": "started", "position": 30},
+                {"id": "progress-1", "name": "In Progress", "type": "started", "position": 20},
+            ],
+        }
+        after = {**before, "state": {"id": "progress-1", "type": "started"}}
+        graph = FakeGraphQL(start_contexts=[before, before, after])
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "operation_key": "op-start",
+                "lifecycle_action": "start",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+        self.assertEqual(result["status"], "success")
+        calls = [call for call in mcp.calls if call[0] == "save_issue"]
+        self.assertEqual(calls, [("save_issue", {"id": "OPS-1", "state": "progress-1"}, True)])
+
+    async def test_semantic_start_readback_mismatch_is_outcome_unknown(self):
+        before = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "delegate": {"id": "actor-1"},
+            "started_states": [
+                {"id": "progress-1", "type": "started", "position": 20}
+            ],
+        }
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "operation_key": "op-readback-mismatch",
+                "lifecycle_action": "start",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(start_contexts=[before, before, before]),
+            mcp_client=FakeMCP(),
+        )
+        self.assertEqual(
+            result,
+            {
+                "error": "linear_mutation_outcome_unknown",
+                "reason": "lifecycle_readback_mismatch",
+            },
+        )
+        replay = self.ledger.reserve(
+            operation_key="op-readback-mismatch",
+            tool_name="save_issue",
+            payload={"id": "OPS-1", "state": "progress-1"},
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.assertEqual((replay.dispatch, replay.status), (False, "outcome_unknown"))
+
+    async def test_semantic_start_revalidates_before_vendor_dispatch(self):
+        before = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "delegate": {"id": "actor-1"},
+            "started_states": [
+                {"id": "progress-1", "type": "started", "position": 20}
+            ],
+        }
+        changed = {**before, "delegate": {"id": "other"}}
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "operation_key": "op-pre-dispatch-changed",
+                "lifecycle_action": "start",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(start_contexts=[before, changed]),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {
+                "error": "linear_policy_denied",
+                "reason": "lifecycle_pre_dispatch_changed",
+            },
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_semantic_start_is_noop_when_already_started(self):
+        context = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "progress-1", "type": "started"},
+            "delegate": {"id": "actor-1"},
+            "started_states": [],
+        }
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "operation_key": "op-already-started",
+                "lifecycle_action": "start",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(start_contexts=[context]),
+            mcp_client=mcp,
+        )
+        self.assertEqual(result, {"status": "already_started", "result_id": "progress-1"})
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_semantic_start_denials_never_dispatch_vendor_mutation(self):
+        cases = (
+            ("delegate_mismatch", {"id": "other"}, {"id": "todo-1", "type": "unstarted"}, True),
+            ("issue_not_startable", {"id": "actor-1"}, {"id": "done-1", "type": "completed"}, True),
+            ("source_state_unavailable", {"id": "actor-1"}, {"id": "", "type": "unstarted"}, True),
+            ("started_state_unavailable", {"id": "actor-1"}, {"id": "todo-1", "type": "unstarted"}, False),
+        )
+        for reason, delegate, state, has_started_state in cases:
+            with self.subTest(reason=reason):
+                context = {
+                    "team": {"id": "ops-1"},
+                    "state": state,
+                    "delegate": delegate,
+                    "started_states": (
+                        [{"id": "progress-1", "type": "started", "position": 20}]
+                        if has_started_state
+                        else []
+                    ),
+                }
+                mcp = FakeMCP()
+                result = await execute_with_clients(
+                    profile_id="general",
+                    vendor_tool="save_issue",
+                    arguments={
+                        "id": "OPS-1",
+                        "target_team_id": "ops-1",
+                        "operation_key": "op-" + reason,
+                        "lifecycle_action": "start",
+                    },
+                    mutation=True,
+                    policy=self.policy,
+                    ledger=self.ledger,
+                    graphql_client=FakeGraphQL(start_contexts=[context]),
+                    mcp_client=mcp,
+                )
+                self.assertEqual(
+                    result,
+                    {"error": "linear_policy_denied", "reason": reason},
+                )
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
     async def test_claimed_allowed_team_cannot_mutate_cross_team_issue(self):
         mcp = FakeMCP()

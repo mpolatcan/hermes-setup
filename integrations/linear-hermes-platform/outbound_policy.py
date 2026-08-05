@@ -18,6 +18,7 @@ SAVE_ISSUE_FIELDS = frozenset(
         "title",
         "team",
         "description",
+        "lifecycle_action",
         "state",
         "priority",
         "assignee",
@@ -159,13 +160,23 @@ class OutboundPolicy:
         if target_team_id not in self.allowed_team_ids:
             return PolicyDecision("deny", "team_not_allowed")
         if tool_name == "save_issue":
+            if "state" in arguments:
+                return PolicyDecision("deny", "state_transition_not_allowed")
+            if "lifecycle_action" in arguments:
+                if arguments.get("lifecycle_action") != "start":
+                    return PolicyDecision("deny", "invalid_lifecycle_action")
+                if not arguments.get("id"):
+                    return PolicyDecision("deny", "lifecycle_issue_required")
+                lifecycle_fields = {
+                    "operation_key", "target_team_id", "id", "lifecycle_action"
+                }
+                if set(arguments) - lifecycle_fields:
+                    return PolicyDecision("deny", "lifecycle_fields_not_allowed")
             requested_team = str(arguments.get("team") or "")
             if not arguments.get("id") and not requested_team:
                 return PolicyDecision("deny", "team_argument_required")
             if requested_team and requested_team != target_team_id:
                 return PolicyDecision("deny", "team_argument_mismatch")
-            if "state" in arguments:
-                return PolicyDecision("deny", "state_transition_not_allowed")
             priority = arguments.get("priority")
             if priority is not None and (
                 isinstance(priority, bool)

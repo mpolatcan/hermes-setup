@@ -34,7 +34,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     from outbound_ledger import OutboundLedger, OutboundLedgerError
     from outbound_policy import OutboundPolicy
 
-WRAPPER_FIELDS = frozenset({"operation_key", "target_team_id"})
+WRAPPER_FIELDS = frozenset({"operation_key", "target_team_id", "lifecycle_action"})
 TOOL_MAP = {
     "linear_get_issue": ("get_issue", False),
     "linear_list_issues": ("list_issues", False),
@@ -83,6 +83,7 @@ SAVE_ISSUE_SCHEMA = {
             "title": {"type": "string"},
             "team": {"type": "string"},
             "description": {"type": "string"},
+            "lifecycle_action": {"type": "string", "enum": ["start"]},
             "priority": {"type": "number"},
             "assignee": {"type": "string"},
             "delegate": {"type": "string"},
@@ -194,6 +195,58 @@ async def _authoritative_team_allowed(
     return True
 
 
+def _evaluate_start_context(
+    context: dict[str, Any],
+    *,
+    target_team_id: str,
+    actor_id: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    if str((context.get("team") or {}).get("id") or "") != target_team_id:
+        return None, {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
+    if str((context.get("delegate") or {}).get("id") or "") != actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+    state = context.get("state") or {}
+    state_id = str(state.get("id") or "")
+    state_type = str(state.get("type") or "").casefold()
+    if not state_id:
+        return None, {"error": "linear_policy_denied", "reason": "source_state_unavailable"}
+    if state_type == "started":
+        return None, {"status": "already_started", "result_id": state_id}
+    if state_type not in {"backlog", "unstarted"}:
+        return None, {"error": "linear_policy_denied", "reason": "issue_not_startable"}
+    candidates = []
+    for item in context.get("started_states") or []:
+        item_id = str(item.get("id") or "")
+        position = item.get("position")
+        if (
+            item_id
+            and str(item.get("type") or "").casefold() == "started"
+            and isinstance(position, (int, float))
+            and not isinstance(position, bool)
+        ):
+            candidates.append((float(position), item_id))
+    if not candidates:
+        return None, {"error": "linear_policy_denied", "reason": "started_state_unavailable"}
+    return {
+        "source_state_id": state_id,
+        "target_state_id": min(candidates)[1],
+    }, None
+
+
+async def _resolve_start_transition(
+    issue_id: str,
+    *,
+    target_team_id: str,
+    actor_id: str,
+    graphql_client: LinearClient,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    return _evaluate_start_context(
+        await graphql_client.get_issue_start_context(issue_id),
+        target_team_id=target_team_id,
+        actor_id=actor_id,
+    )
+
+
 async def execute_with_clients(
     *,
     profile_id: str,
@@ -230,7 +283,20 @@ async def execute_with_clients(
     ):
         return {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
 
+    lifecycle_transition: dict[str, str] | None = None
+    if arguments.get("lifecycle_action") == "start":
+        lifecycle_transition, lifecycle_result = await _resolve_start_transition(
+            str(arguments.get("id") or ""),
+            target_team_id=str(arguments.get("target_team_id") or ""),
+            actor_id=graph_actor,
+            graphql_client=graphql_client,
+        )
+        if lifecycle_result is not None:
+            return lifecycle_result
+
     forwarded = {key: value for key, value in arguments.items() if key not in WRAPPER_FIELDS}
+    if lifecycle_transition is not None:
+        forwarded["state"] = lifecycle_transition["target_state_id"]
     if not mutation:
         return await mcp_client.call_tool(vendor_tool, forwarded)
     if ledger is None:
@@ -258,6 +324,32 @@ async def execute_with_clients(
             **({"error_code": reservation.error_code} if reservation.error_code else {}),
         }
 
+    if lifecycle_transition is not None:
+        # Linear exposes no conditional issue mutation. Re-read every mutable
+        # authorization input immediately before this vendor-recommended
+        # non-terminal start. The remaining call boundary is an accepted risk.
+        try:
+            confirmed, confirmation_result = _evaluate_start_context(
+                await graphql_client.get_issue_start_context(
+                    str(arguments.get("id") or "")
+                ),
+                target_team_id=team_id,
+                actor_id=graph_actor,
+            )
+            confirmation_matches = confirmation_result is None and confirmed == lifecycle_transition
+        except Exception:
+            confirmation_matches = False
+        if not confirmation_matches:
+            await asyncio.to_thread(
+                ledger.mark_failed,
+                operation_key,
+                error_code="lifecycle_pre_dispatch_changed",
+            )
+            return {
+                "error": "linear_policy_denied",
+                "reason": "lifecycle_pre_dispatch_changed",
+            }
+
     try:
         result = await mcp_client.call_tool(vendor_tool, forwarded, mutation=True)
     except MCPOutcomeUnknown as exc:
@@ -281,6 +373,32 @@ async def execute_with_clients(
             error_code="mcp_protocol_error",
         )
         return {"error": "linear_outcome_unknown", "reason": "mcp_protocol_error"}
+
+    if lifecycle_transition is not None:
+        try:
+            read_back = await graphql_client.get_issue_start_context(
+                str(arguments.get("id") or "")
+            )
+            read_back_state = read_back.get("state") or {}
+            accepted = (
+                str((read_back.get("team") or {}).get("id") or "") == team_id
+                and str((read_back.get("delegate") or {}).get("id") or "") == graph_actor
+                and str(read_back_state.get("id") or "")
+                == lifecycle_transition["target_state_id"]
+                and str(read_back_state.get("type") or "").casefold() == "started"
+            )
+        except Exception:
+            accepted = False
+        if not accepted:
+            await asyncio.to_thread(
+                ledger.mark_unknown,
+                operation_key,
+                error_code="lifecycle_readback_mismatch",
+            )
+            return {
+                "error": "linear_mutation_outcome_unknown",
+                "reason": "lifecycle_readback_mismatch",
+            }
 
     parsed = _extract_first_json(result)
     result_id = str(parsed.get("id") or parsed.get("identifier") or "") or None

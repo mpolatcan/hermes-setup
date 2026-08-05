@@ -1833,6 +1833,40 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
         context = await client.get_issue_closure_context("issue-1")
         self.assertNotIn("agent_sessions", context)
 
+    async def test_issue_start_context_requests_official_started_state_order_inputs(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn('states(filter: { type: { eq: "started" } })', query)
+            self.assertIn("position", query)
+            self.assertEqual(variables, {"id": "OPS-1"})
+            return {
+                "issue": {
+                    "id": "issue-1",
+                    "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                    "delegate": {"id": "actor-1", "name": "Derya"},
+                    "team": {
+                        "id": "ops-1",
+                        "states": {
+                            "nodes": [
+                                {
+                                    "id": "progress-1",
+                                    "name": "In Progress",
+                                    "type": "started",
+                                    "position": 20,
+                                }
+                            ]
+                        },
+                    },
+                }
+            }
+
+        client.graphql = fake_graphql
+        context = await client.get_issue_start_context("OPS-1")
+        self.assertEqual(context["team"], {"id": "ops-1"})
+        self.assertEqual(context["delegate"]["id"], "actor-1")
+        self.assertEqual(context["started_states"][0]["position"], 20)
+
     async def test_open_blockers_filters_terminal_relations(self):
         client = LinearClient("/unused")
 

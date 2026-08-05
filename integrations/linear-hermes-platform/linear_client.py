@@ -69,6 +69,38 @@ class LinearClient:
             raise LinearAPIError("Issue team could not be resolved for policy")
         return team_id
 
+    async def get_issue_start_context(self, issue_id: str) -> dict[str, Any]:
+        """Read the official Linear inputs for a delegated non-terminal start."""
+        data = await self.graphql(
+            """
+query LinearAgentIssueStart($id: String!) {
+  issue(id: $id) {
+    id
+    state { id name type }
+    delegate { id name }
+    team {
+      id
+      states(filter: { type: { eq: "started" } }) {
+        nodes { id name type position }
+      }
+    }
+  }
+}
+""",
+            {"id": issue_id},
+        )
+        issue = data.get("issue") or {}
+        team = issue.get("team") or {}
+        if not issue.get("id") or not team.get("id"):
+            raise LinearAPIError("Issue start context could not be resolved")
+        return {
+            "id": str(issue.get("id") or ""),
+            "state": dict(issue.get("state") or {}),
+            "delegate": dict(issue.get("delegate") or {}),
+            "team": {"id": str(team.get("id") or "")},
+            "started_states": list(((team.get("states") or {}).get("nodes")) or []),
+        }
+
     async def get_comment_team_id(self, comment_id: str) -> str:
         data = await self.graphql(
             """

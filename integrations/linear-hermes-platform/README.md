@@ -75,6 +75,12 @@ The no-session terminal fence is intentionally durable: if a late vendor-created
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 | `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
 
+## Semantic lifecycle start
+
+The model-facing issue tool never accepts a raw workflow `state`. It exposes only `lifecycle_action=start`, and that action cannot be bundled with any other issue mutation. The wrapper resolves the team's lowest-position `started` state from live Linear data. It dispatches the exact state ID through the official MCP only when the issue is `backlog` or `unstarted`, the source state ID is present, the authoritative team is allowlisted, and the live delegate equals the profile app-user. Already-started is an idempotent no-op; terminal and custom states are never overwritten.
+
+Linear currently exposes no conditional issue mutation for these predicates. The wrapper re-reads team, delegate, source state, and target state after ledger reservation and immediately before dispatch, then verifies team, delegate, exact target state ID, and `started` type after dispatch. A pre-dispatch change produces a durable failed operation with no vendor mutation. A post-dispatch mismatch produces `outcome_unknown` and is never automatically retried. The narrow non-atomic call boundary is accepted only for this vendor-recommended non-terminal start; it does not authorize `complete` or raw state writes.
+
 ## Credential architecture
 
 1Password is canonical for static Linear credentials. Each persona's webhook signing secret lives in its profile-scoped 1Password item and is resolved into the gateway process environment through the unattended SDK bootstrap. Process environment values take precedence over the legacy `credential_env_file`; plaintext secret files are not required for new rollouts. Secrets are never copied through chat, clipboard, the repository, Notion, or Linear.

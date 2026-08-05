@@ -56,7 +56,7 @@ class OutboundPolicyTests(unittest.TestCase):
         )
         self.assertEqual((decision.action, decision.reason), ("deny", "team_argument_mismatch"))
 
-    def test_model_facing_issue_tool_cannot_change_any_workflow_state(self):
+    def test_model_facing_issue_tool_cannot_write_raw_workflow_state(self):
         for state in ("Done", "Completed", "In Progress", "state-uuid"):
             with self.subTest(state=state):
                 decision = self.standard().evaluate(
@@ -68,6 +68,69 @@ class OutboundPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     (decision.action, decision.reason),
                     ("deny", "state_transition_not_allowed"),
+                )
+
+    def test_model_facing_issue_tool_allows_only_semantic_start(self):
+        allowed = self.standard().evaluate(
+            "save_issue",
+            {"id": "OPS-1", "target_team_id": "ops-1", "lifecycle_action": "start"},
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual(allowed.action, "allow")
+        for action in ("complete", "done", "In Progress", ""):
+            with self.subTest(action=action):
+                denied = self.standard().evaluate(
+                    "save_issue",
+                    {"id": "OPS-1", "target_team_id": "ops-1", "lifecycle_action": action},
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (denied.action, denied.reason),
+                    ("deny", "invalid_lifecycle_action"),
+                )
+
+    def test_semantic_start_requires_existing_issue_and_forbids_raw_state(self):
+        policy = self.standard()
+        missing = policy.evaluate(
+            "save_issue",
+            {"target_team_id": "ops-1", "lifecycle_action": "start"},
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        mixed = policy.evaluate(
+            "save_issue",
+            {
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "lifecycle_action": "start",
+                "state": "state-uuid",
+            },
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual((missing.action, missing.reason), ("deny", "lifecycle_issue_required"))
+        self.assertEqual((mixed.action, mixed.reason), ("deny", "state_transition_not_allowed"))
+
+    def test_semantic_start_cannot_bundle_other_issue_mutations(self):
+        policy = self.standard()
+        for field, value in (("delegate", "other"), ("title", "renamed"), ("priority", 1)):
+            with self.subTest(field=field):
+                decision = policy.evaluate(
+                    "save_issue",
+                    {
+                        "id": "OPS-1",
+                        "target_team_id": "ops-1",
+                        "lifecycle_action": "start",
+                        field: value,
+                    },
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("deny", "lifecycle_fields_not_allowed"),
                 )
 
     def test_priority_requires_linear_integer_semantics(self):
