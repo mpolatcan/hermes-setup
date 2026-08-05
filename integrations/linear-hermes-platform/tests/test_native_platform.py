@@ -480,6 +480,15 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
         self.adapter.handle_message = capture
 
+    async def test_health_version_matches_plugin_manifest(self):
+        manifest_version = next(
+            line.split(":", 1)[1].strip().strip('"\'')
+            for line in (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+            if line.startswith("version:")
+        )
+        response = await self.adapter._health(None)
+        self.assertEqual(json.loads(response.text)["version"], manifest_version)
+
     async def asyncTearDown(self):
         pending = [task for tasks in self.adapter._ack_tasks.values() for task in tasks]
         if pending:
