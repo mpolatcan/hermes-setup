@@ -61,6 +61,7 @@ class FakeLinear:
         self.actor_id = "agent-derya"
         self.calls: list[tuple[str, str, str]] = []
         self.blockers: dict[str, list[dict[str, str]]] = {}
+        self.closure_contexts: dict[str, dict] = {}
 
     async def create_activity(
         self,
@@ -80,8 +81,24 @@ class FakeLinear:
     async def get_open_blockers(self, issue_id):
         return list(self.blockers.get(issue_id, []))
 
+    async def get_issue_closure_context(self, issue_id):
+        return dict(self.closure_contexts.get(issue_id, {}))
+
 
 class LedgerTests(unittest.TestCase):
+    def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "bindings.sqlite3")
+            ledger = DeliveryLedger(path)
+            ledger.bind_issue_session("issue-1", "session-1", now=100)
+            self.assertEqual(ledger.get_issue_session("issue-1"), "session-1")
+            ledger.bind_issue_session("issue-1", "session-2", now=101)
+            ledger.close()
+
+            reopened = DeliveryLedger(path)
+            self.assertEqual(reopened.get_issue_session("issue-1"), "session-2")
+            reopened.close()
+
     def test_claim_done_duplicate_and_stale_processing_recovery(self):
         with tempfile.TemporaryDirectory() as td:
             ledger = DeliveryLedger(
@@ -184,8 +201,102 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 4)
             recovered.close()
+
+    def test_closure_outbox_recovers_after_restart_without_duplicate_activity(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "closure.sqlite3")
+            ledger = DeliveryLedger(path, outbox_claim_timeout_seconds=10)
+            inserted = ledger.enqueue_closure_activity(
+                "closure-1",
+                "issue-1",
+                "session-1",
+                "activity-1",
+                "Closure reconciliation complete.",
+                {"actor_id": "human-1"},
+                now=100,
+            )
+            self.assertTrue(inserted)
+            self.assertFalse(
+                ledger.enqueue_closure_activity(
+                    "closure-1",
+                    "issue-1",
+                    "session-1",
+                    "activity-1",
+                    "Closure reconciliation complete.",
+                    {"actor_id": "human-1"},
+                    now=101,
+                )
+            )
+            claimed = ledger.claim_due_outbox(now=100)
+            self.assertEqual(claimed.id, "activity:closure:closure-1")
+            ledger.close()
+
+            recovered = DeliveryLedger(path, outbox_claim_timeout_seconds=10)
+            self.assertIsNone(recovered.claim_due_outbox(now=109))
+            replay = recovered.claim_due_outbox(now=111)
+            self.assertEqual(replay.id, "activity:closure:closure-1")
+            self.assertEqual(replay.payload["activity_id"], "activity-1")
+            recovered.mark_outbox_delivered(replay.id, now=112)
+            self.assertEqual(recovered.get_closure("closure-1")["state"], "completed")
+            self.assertEqual(
+                recovered.outbox_counts(),
+                {"pending": 0, "in_flight": 0, "delivered": 1, "dead": 0},
+            )
+            recovered.close()
+
+    def test_dead_letter_and_redrive_keep_closure_state_aligned(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "closure-dead.sqlite3"))
+            ledger.enqueue_closure_activity(
+                "closure-dead",
+                "issue-1",
+                "session-1",
+                "activity-dead",
+                "Closure reconciliation complete.",
+                {},
+                now=100,
+            )
+            item = ledger.claim_due_outbox(now=100)
+            ledger.dead_letter_outbox(item.id, "permanent", now=101)
+            self.assertEqual(ledger.get_closure("closure-dead")["state"], "failed")
+            self.assertTrue(ledger.requeue_dead_outbox(item.id, now=102))
+            self.assertEqual(ledger.get_closure("closure-dead")["state"], "pending")
+            ledger.close()
+
+    def test_closure_suppresses_earlier_dead_activity(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "closure-dead-predecessor.sqlite3"))
+            ledger.enqueue_outbox(
+                "dead-before-closure",
+                "session-1",
+                "activity.create",
+                {"activity_type": "thought"},
+                now=100,
+            )
+            dead = ledger.claim_due_outbox(now=100)
+            self.assertIsNotNone(dead)
+            ledger.dead_letter_outbox(dead.id, "permanent", now=101)
+
+            inserted = ledger.enqueue_closure_activity(
+                "closure-after-dead",
+                "issue-1",
+                "session-1",
+                "activity-closure-after-dead",
+                "Closure reconciliation complete.",
+                {},
+                now=102,
+            )
+
+            self.assertTrue(inserted)
+            suppressed = ledger.get_outbox_item("dead-before-closure")
+            self.assertEqual(suppressed["state"], "delivered")
+            self.assertIn("authoritative human closure", suppressed["last_error"])
+            closure = ledger.claim_due_outbox(now=102)
+            self.assertIsNotNone(closure)
+            self.assertEqual(closure.id, "activity:closure:closure-after-dead")
+            ledger.close()
 
     def test_dead_letter_can_be_manually_redriven(self):
         with tempfile.TemporaryDirectory() as td:
@@ -199,6 +310,50 @@ class LedgerTests(unittest.TestCase):
 
 
 class AdapterCredentialTests(unittest.TestCase):
+    def test_boolean_and_team_list_config_values_are_strictly_typed(self):
+        base = {
+            "oauth_file": "/tmp/linear-oauth.json",
+            "database_path": "/tmp/linear.sqlite3",
+            "closure_reconciliation_enabled": True,
+            "data_change_events_enabled": True,
+            "closure_allowed_team_ids": ["team-ops"],
+            "issue_status_writeback_enabled": False,
+            "dependency_wait_enabled": False,
+        }
+        unsafe_values = (
+            {"closure_reconciliation_enabled": "false"},
+            {"data_change_events_enabled": "true"},
+            {"issue_status_writeback_enabled": "false"},
+            {"dependency_wait_enabled": "false"},
+            {"closure_allowed_team_ids": "team-ops"},
+            {"closure_allowed_team_ids": ["team-ops", 73]},
+        )
+        with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
+            for unsafe in unsafe_values:
+                with self.subTest(unsafe=unsafe):
+                    config = PlatformConfig(enabled=True, extra={**base, **unsafe})
+                    self.assertFalse(LinearPlatformAdapter.validate_config(config))
+
+        constructed = LinearPlatformAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "database_path": "/tmp/unused.sqlite3",
+                    "closure_reconciliation_enabled": "false",
+                    "data_change_events_enabled": "true",
+                    "dependency_wait_enabled": "true",
+                    "issue_status_writeback_enabled": "true",
+                    "closure_allowed_team_ids": "team-ops",
+                },
+            ),
+            Platform.WEBHOOK,
+        )
+        self.assertFalse(constructed._closure_reconciliation_enabled)
+        self.assertFalse(constructed._data_change_events_enabled)
+        self.assertFalse(constructed._dependency_wait_enabled)
+        self.assertFalse(constructed._status_writeback_enabled)
+        self.assertEqual(constructed._closure_allowed_team_ids, set())
+
     def test_validate_config_accepts_process_environment_secret_without_file(self):
         config = PlatformConfig(
             enabled=True,
@@ -210,6 +365,30 @@ class AdapterCredentialTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
             self.assertTrue(LinearPlatformAdapter.validate_config(config))
+
+    def test_closure_mode_requires_data_events_team_allowlist_and_no_state_writeback(self):
+        base = {
+            "oauth_file": "/tmp/linear-oauth.json",
+            "database_path": "/tmp/linear.sqlite3",
+            "closure_reconciliation_enabled": True,
+            "data_change_events_enabled": True,
+            "closure_allowed_team_ids": ["team-ops"],
+            "issue_status_writeback_enabled": False,
+        }
+        with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
+            self.assertTrue(
+                LinearPlatformAdapter.validate_config(PlatformConfig(enabled=True, extra=base))
+            )
+            for unsafe in (
+                {"data_change_events_enabled": False},
+                {"closure_allowed_team_ids": []},
+                {"issue_status_writeback_enabled": True},
+            ):
+                self.assertFalse(
+                    LinearPlatformAdapter.validate_config(
+                        PlatformConfig(enabled=True, extra={**base, **unsafe})
+                    )
+                )
 
     def test_process_environment_secret_overrides_legacy_file(self):
         with tempfile.TemporaryDirectory() as td:
@@ -292,6 +471,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._ledger = DeliveryLedger(db_path)
         self.adapter._data_change_events_enabled = True
         self.adapter._dependency_wait_enabled = True
+        self.adapter._closure_reconciliation_enabled = False
+        self.adapter._closure_allowed_team_ids = set()
         self.events = []
 
         async def capture(event):
@@ -448,8 +629,32 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response.text)["status"], "awaiting_input")
         self.assertEqual(self.events, [])
         self.assertEqual(self.adapter._ledger.get_wait("session-8")["state"], "waiting")
+        self.assertEqual(self.adapter._linear.calls, [])
+        await self.adapter._drain_outbox_once()
         self.assertEqual(self.adapter._linear.calls[0][1], "elicitation")
         self.assertIn("OPS-7", self.adapter._linear.calls[0][2])
+
+    async def test_blocked_delegation_does_not_drain_outbox_in_webhook(self):
+        self.adapter._linear.blockers["issue-8"] = [
+            {"id": "blocker-7", "identifier": "OPS-7", "title": "Human approval"}
+        ]
+        payload = self.make_payload(
+            webhookId="webhook-wait-no-drain",
+            agentSession={
+                "id": "session-8",
+                "issue": {"id": "issue-8", "identifier": "OPS-8", "title": "No drain"},
+            },
+        )
+
+        with mock.patch.object(
+            self.adapter,
+            "_drain_outbox_once",
+            side_effect=AssertionError("webhook drained outbox"),
+        ):
+            response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "awaiting_input")
+        self.assertEqual(self.adapter._ledger.outbox_counts()["pending"], 1)
 
     async def test_blocker_update_resumes_same_session_exactly_once(self):
         self.adapter._linear.blockers["issue-8"] = [
@@ -481,6 +686,615 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         duplicate = await self.adapter._handle_webhook(self.request_for(updated))
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
+
+    async def test_human_started_to_completed_queues_one_closure_without_rerunning_work(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        created = self.make_payload(
+            webhookId="webhook-closure-session",
+            agentSession={
+                "id": "session-closure",
+                "issue": {"id": "issue-closure", "identifier": "OPS-73", "title": "Closure"},
+            },
+        )
+        await self.adapter._handle_webhook(self.request_for(created))
+        await asyncio.sleep(0)
+        self.adapter._linear.calls.clear()
+        self.events.clear()
+        self.adapter._ledger.put_wait(
+            "session-closure",
+            "issue-closure",
+            "wait-delivery-closure",
+            {"text": "do not rerun", "issue_identifier": "OPS-73", "issue_title": "Closure"},
+            [{"id": "blocker-1", "identifier": "OPS-1", "title": "Blocker"}],
+        )
+        self.adapter._linear.closure_contexts["issue-closure"] = {
+            "id": "issue-closure",
+            "identifier": "OPS-73",
+            "title": "Closure",
+            "completed_at": "2026-08-04T12:21:07.002Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:21:06.002Z",
+                "from_state": {"id": "started-1", "name": "In Progress", "type": "started"},
+                "to_state": {"id": "done-1", "name": "Done", "type": "completed"},
+            }],
+        }
+        completed = self.make_data_payload(
+            webhookId="webhook-human-completed-1",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": "issue-closure",
+                "updatedAt": "2026-08-04T12:21:04.002Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._linear.calls, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+        session_id, activity_type, body = self.adapter._linear.calls[0]
+        self.assertEqual((session_id, activity_type), ("session-closure", "response"))
+        self.assertIn("Closure reconciliation complete", body)
+        self.assertIn("Mutlu", body)
+        self.assertIn("In Progress", body)
+        self.assertIn("Done", body)
+        self.assertIn("not rerun", body)
+        self.assertEqual(self.adapter._ledger.get_wait("session-closure")["state"], "canceled")
+
+        late = await self.adapter.send("session-closure", "late main deliverable")
+        self.assertTrue(late.success)
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+
+        self.adapter._ledger.bind_issue_session(
+            "issue-closure", "session-newer", now=int(time.time()) + 1
+        )
+        closure_duplicate = await self.adapter._reconcile_human_completion(
+            completed, "issue-closure"
+        )
+        self.assertEqual(closure_duplicate, "closure_duplicate")
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+
+        tolerated_revision = dict(completed)
+        tolerated_revision["data"] = {
+            **completed["data"],
+            "updatedAt": "2026-08-04T12:21:04.999Z",
+        }
+        closure_revision_duplicate = await self.adapter._reconcile_human_completion(
+            tolerated_revision, "issue-closure"
+        )
+        self.assertEqual(closure_revision_duplicate, "closure_duplicate")
+        self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 1)
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+
+        duplicate_delivery = dict(completed, webhookId="webhook-human-completed-2")
+        duplicate = await self.adapter._handle_webhook(self.request_for(duplicate_delivery))
+        self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+        self.assertEqual(self.events, [])
+
+    async def test_done_before_session_creation_is_durably_fenced_and_reconciled(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        self.adapter._linear.closure_contexts["issue-out-of-order"] = {
+            "id": "issue-out-of-order",
+            "identifier": "OPS-73",
+            "title": "Out of order closure",
+            "completed_at": "2026-08-04T12:30:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:30:00.000Z",
+                "from_state": {"id": "started-1", "type": "started"},
+                "to_state": {"id": "done-1", "type": "completed"},
+            }],
+        }
+        completed = self.make_data_payload(
+            webhookId="webhook-out-of-order-done",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": "issue-out-of-order",
+                "updatedAt": "2026-08-04T12:30:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        deferred = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(deferred.text)["status"], "closure_deferred")
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
+        self.assertEqual(self.events, [])
+
+        created = self.make_payload(
+            webhookId="webhook-out-of-order-created",
+            agentSession={
+                "id": "session-out-of-order",
+                "issue": {
+                    "id": "issue-out-of-order",
+                    "identifier": "OPS-73",
+                    "title": "Out of order closure",
+                },
+            },
+        )
+        reconciled = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(reconciled.text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(
+            [call[1] for call in self.adapter._linear.calls],
+            ["response"],
+        )
+
+    async def test_concurrent_done_before_session_creation_fences_dispatch(self):
+        class BlockingClosureReadLinear(FakeLinear):
+            def __init__(self):
+                super().__init__("org-1")
+                self.read_started = asyncio.Event()
+                self.release_read = asyncio.Event()
+
+            async def get_issue_closure_context(self, issue_id):
+                self.read_started.set()
+                await self.release_read.wait()
+                return await super().get_issue_closure_context(issue_id)
+
+        linear = BlockingClosureReadLinear()
+        self.adapter._linear = linear
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-concurrent-order"
+        session_id = "session-concurrent-order"
+        linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "identifier": "OPS-73",
+            "title": "Concurrent closure",
+            "completed_at": "2026-08-04T12:31:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:31:00.000Z",
+                "from_state": {"id": "started-1", "type": "started"},
+                "to_state": {"id": "done-1", "type": "completed"},
+            }],
+        }
+        completed = self.make_data_payload(
+            webhookId="webhook-concurrent-order-done",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-04T12:31:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+        created = self.make_payload(
+            webhookId="webhook-concurrent-order-created",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-73", "title": "Concurrent closure"},
+            },
+        )
+
+        done_task = asyncio.create_task(self.adapter._handle_webhook(self.request_for(completed)))
+        await linear.read_started.wait()
+        created_task = asyncio.create_task(self.adapter._handle_webhook(self.request_for(created)))
+        await asyncio.sleep(0)
+        self.assertEqual(self.events, [])
+        self.assertFalse(created_task.done())
+        linear.release_read.set()
+
+        self.assertEqual(json.loads((await done_task).text)["status"], "closure_deferred")
+        self.assertEqual(json.loads((await created_task).text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
+
+    async def test_obsolete_pending_closure_does_not_consume_created_event(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-obsolete-fence"
+        session_id = "session-obsolete-fence"
+        event = {
+            "actor": {"id": "user-1"},
+            "data": {
+                "id": issue_id,
+                "updatedAt": "2026-08-04T12:32:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            "updatedFrom": {"stateId": "started-1"},
+        }
+        self.adapter._ledger.stage_pending_closure_event(
+            issue_id, 1.0, event
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "started-2", "name": "Reopened", "type": "started"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-obsolete-fence-created",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-73", "title": "Reopened"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
+
+    async def test_unverifiable_pending_closure_retries_created_and_degrades_health(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-unverifiable-fence"
+        session_id = "session-unverifiable-fence"
+        event = {
+            "actor": {"id": "user-1"},
+            "data": {
+                "id": issue_id,
+                "updatedAt": "2026-08-04T12:33:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            "updatedFrom": {"stateId": "started-1"},
+        }
+        self.adapter._ledger.stage_pending_closure_event(
+            issue_id, 1.0, event
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "completed_at": "2026-08-04T12:33:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [],
+        }
+        created = self.make_payload(
+            webhookId="webhook-unverifiable-fence-created",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-73", "title": "Unverified"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+        self.adapter._running = True
+        health = await self.adapter._health(None)
+        health_body = json.loads(health.text)
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(json.loads(response.text)["status"], "closure_deferred")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
+        self.assertEqual(health_body["status"], "degraded")
+        self.assertEqual(health_body["closures"]["pending_session_binding"], 1)
+
+    async def test_closure_fails_closed_for_spoofed_actor_wrong_team_or_wrong_delegate(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        cases = (
+            ("spoofed-actor", "attacker", "user-1", "team-ops", "agent-derya"),
+            ("wrong-team", "user-1", "user-1", "team-other", "agent-derya"),
+            ("wrong-delegate", "user-1", "user-1", "team-ops", "agent-other"),
+            ("forged-history", "user-1", "agent-derya", "team-ops", "agent-derya"),
+        )
+        for index, (label, actor_id, history_actor_id, team_id, delegate_id) in enumerate(cases):
+            with self.subTest(label=label):
+                issue_id = f"issue-reject-{index}"
+                session_id = f"session-reject-{index}"
+                self.adapter._linear.closure_contexts[issue_id] = {
+                    "id": issue_id,
+                    "identifier": f"OPS-{80 + index}",
+                    "title": label,
+                    "completed_at": f"2026-08-04T12:22:0{index}.000Z",
+                    "state": {"id": "done-1", "name": "Done", "type": "completed"},
+                    "team": {"id": team_id},
+                    "team_states": [
+                        {"id": "started-1", "name": "In Progress", "type": "started"},
+                        {"id": "done-1", "name": "Done", "type": "completed"},
+                    ],
+                    "assignee": {"id": "user-1", "name": "Mutlu"},
+                    "delegate": {"id": delegate_id, "name": "Delegate"},
+                    "history": [{
+                        "actor_id": history_actor_id,
+                        "created_at": f"2026-08-04T12:22:0{index}.000Z",
+                        "from_state": {"id": "started-1", "type": "started"},
+                        "to_state": {"id": "done-1", "type": "completed"},
+                    }],
+                }
+                self.adapter._ledger.bind_issue_session(issue_id, session_id)
+                payload = self.make_data_payload(
+                    webhookId=f"webhook-reject-{index}",
+                    actor={"id": actor_id, "name": "Actor"},
+                    data={
+                        "id": issue_id,
+                        "updatedAt": f"2026-08-04T12:22:0{index}.000Z",
+                        "state": {"id": "done-1", "type": "completed"},
+                    },
+                    updatedFrom={"stateId": "started-1"},
+                )
+                response = await self.adapter._handle_webhook(self.request_for(payload))
+                self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
+        self.assertEqual(self.adapter._linear.calls, [])
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 0)
+
+    async def test_closure_rejects_timestamp_skew_outside_bounded_tolerance(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        self.adapter._ledger.bind_issue_session("issue-skew", "session-skew")
+        self.adapter._linear.closure_contexts["issue-skew"] = {
+            "id": "issue-skew",
+            "completed_at": "2026-08-04T12:30:06.001Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:30:06.001Z",
+                "from_state": {"id": "started-1", "type": "started"},
+                "to_state": {"id": "done-1", "type": "completed"},
+            }],
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-skew-too-large",
+            data={
+                "id": "issue-skew",
+                "updatedAt": "2026-08-04T12:30:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+        self.assertEqual(self.adapter._linear.calls, [])
+
+    async def test_closure_waits_for_claimed_network_dispatch_then_suppresses_later_writes(self):
+        class BlockingLinear(FakeLinear):
+            def __init__(self):
+                super().__init__("org-1")
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def create_activity(self, session_id, activity_type, body, *, activity_id):
+                self.started.set()
+                await self.release.wait()
+                return await super().create_activity(
+                    session_id, activity_type, body, activity_id=activity_id
+                )
+
+        linear = BlockingLinear()
+        self.adapter._linear = linear
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        self.adapter._ledger.bind_issue_session("issue-race", "session-race")
+        linear.closure_contexts["issue-race"] = {
+            "id": "issue-race",
+            "completed_at": "2026-08-04T12:40:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:40:00.000Z",
+                "from_state": {"id": "started-1", "type": "started"},
+                "to_state": {"id": "done-1", "type": "completed"},
+            }],
+        }
+        self.adapter._enqueue_activity(
+            "session-race", "thought", "already claimed", item_key="race-before-closure"
+        )
+        drain_task = asyncio.create_task(self.adapter._drain_outbox_once())
+        await linear.started.wait()
+        payload = self.make_data_payload(
+            data={
+                "id": "issue-race",
+                "updatedAt": "2026-08-04T12:40:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+        closure_task = asyncio.create_task(
+            self.adapter._reconcile_human_completion(payload, "issue-race")
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+
+        linear.release.set()
+        await drain_task
+        self.assertEqual(linear.calls, [("session-race", "thought", "already claimed")])
+        self.assertEqual(await closure_task, "closure_queued")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+        await self.adapter._drain_outbox_once()
+        self.assertEqual([call[1] for call in linear.calls], ["thought", "response"])
+
+    async def test_dependency_resume_checks_closure_immediately_before_handle_message(self):
+        payload = self.make_payload(
+            webhookId="webhook-dependency-closure-race",
+            agentSession={
+                "id": "session-dependency-race",
+                "issue": {"id": "issue-dependency-race", "identifier": "OPS-74", "title": "Race"},
+            },
+        )
+        self.adapter._ledger.bind_issue_session(
+            "issue-dependency-race", "session-dependency-race"
+        )
+        self.adapter._ledger.put_wait(
+            "session-dependency-race",
+            "issue-dependency-race",
+            "dependency-race-delivery",
+            payload,
+            [{"id": "blocker", "identifier": "OPS-72", "title": "Blocker"}],
+        )
+        original_claim_wait = self.adapter._ledger.claim_wait
+
+        def claim_then_close(session_id, *, now=None):
+            claimed = original_claim_wait(session_id, now=now)
+            if claimed:
+                self.adapter._ledger.enqueue_closure_activity(
+                    "dependency-race-closure",
+                    "issue-dependency-race",
+                    session_id,
+                    "activity-dependency-race-closure",
+                    "Closure reconciliation complete.",
+                    {},
+                )
+            return claimed
+
+        self.adapter._ledger.claim_wait = claim_then_close
+        self.adapter._linear.blockers["issue-dependency-race"] = []
+
+        resumed = await self.adapter._reconcile_wait("session-dependency-race")
+
+        self.assertFalse(resumed)
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_wait("session-dependency-race")["state"], "canceled"
+        )
+
+    async def test_closure_readback_holds_session_lock_before_dependency_resume(self):
+        class BlockingClosureReadLinear(FakeLinear):
+            def __init__(self):
+                super().__init__("org-1")
+                self.read_started = asyncio.Event()
+                self.release_read = asyncio.Event()
+
+            async def get_issue_closure_context(self, issue_id):
+                self.read_started.set()
+                await self.release_read.wait()
+                return await super().get_issue_closure_context(issue_id)
+
+        linear = BlockingClosureReadLinear()
+        self.adapter._linear = linear
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-readback-race"
+        session_id = "session-readback-race"
+        payload = self.make_payload(
+            webhookId="webhook-readback-race-session",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-73", "title": "Read race"},
+            },
+        )
+        self.adapter._ledger.bind_issue_session(issue_id, session_id)
+        self.adapter._ledger.put_wait(
+            session_id,
+            issue_id,
+            "readback-race-delivery",
+            payload,
+            [{"id": "blocker", "identifier": "OPS-72", "title": "Blocker"}],
+        )
+        linear.blockers[issue_id] = []
+        linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "completed_at": "2026-08-04T12:45:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-04T12:45:00.000Z",
+                "from_state": {"id": "started-1", "type": "started"},
+                "to_state": {"id": "done-1", "type": "completed"},
+            }],
+        }
+        completed = self.make_data_payload(
+            webhookId="webhook-readback-race-done",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-04T12:45:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        closure_task = asyncio.create_task(
+            self.adapter._reconcile_human_completion(completed, issue_id)
+        )
+        await linear.read_started.wait()
+        resume_task = asyncio.create_task(self.adapter._reconcile_wait(session_id))
+        await asyncio.sleep(0)
+        linear.release_read.set()
+
+        self.assertEqual(await closure_task, "closure_queued")
+        self.assertFalse(await resume_task)
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.get_wait(session_id)["state"], "canceled")
+
+    async def test_agent_authored_terminal_event_is_ignored_before_closure_readback(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        payload = self.make_data_payload(
+            webhookId="webhook-self-terminal",
+            actor={"id": "agent-derya", "name": "Derya"},
+            data={
+                "id": "issue-self",
+                "updatedAt": "2026-08-04T12:23:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+        self.assertEqual(json.loads(response.text)["status"], "ignored_self")
+        self.assertEqual(self.adapter._linear.calls, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 0)
 
     async def test_selected_linear_data_types_are_context_only(self):
         event_types = (
@@ -706,6 +1520,24 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_closure_context_does_not_query_internal_agent_sessions(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertNotIn("agentSessions", query)
+            self.assertEqual(variables, {"id": "issue-1"})
+            return {
+                "issue": {
+                    "id": "issue-1",
+                    "team": {"id": "team-ops", "states": {"nodes": []}},
+                    "history": {"nodes": []},
+                }
+            }
+
+        client.graphql = fake_graphql
+        context = await client.get_issue_closure_context("issue-1")
+        self.assertNotIn("agent_sessions", context)
+
     async def test_open_blockers_filters_terminal_relations(self):
         client = LinearClient("/unused")
 

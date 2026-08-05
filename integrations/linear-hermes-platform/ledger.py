@@ -79,8 +79,30 @@ class DeliveryLedger:
             "CREATE INDEX IF NOT EXISTS waiting_issue_state_idx "
             "ON waiting_executions(issue_id, state, updated_at)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 2:
-            self._db.execute("PRAGMA user_version=2")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS issue_session_bindings ("
+            "issue_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS closure_reconciliations ("
+            "closure_key TEXT PRIMARY KEY, issue_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+            "outbox_id TEXT NOT NULL UNIQUE, evidence_json TEXT NOT NULL, "
+            "state TEXT NOT NULL CHECK(state IN ('pending', 'completed', 'failed')), "
+            "last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, "
+            "completed_at INTEGER)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS closure_issue_state_idx "
+            "ON closure_reconciliations(issue_id, state, updated_at)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS pending_closure_events ("
+            "issue_id TEXT PRIMARY KEY, event_revision REAL NOT NULL, "
+            "event_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 4:
+            self._db.execute("PRAGMA user_version=4")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Replay uses the original stable delivery key, so the
         # gateway/outbox idempotency layers suppress an ambiguous duplicate.
@@ -90,8 +112,90 @@ class DeliveryLedger:
             "updated_at = ? WHERE state = 'resuming'",
             (int(time.time()),),
         )
+        self._db.execute(
+            "UPDATE closure_reconciliations SET state = 'completed', last_error = NULL, "
+            "updated_at = COALESCE((SELECT delivered_at FROM outbox "
+            "WHERE outbox.id = closure_reconciliations.outbox_id), updated_at), "
+            "completed_at = COALESCE((SELECT delivered_at FROM outbox "
+            "WHERE outbox.id = closure_reconciliations.outbox_id), completed_at) "
+            "WHERE state != 'completed' AND EXISTS (SELECT 1 FROM outbox "
+            "WHERE outbox.id = closure_reconciliations.outbox_id AND outbox.state = 'delivered')"
+        )
         self._db.commit()
         self.prune()
+
+    def bind_issue_session(
+        self, issue_id: str, session_id: str, *, now: int | None = None,
+    ) -> None:
+        """Record the latest locally accepted Agent Session creation for an issue."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO issue_session_bindings(issue_id, session_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET "
+                "session_id=excluded.session_id, updated_at=excluded.updated_at",
+                (issue_id, session_id, now, now),
+            )
+            self._db.commit()
+
+    def get_issue_session(self, issue_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT session_id FROM issue_session_bindings WHERE issue_id = ?",
+                (issue_id,),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def stage_pending_closure_event(
+        self,
+        issue_id: str,
+        event_revision: float,
+        event: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> None:
+        """Durably fence an authoritative terminal event until its session is bound."""
+        now = int(time.time()) if now is None else int(now)
+        encoded = json.dumps(
+            event, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pending_closure_events("
+                "issue_id, event_revision, event_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET "
+                "event_revision=excluded.event_revision, event_json=excluded.event_json, "
+                "updated_at=excluded.updated_at "
+                "WHERE excluded.event_revision >= pending_closure_events.event_revision",
+                (issue_id, float(event_revision), encoded, now, now),
+            )
+            self._db.commit()
+
+    def get_pending_closure_event(self, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT event_revision, event_json FROM pending_closure_events WHERE issue_id = ?",
+                (issue_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"event_revision": float(row[0]), "event": json.loads(row[1])}
+
+    def pending_closure_count(self) -> int:
+        with self._lock:
+            return int(
+                self._db.execute("SELECT COUNT(*) FROM pending_closure_events").fetchone()[0]
+            )
+
+    def clear_pending_closure_event(self, issue_id: str, event_revision: float) -> bool:
+        """Clear only the exact obsolete fence observed by the caller."""
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM pending_closure_events WHERE issue_id = ? AND event_revision = ?",
+                (issue_id, float(event_revision)),
+            )
+            self._db.commit()
+            return bool(cur.rowcount)
 
     def claim(self, webhook_id: str, *, now: int | None = None) -> bool:
         now = int(time.time()) if now is None else int(now)
@@ -169,6 +273,127 @@ class DeliveryLedger:
             self._db.commit()
             return True
 
+    def enqueue_closure_activity(
+        self,
+        closure_key: str,
+        issue_id: str,
+        session_id: str,
+        activity_id: str,
+        body: str,
+        evidence: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> bool:
+        """Atomically persist closure evidence and its deterministic Linear response."""
+        now = int(time.time()) if now is None else int(now)
+        outbox_id = f"activity:closure:{closure_key}"
+        payload_json = json.dumps(
+            {
+                "activity_id": activity_id,
+                "agent_session_id": session_id,
+                "activity_type": "response",
+                "body": body,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        evidence_json = json.dumps(
+            evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            if self._db.execute(
+                "SELECT 1 FROM closure_reconciliations WHERE closure_key = ?", (closure_key,)
+            ).fetchone():
+                self._db.rollback()
+                return False
+            sequence = int(
+                self._db.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM outbox WHERE aggregate_key = ?",
+                    (session_id,),
+                ).fetchone()[0]
+            )
+            self._db.execute(
+                "UPDATE waiting_executions SET state = 'canceled', updated_at = ? "
+                "WHERE session_id = ? AND state IN ('waiting', 'resuming')",
+                (now, session_id),
+            )
+            self._db.execute(
+                "UPDATE outbox SET state = 'delivered', "
+                "last_error = 'Suppressed by authoritative human closure', "
+                "updated_at = ?, delivered_at = ? "
+                "WHERE aggregate_key = ? AND state IN ('pending', 'in_flight', 'dead')",
+                (now, now, session_id),
+            )
+            self._db.execute(
+                "INSERT INTO outbox("
+                "id, aggregate_key, sequence, operation, payload_json, state, attempts, "
+                "next_attempt_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, 'activity.create', ?, 'pending', 0, ?, ?, ?)",
+                (outbox_id, session_id, sequence, payload_json, now, now, now),
+            )
+            self._db.execute(
+                "INSERT INTO closure_reconciliations("
+                "closure_key, issue_id, session_id, outbox_id, evidence_json, state, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (closure_key, issue_id, session_id, outbox_id, evidence_json, now, now),
+            )
+            self._db.execute(
+                "DELETE FROM pending_closure_events WHERE issue_id = ?",
+                (issue_id,),
+            )
+            self._db.commit()
+            return True
+
+    def get_closure(self, closure_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT closure_key, issue_id, session_id, outbox_id, evidence_json, state, "
+                "last_error, created_at, updated_at, completed_at "
+                "FROM closure_reconciliations WHERE closure_key = ?", (closure_key,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "closure_key": str(row[0]),
+            "issue_id": str(row[1]),
+            "session_id": str(row[2]),
+            "outbox_id": str(row[3]),
+            "evidence": json.loads(row[4]),
+            "state": str(row[5]),
+            "last_error": row[6],
+            "created_at": int(row[7]),
+            "updated_at": int(row[8]),
+            "completed_at": int(row[9]) if row[9] is not None else None,
+        }
+
+    def has_session_closure(self, session_id: str) -> bool:
+        with self._lock:
+            return bool(
+                self._db.execute(
+                    "SELECT 1 FROM closure_reconciliations WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            )
+
+    def closure_counts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, COUNT(*) FROM closure_reconciliations GROUP BY state"
+            ).fetchall()
+            pending_session_binding = int(
+                self._db.execute("SELECT COUNT(*) FROM pending_closure_events").fetchone()[0]
+            )
+        result = {
+            "pending": 0,
+            "completed": 0,
+            "failed": 0,
+            "pending_session_binding": pending_session_binding,
+        }
+        result.update({str(state): int(count) for state, count in rows})
+        return result
+
     def claim_due_outbox(self, *, now: float | None = None) -> OutboxItem | None:
         """Claim one due head-of-line item; dead activities block completion, dead status writes do not."""
         now = time.time() if now is None else float(now)
@@ -217,6 +442,11 @@ class DeliveryLedger:
                 "updated_at = ?, delivered_at = ? WHERE id = ?",
                 (now, now, item_id),
             )
+            self._db.execute(
+                "UPDATE closure_reconciliations SET state = 'completed', last_error = NULL, "
+                "updated_at = ?, completed_at = ? WHERE outbox_id = ?",
+                (now, now, item_id),
+            )
             self._db.commit()
 
     def reschedule_outbox(
@@ -241,6 +471,11 @@ class DeliveryLedger:
         with self._lock:
             self._db.execute(
                 "UPDATE outbox SET state = 'dead', last_error = ?, updated_at = ? WHERE id = ?",
+                (error[:1000], now, item_id),
+            )
+            self._db.execute(
+                "UPDATE closure_reconciliations SET state = 'failed', last_error = ?, "
+                "updated_at = ? WHERE outbox_id = ?",
                 (error[:1000], now, item_id),
             )
             self._db.commit()
@@ -284,6 +519,12 @@ class DeliveryLedger:
                 "updated_at = ? WHERE id = ? AND state = 'dead'",
                 (now, now, item_id),
             )
+            if cur.rowcount:
+                self._db.execute(
+                    "UPDATE closure_reconciliations SET state = 'pending', last_error = NULL, "
+                    "updated_at = ? WHERE outbox_id = ?",
+                    (now, item_id),
+                )
             self._db.commit()
             return bool(cur.rowcount)
 
@@ -307,6 +548,11 @@ class DeliveryLedger:
         prompt_json = json.dumps(prompt, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         blockers_json = json.dumps(blockers, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         with self._lock:
+            if self._db.execute(
+                "SELECT 1 FROM closure_reconciliations WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                return
             self._db.execute(
                 "INSERT INTO waiting_executions("
                 "session_id, issue_id, delivery_key, prompt_json, blockers_json, state, "

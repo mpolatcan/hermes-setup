@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _WEBHOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,200}$")
 _ALLOWED_ACTIONS = {"created", "prompted"}
+_CLOSURE_TIMESTAMP_TOLERANCE_SECONDS = 5.0
 _CONTROL_EVENT_TYPES = {
     "Issue",
     "IssueRelation",
@@ -98,6 +99,12 @@ def _payload_timestamp_seconds(payload: dict[str, Any]) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _iso_timestamp(value: str) -> float:
+    if not value:
+        raise ValueError("missing timestamp")
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
 def _organization_id(payload: dict[str, Any]) -> str | None:
@@ -260,10 +267,18 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._outbox_poll_seconds = float(extra.get("outbox_poll_seconds") or 1.0)
         self._outbox_base_delay = float(extra.get("outbox_base_delay_seconds") or 2.0)
         self._outbox_max_delay = float(extra.get("outbox_max_delay_seconds") or 300.0)
-        self._status_writeback_enabled = bool(extra.get("issue_status_writeback_enabled", False))
-        self._data_change_events_enabled = bool(extra.get("data_change_events_enabled", False))
-        self._dependency_wait_enabled = bool(extra.get("dependency_wait_enabled", False))
+        self._status_writeback_enabled = extra.get("issue_status_writeback_enabled") is True
+        self._data_change_events_enabled = extra.get("data_change_events_enabled") is True
+        self._dependency_wait_enabled = extra.get("dependency_wait_enabled") is True
         self._dependency_poll_seconds = max(5.0, float(extra.get("dependency_poll_seconds") or 60.0))
+        self._closure_reconciliation_enabled = extra.get("closure_reconciliation_enabled") is True
+        allowed_closure_teams = extra.get("closure_allowed_team_ids")
+        if not isinstance(allowed_closure_teams, list):
+            allowed_closure_teams = []
+        self._closure_allowed_team_ids = {
+            str(team_id) for team_id in allowed_closure_teams
+            if isinstance(team_id, str) and team_id
+        }
         configured_states = extra.get("issue_status_mapping") or {}
         self._status_mapping = {
             "queued": str(configured_states.get("queued") or "Todo"),
@@ -285,6 +300,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._oauth_revoked = False
         self._outbox_wakeup = asyncio.Event()
         self._outbox_drain_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._issue_locks: dict[str, asyncio.Lock] = {}
         self.config.typing_indicator = False
 
     @property
@@ -304,9 +321,33 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     def validate_config(config: PlatformConfig) -> bool:
         extra = config.extra
         required = ("oauth_file", "database_path")
+        boolean_keys = (
+            "issue_status_writeback_enabled",
+            "data_change_events_enabled",
+            "dependency_wait_enabled",
+            "closure_reconciliation_enabled",
+        )
+        if any(key in extra and type(extra[key]) is not bool for key in boolean_keys):
+            return False
+        allowed = extra.get("closure_allowed_team_ids", [])
+        if not (
+            isinstance(allowed, list)
+            and all(isinstance(team_id, str) and team_id for team_id in allowed)
+        ):
+            return False
         has_secret_source = bool(
             extra.get("credential_env_file") or os.environ.get("LINEAR_WEBHOOK_SECRET")
         )
+        if extra.get("closure_reconciliation_enabled") is True:
+            closure_safe = bool(
+                extra.get("data_change_events_enabled") is True
+                and extra.get("issue_status_writeback_enabled") is not True
+                and isinstance(allowed, list)
+                and allowed
+                and all(isinstance(team_id, str) and team_id for team_id in allowed)
+            )
+            if not closure_safe:
+                return False
         return all(bool(extra.get(key)) for key in required) and has_secret_source
 
     @classmethod
@@ -406,7 +447,14 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         )
         outbox = self._ledger.outbox_counts() if self._ledger is not None else {}
         waiting = self._ledger.waiting_counts() if self._ledger is not None else {}
-        degraded = int(outbox.get("dead", 0)) or int(waiting.get("failed", 0)) or self._oauth_revoked
+        closures = self._ledger.closure_counts() if self._ledger is not None else {}
+        degraded = (
+            int(outbox.get("dead", 0))
+            or int(waiting.get("failed", 0))
+            or int(closures.get("failed", 0))
+            or int(closures.get("pending_session_binding", 0))
+            or self._oauth_revoked
+        )
         status = "degraded" if healthy and degraded else ("ok" if healthy else "starting")
         return web.json_response(
             {
@@ -418,9 +466,11 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
                     "dependency_wait": self._dependency_wait_enabled,
                     "status_writeback": self._status_writeback_enabled,
+                    "closure_reconciliation": self._closure_reconciliation_enabled,
                 },
                 "outbox": outbox,
                 "waiting": waiting,
+                "closures": closures,
                 "oauth_revoked": self._oauth_revoked,
             },
             status=200 if healthy else 503,
@@ -486,6 +536,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         is_stop = action == "prompted" and signal == "stop"
         delivery_key = _delivery_key(payload, raw)
         claimed = False
+        dispatch_lock: asyncio.Lock | None = None
+        dispatch_lock_held = False
         try:
             if not self._ledger.claim(delivery_key):
                 logger.info(
@@ -495,6 +547,27 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 )
                 return web.json_response({"status": "duplicate"}, status=200)
             claimed = True
+            if action == "created" and issue_id:
+                async with self._issue_lock(issue_id):
+                    self._ledger.bind_issue_session(issue_id, agent_session_id)
+                    pending_closure = self._ledger.get_pending_closure_event(issue_id)
+                    if pending_closure is not None:
+                        closure_status = await self._reconcile_human_completion(
+                            pending_closure["event"], issue_id, _issue_locked=True
+                        )
+                        if closure_status in {"closure_queued", "closure_duplicate"}:
+                            self._ledger.mark_done(delivery_key)
+                            return web.json_response({"status": closure_status}, status=200)
+                        if closure_status == "closure_obsolete":
+                            self._ledger.clear_pending_closure_event(
+                                issue_id, pending_closure["event_revision"]
+                            )
+                        else:
+                            self._ledger.release(delivery_key)
+                            claimed = False
+                            return web.json_response(
+                                {"status": "closure_deferred"}, status=503
+                            )
             if is_stop:
                 self._ledger.cancel_wait(agent_session_id)
             if action == "created" and self._dependency_wait_enabled and issue_id:
@@ -516,13 +589,18 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     )
                     self._enqueue_status(agent_session_id, issue_id, "blocked", delivery_key)
                     self._ledger.mark_done(delivery_key)
-                    await self._drain_outbox_once()
                     # Close the race where the last blocker completed between the
                     # initial query and the durable wait commit.
                     resumed = await self._reconcile_wait(agent_session_id)
                     return web.json_response(
                         {"status": "accepted" if resumed else "awaiting_input"}, status=200
                     )
+            dispatch_lock = self._session_lock(agent_session_id)
+            await dispatch_lock.acquire()
+            dispatch_lock_held = True
+            if not is_stop and self._ledger.has_session_closure(agent_session_id):
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "closure_reconciled"}, status=200)
             event = self._message_event(payload, delivery_key, webhook_id)
             if not is_stop:
                 self._schedule_thought(
@@ -561,6 +639,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return web.json_response({"status": "unavailable"}, status=503)
+        finally:
+            if dispatch_lock_held and dispatch_lock is not None:
+                dispatch_lock.release()
 
     def _message_event(
         self,
@@ -606,6 +687,239 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             },
         )
 
+    async def _reconcile_human_completion(
+        self,
+        payload: dict[str, Any],
+        issue_id: str,
+        *,
+        _issue_locked: bool = False,
+        _session_locked: bool = False,
+    ) -> str | None:
+        """Normalize one verified human started→completed transition into a durable response."""
+        if (
+            not self._closure_reconciliation_enabled
+            or not self._closure_allowed_team_ids
+            or self._linear is None
+            or self._ledger is None
+        ):
+            return None
+        previous = payload.get("updatedFrom")
+        if not isinstance(previous, dict):
+            return None
+        previous_state = previous.get("state")
+        previous_state_id = str(
+            previous.get("stateId")
+            or (previous_state.get("id") if isinstance(previous_state, dict) else "")
+            or ""
+        )
+        if not previous_state_id:
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        event_state = data.get("state")
+        event_state_id = str(
+            data.get("stateId")
+            or (event_state.get("id") if isinstance(event_state, dict) else "")
+            or ""
+        )
+        event_state_type = str(
+            event_state.get("type") if isinstance(event_state, dict) else ""
+        ).casefold()
+        if event_state_type and event_state_type != "completed":
+            return None
+        actor = payload.get("actor")
+        if not isinstance(actor, dict):
+            actor = payload.get("user")
+        actor_id = str(actor.get("id") or "") if isinstance(actor, dict) else ""
+        if not actor_id:
+            logger.warning("[linear] closure rejected issue=%s reason=missing_actor", issue_id)
+            return "closure_rejected"
+        event_updated_at = str(data.get("updatedAt") or "")
+        try:
+            event_updated_ts = _iso_timestamp(event_updated_at)
+        except ValueError:
+            logger.warning("[linear] closure rejected issue=%s reason=invalid_revision", issue_id)
+            return "closure_rejected"
+        if not _issue_locked:
+            async with self._issue_lock(issue_id):
+                return await self._reconcile_human_completion(
+                    payload,
+                    issue_id,
+                    _issue_locked=True,
+                    _session_locked=_session_locked,
+                )
+        session_id = self._ledger.get_issue_session(issue_id) or ""
+        if session_id and not _session_locked:
+            async with self._session_lock(session_id):
+                return await self._reconcile_human_completion(
+                    payload,
+                    issue_id,
+                    _issue_locked=True,
+                    _session_locked=True,
+                )
+        context = await self._linear.get_issue_closure_context(issue_id)
+        state = context.get("state") or {}
+        if str(state.get("type") or "").casefold() != "completed":
+            return "closure_obsolete"
+        current_state_id = str(state.get("id") or "")
+        if event_state_id and not hmac.compare_digest(event_state_id, current_state_id):
+            logger.warning("[linear] closure rejected issue=%s reason=state_mismatch", issue_id)
+            return "closure_rejected"
+        team_id = str((context.get("team") or {}).get("id") or "")
+        assignee = context.get("assignee") or {}
+        delegate = context.get("delegate") or {}
+        assignee_id = str(assignee.get("id") or "")
+        delegate_id = str(delegate.get("id") or "")
+        completed_at = str(context.get("completed_at") or "")
+        previous_live = next(
+            (
+                item for item in context.get("team_states") or []
+                if hmac.compare_digest(str(item.get("id") or ""), previous_state_id)
+            ),
+            None,
+        )
+        def _matches_transition(item: dict[str, Any]) -> bool:
+            try:
+                history_ts = _iso_timestamp(str(item.get("created_at") or ""))
+            except ValueError:
+                return False
+            return bool(
+                hmac.compare_digest(str(item.get("actor_id") or ""), actor_id)
+                and hmac.compare_digest(
+                    str((item.get("from_state") or {}).get("id") or ""), previous_state_id
+                )
+                and hmac.compare_digest(
+                    str((item.get("to_state") or {}).get("id") or ""), current_state_id
+                )
+                and abs(history_ts - event_updated_ts)
+                <= _CLOSURE_TIMESTAMP_TOLERANCE_SECONDS
+            )
+
+        transition = next(
+            (item for item in context.get("history") or [] if _matches_transition(item)),
+            None,
+        )
+        try:
+            completion_matches = abs(
+                _iso_timestamp(completed_at) - event_updated_ts
+            ) <= _CLOSURE_TIMESTAMP_TOLERANCE_SECONDS
+        except ValueError:
+            completion_matches = False
+        authoritative = bool(
+            team_id in self._closure_allowed_team_ids
+            and assignee_id
+            and hmac.compare_digest(actor_id, assignee_id)
+            and self._linear.actor_id
+            and delegate_id
+            and hmac.compare_digest(delegate_id, self._linear.actor_id)
+            and previous_live
+            and str(previous_live.get("type") or "").casefold() == "started"
+            and transition
+            and str((transition.get("from_state") or {}).get("type") or "").casefold()
+            == "started"
+            and str((transition.get("to_state") or {}).get("type") or "").casefold()
+            == "completed"
+            and current_state_id
+            and completion_matches
+        )
+        if not authoritative:
+            logger.warning("[linear] closure rejected issue=%s reason=authoritative_policy", issue_id)
+            return "closure_rejected"
+        assert previous_live is not None
+        assert transition is not None
+        if not session_id:
+            self._ledger.stage_pending_closure_event(
+                issue_id,
+                event_updated_ts,
+                {
+                    "actor": {"id": actor_id},
+                    "data": {
+                        "id": issue_id,
+                        "updatedAt": event_updated_at,
+                        "state": {"id": current_state_id, "type": "completed"},
+                    },
+                    "updatedFrom": {"stateId": previous_state_id},
+                },
+            )
+            logger.info("[linear] closure deferred issue=%s reason=session_unbound", issue_id)
+            return "closure_deferred"
+        material = "\0".join(
+            (
+                issue_id,
+                completed_at,
+                current_state_id,
+                actor_id,
+                delegate_id,
+                team_id,
+            )
+        )
+        closure_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        actor_name = str(assignee.get("name") or actor.get("name") or "Human assignee")
+        delegate_name = str(delegate.get("name") or self._linear.actor_name or "Hermes")
+        previous_name = str(previous_live.get("name") or "Started")
+        current_name = str(state.get("name") or "Completed")
+        body = "\n".join(
+            (
+                "Closure reconciliation complete.",
+                "",
+                f"- Human assignee: {actor_name}",
+                f"- Verified transition: {previous_name} (`started`) → {current_name} (`completed`)",
+                f"- Delegate: {delegate_name}",
+                "- Main deliverable: not rerun",
+                "- Terminal issue state: preserved",
+            )
+        )
+        evidence = {
+            "issue_id": issue_id,
+            "session_id": session_id,
+            "actor_id": actor_id,
+            "assignee_id": assignee_id,
+            "delegate_id": delegate_id,
+            "team_id": team_id,
+            "previous_state_id": previous_state_id,
+            "current_state_id": current_state_id,
+            "event_updated_at": event_updated_at,
+            "history_actor_id": str(transition.get("actor_id") or ""),
+            "completed_at": completed_at,
+        }
+        async with self._outbox_drain_lock:
+            inserted = self._ledger.enqueue_closure_activity(
+                closure_key,
+                issue_id,
+                session_id,
+                self._activity_uuid(f"closure:{closure_key}"),
+                body,
+                evidence,
+            )
+        self._outbox_wakeup.set()
+        if not inserted:
+            logger.info("[linear] closure duplicate issue=%s key=%s", issue_id, closure_key)
+            return "closure_duplicate"
+        status = "closure_queued"
+        logger.info(
+            "[linear] closure %s issue=%s session=%s key=%s",
+            status,
+            issue_id,
+            session_id,
+            closure_key,
+        )
+        return status
+
+    def _session_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session_id] = lock
+        return lock
+
+    def _issue_lock(self, issue_id: str) -> asyncio.Lock:
+        lock = self._issue_locks.get(issue_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._issue_locks[issue_id] = lock
+        return lock
+
     async def _handle_data_event(
         self,
         payload: dict[str, Any],
@@ -633,7 +947,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if not isinstance(notification, dict):
                 notification = {}
             entity_id = str(data.get("id") or "")
+            closure_status: str | None = None
             if event_type == "Issue" and action == "update" and entity_id:
+                closure_status = await self._reconcile_human_completion(payload, entity_id)
                 previous = payload.get("updatedFrom")
                 if not isinstance(previous, dict):
                     previous = {}
@@ -669,14 +985,17 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     resumed += 1
             self._ledger.mark_done(delivery_key)
             logger.info(
-                "[linear] observed data event type=%s action=%s entity=%s resumed=%d subscription=%s",
+                "[linear] observed data event type=%s action=%s entity=%s resumed=%d closure=%s subscription=%s",
                 event_type,
                 action,
                 entity_id or "none",
                 resumed,
+                closure_status or "none",
                 webhook_id,
             )
-            return web.json_response({"status": "observed", "resumed": resumed}, status=200)
+            return web.json_response(
+                {"status": closure_status or "observed", "resumed": resumed}, status=200
+            )
         except Exception as exc:
             if claimed:
                 self._ledger.release(delivery_key)
@@ -696,22 +1015,27 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if not self._ledger.claim_wait(session_id):
             return False
         try:
-            payload = wait["prompt"]
-            event = self._message_event(
-                payload,
-                wait["delivery_key"],
-                "dependency-resume",
-                dependency_resume=True,
-            )
-            self._schedule_thought(
-                session_id,
-                wait["issue_id"],
-                wait["delivery_key"],
-                include_queued=False,
-                body="All blocking issues are complete; Hermes resumed the task automatically.",
-            )
-            await self.handle_message(event)
-            self._ledger.mark_wait_resumed(session_id)
+            async with self._session_lock(session_id):
+                if self._ledger.has_session_closure(session_id):
+                    return False
+                payload = wait["prompt"]
+                event = self._message_event(
+                    payload,
+                    wait["delivery_key"],
+                    "dependency-resume",
+                    dependency_resume=True,
+                )
+                self._schedule_thought(
+                    session_id,
+                    wait["issue_id"],
+                    wait["delivery_key"],
+                    include_queued=False,
+                    body="All blocking issues are complete; Hermes resumed the task automatically.",
+                )
+                if self._ledger.has_session_closure(session_id):
+                    return False
+                await self.handle_message(event)
+                self._ledger.mark_wait_resumed(session_id)
             logger.info("[linear] resumed waiting session=%s issue=%s", session_id, wait["issue_id"])
             return True
         except Exception as exc:
@@ -788,6 +1112,13 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             raise RuntimeError("Linear outbox is unavailable")
         item_key = item_key or f"response:{uuid.uuid4()}"
         activity_id = self._activity_uuid(item_key)
+        if self._ledger.has_session_closure(agent_session_id):
+            logger.info(
+                "[linear] suppressed post-closure activity session=%s key=%s",
+                agent_session_id,
+                item_key,
+            )
+            return activity_id
         self._ledger.enqueue_outbox(
             f"activity:{item_key}",
             agent_session_id,
@@ -809,7 +1140,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         execution_state: str,
         delivery_key: str,
     ) -> None:
-        if not self._status_writeback_enabled or not issue_id or self._ledger is None:
+        if (
+            not self._status_writeback_enabled
+            or not issue_id
+            or self._ledger is None
+            or self._ledger.has_session_closure(agent_session_id)
+        ):
             return
         self._ledger.enqueue_outbox(
             f"status:{delivery_key}:{execution_state}",
@@ -867,6 +1203,24 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             item = self._ledger.claim_due_outbox()
             if item is None:
                 return False
+            if self._closure_reconciliation_enabled and item.operation == "issue.state.update":
+                self._ledger.mark_outbox_delivered(item.id)
+                logger.info(
+                    "[linear] suppressed state writeback in closure-safe mode item=%s",
+                    item.id,
+                )
+                return True
+            if (
+                self._ledger.has_session_closure(item.aggregate_key)
+                and not item.id.startswith("activity:closure:")
+            ):
+                self._ledger.mark_outbox_delivered(item.id)
+                logger.info(
+                    "[linear] suppressed claimed post-closure outbox item=%s session=%s",
+                    item.id,
+                    item.aggregate_key,
+                )
+                return True
             try:
                 if item.operation == "activity.create":
                     await self._linear.create_activity(
@@ -919,6 +1273,11 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if self._linear is None or self._ledger is None:
             return SendResult(success=False, error="Linear outbox is unavailable", retryable=True)
         await self._wait_for_thought(chat_id)
+        if self._ledger.has_session_closure(chat_id):
+            return SendResult(
+                success=True,
+                message_id=self._activity_uuid(f"suppressed:closure:{chat_id}"),
+            )
         try:
             activity_id = self._enqueue_activity(chat_id, "response", content)
             await self._drain_outbox_once()
@@ -931,6 +1290,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if self._ledger is None or event.source is None:
             return
         await self._wait_for_thought(event.source.chat_id)
+        if self._ledger.has_session_closure(event.source.chat_id):
+            logger.info(
+                "[linear] suppressed processing completion after human closure session=%s",
+                event.source.chat_id,
+            )
+            return
         delivery_key = str(event.metadata.get("linear_delivery_key") or event.message_id or uuid.uuid4())
         if outcome == ProcessingOutcome.FAILURE:
             self._enqueue_activity(

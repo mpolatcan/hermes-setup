@@ -84,6 +84,56 @@ query LinearPolicyCommentTeam($id: String!) {
             raise LinearAPIError("Comment team could not be resolved for policy")
         return team_id
 
+    async def get_issue_closure_context(self, issue_id: str) -> dict[str, Any]:
+        """Read authoritative fields required to accept a human terminal transition."""
+        query = """
+query LinearNativeIssueClosure($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    completedAt
+    state { id name type }
+    team { id states { nodes { id name type } } }
+    assignee { id name }
+    delegate { id name }
+    history(last: 25, orderBy: createdAt) {
+      nodes {
+        actorId
+        createdAt
+        fromState { id name type }
+        toState { id name type }
+      }
+    }
+  }
+}
+"""
+        data = await self.graphql(query, {"id": issue_id})
+        issue = data.get("issue") or {}
+        if str(issue.get("id") or "") != issue_id:
+            raise LinearAPIError("Issue closure read-back did not resolve the requested issue")
+        team = issue.get("team") or {}
+        return {
+            "id": str(issue.get("id") or ""),
+            "identifier": str(issue.get("identifier") or issue_id),
+            "title": str(issue.get("title") or ""),
+            "completed_at": str(issue.get("completedAt") or ""),
+            "state": dict(issue.get("state") or {}),
+            "team": {"id": str(team.get("id") or "")},
+            "team_states": list(((team.get("states") or {}).get("nodes")) or []),
+            "assignee": dict(issue.get("assignee") or {}),
+            "delegate": dict(issue.get("delegate") or {}),
+            "history": [
+                {
+                    "actor_id": str(item.get("actorId") or ""),
+                    "created_at": str(item.get("createdAt") or ""),
+                    "from_state": dict(item.get("fromState") or {}),
+                    "to_state": dict(item.get("toState") or {}),
+                }
+                for item in (((issue.get("history") or {}).get("nodes")) or [])
+            ],
+        }
+
     async def graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._graphql_once(query, variables or {}, refresh_on_unauthorized=True)
 
