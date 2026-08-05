@@ -143,6 +143,19 @@ SESSIONLESS_FENCE_MANIFEST = {
     "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
     "plugin.yaml": "299390e58eb8e4a00e7350a33ecf5dc8908786c375b5c8ccbad992736f119d93",
 }
+SEMANTIC_START_COMMIT = "87868f2d3fcb27541398df1671e6b6ea8698cf59"
+SEMANTIC_START_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "cc89960a21e72b48e69c1b1b492e139c47d83aeaeaf53d31c2fff6b7f3dfc9fb",
+    "ledger.py": "a9e1432cf2d3b3cda9f6d2d6579cfa4c2ae6c151b660803be247cbc03681d542",
+    "linear_client.py": "bb995c1eeccf0a91cda57c48e3787dce575c26f10e3fa2c13ded80da19dab920",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "29e7f91c9ef0e7b302f369d6aea49f0d6137a281d57a6df20eec2e1594ae9e46",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "c1d5f920aff8b0df299728d2d8c621ecd517bac917372d913cee6da7b032bf08",
+    "plugin.yaml": "299390e58eb8e4a00e7350a33ecf5dc8908786c375b5c8ccbad992736f119d93",
+}
 
 
 def load_helper():
@@ -191,6 +204,13 @@ class DeployPluginTests(unittest.TestCase):
     def test_tool_result_contract_fix_commit_is_reviewed(self) -> None:
         helper = load_helper()
         self.assertEqual(helper.REVIEWED_MANIFESTS[FIX_COMMIT], FIX_MANIFEST)
+
+    def test_semantic_start_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[SEMANTIC_START_COMMIT],
+            SEMANTIC_START_MANIFEST,
+        )
 
     def test_human_final_acceptance_commit_is_reviewed(self) -> None:
         helper = load_helper()
