@@ -459,7 +459,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.0",
+                "version": "0.8.1",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -907,6 +907,13 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 self._activity_uuid(f"closure:{closure_key}"),
                 body,
                 evidence,
+                indicator_activity_id=self._activity_uuid(
+                    f"closure-indicator:{closure_key}"
+                ),
+                indicator_body=(
+                    "⏳ Done received — human acceptance and closure evidence "
+                    "are being verified…"
+                ),
             )
         self._outbox_wakeup.set()
         if not inserted:
@@ -1244,6 +1251,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         item.payload["activity_type"],
                         item.payload["body"],
                         activity_id=item.payload["activity_id"],
+                        ephemeral=bool(item.payload.get("ephemeral", False)),
                     )
                 elif item.operation == "issue.state.update":
                     await self._linear.update_issue_state(
@@ -1269,10 +1277,34 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         exc,
                     )
                 else:
-                    self._ledger.dead_letter_outbox(item.id, str(exc))
+                    cleanup_inserted = self._ledger.dead_letter_outbox(
+                        item.id,
+                        str(exc),
+                        closure_cleanup_activity_id=self._activity_uuid(
+                            f"closure-error:{item.id}"
+                        ),
+                        closure_cleanup_body=(
+                            "⚠️ The closure response could not be published; "
+                            "operational intervention is required."
+                        ),
+                    )
+                    if cleanup_inserted:
+                        self._outbox_wakeup.set()
                     logger.error("[linear] Outbox dead letter id=%s: %s", item.id, exc)
             except Exception as exc:
-                self._ledger.dead_letter_outbox(item.id, str(exc))
+                cleanup_inserted = self._ledger.dead_letter_outbox(
+                    item.id,
+                    str(exc),
+                    closure_cleanup_activity_id=self._activity_uuid(
+                        f"closure-error:{item.id}"
+                    ),
+                    closure_cleanup_body=(
+                        "⚠️ The closure response could not be published; "
+                        "operational intervention is required."
+                    ),
+                )
+                if cleanup_inserted:
+                    self._outbox_wakeup.set()
                 logger.exception("[linear] Outbox dead letter id=%s: %s", item.id, exc)
             else:
                 self._ledger.mark_outbox_delivered(item.id)

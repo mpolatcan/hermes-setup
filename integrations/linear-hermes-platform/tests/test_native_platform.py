@@ -60,6 +60,7 @@ class FakeLinear:
         self.organization_id = organization_id
         self.actor_id = "agent-derya"
         self.calls: list[tuple[str, str, str]] = []
+        self.activity_ephemeral: list[bool] = []
         self.blockers: dict[str, list[dict[str, str]]] = {}
         self.closure_contexts: dict[str, dict] = {}
 
@@ -70,8 +71,10 @@ class FakeLinear:
         body: str,
         *,
         activity_id: str,
+        ephemeral: bool = False,
     ) -> str:
         self.calls.append((session_id, activity_type, body))
+        self.activity_ephemeral.append(ephemeral)
         return activity_id
 
     async def update_issue_state(self, issue_id, state_name, state_rank, state_ranks):
@@ -204,6 +207,38 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 4)
             recovered.close()
 
+    def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "closure-indicator.sqlite3"))
+            inserted = ledger.enqueue_closure_activity(
+                "closure-indicator",
+                "issue-1",
+                "session-1",
+                "activity-final",
+                "Closure reconciliation complete.",
+                {"actor_id": "human-1"},
+                indicator_activity_id="activity-indicator",
+                indicator_body="Done received — closure is being verified.",
+                now=100,
+            )
+            self.assertTrue(inserted)
+
+            indicator = ledger.claim_due_outbox(now=100)
+            self.assertEqual(indicator.id, "activity:closure:indicator:closure-indicator")
+            self.assertEqual(indicator.payload["activity_type"], "thought")
+            self.assertTrue(indicator.payload["ephemeral"])
+            ledger.mark_outbox_delivered(indicator.id, now=101)
+            self.assertEqual(ledger.get_closure("closure-indicator")["state"], "pending")
+
+            final = ledger.claim_due_outbox(now=101)
+            self.assertEqual(final.id, "activity:closure:closure-indicator")
+            self.assertEqual(final.payload["activity_type"], "response")
+            self.assertNotIn("ephemeral", final.payload)
+            ledger.mark_outbox_delivered(final.id, now=102)
+            self.assertEqual(ledger.get_closure("closure-indicator")["state"], "completed")
+            self.assertIsNone(ledger.claim_due_outbox(now=103))
+            ledger.close()
+
     def test_closure_outbox_recovers_after_restart_without_duplicate_activity(self):
         with tempfile.TemporaryDirectory() as td:
             path = str(Path(td) / "closure.sqlite3")
@@ -245,6 +280,99 @@ class LedgerTests(unittest.TestCase):
                 {"pending": 0, "in_flight": 0, "delivered": 1, "dead": 0},
             )
             recovered.close()
+
+    def test_final_closure_dead_letter_and_cleanup_are_atomic_and_restart_durable(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "closure-cleanup.sqlite3")
+            ledger = DeliveryLedger(path)
+            ledger.enqueue_closure_activity(
+                "closure-cleanup",
+                "issue-1",
+                "session-1",
+                "activity-final",
+                "Closure reconciliation complete.",
+                {},
+                indicator_activity_id="activity-indicator",
+                indicator_body="Done received — closure is being verified.",
+                now=100,
+            )
+            indicator = ledger.claim_due_outbox(now=100)
+            ledger.mark_outbox_delivered(indicator.id, now=101)
+            final = ledger.claim_due_outbox(now=101)
+
+            self.assertTrue(
+                ledger.dead_letter_outbox(
+                    final.id,
+                    "permanent",
+                    closure_cleanup_activity_id="activity-cleanup",
+                    closure_cleanup_body="The closure response could not be published.",
+                    now=102,
+                )
+            )
+            self.assertFalse(
+                ledger.dead_letter_outbox(
+                    final.id,
+                    "permanent",
+                    closure_cleanup_activity_id="activity-cleanup",
+                    closure_cleanup_body="The closure response could not be published.",
+                    now=103,
+                )
+            )
+            ledger.close()
+
+            recovered = DeliveryLedger(path)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                recovered.get_outbox_item(final.id)["state"],
+                "dead",
+            )
+            self.assertEqual(recovered.get_closure("closure-cleanup")["state"], "failed")
+            cleanup = recovered.claim_due_outbox(now=104)
+            self.assertEqual(cleanup.id, "activity:closure-error:closure-cleanup")
+            self.assertEqual(cleanup.aggregate_key, "closure-cleanup:closure-cleanup")
+            self.assertEqual(cleanup.payload["activity_type"], "error")
+            recovered.mark_outbox_delivered(cleanup.id, now=105)
+            self.assertEqual(recovered.get_outbox_item(final.id)["state"], "dead")
+            self.assertTrue(recovered.requeue_dead_outbox(final.id, now=106))
+            redriven_final = recovered.claim_due_outbox(now=106)
+            self.assertEqual(redriven_final.id, final.id)
+            recovered.mark_outbox_delivered(redriven_final.id, now=107)
+            self.assertEqual(recovered.get_closure("closure-cleanup")["state"], "completed")
+            recovered.close()
+
+    def test_conflicting_cleanup_rolls_back_final_dead_letter_transition(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "closure-cleanup-conflict.sqlite3"))
+            ledger.enqueue_closure_activity(
+                "closure-conflict",
+                "issue-1",
+                "session-1",
+                "activity-final",
+                "Closure reconciliation complete.",
+                {},
+                now=100,
+            )
+            final = ledger.claim_due_outbox(now=100)
+            ledger.enqueue_outbox(
+                "activity:closure-error:closure-conflict",
+                "wrong-aggregate",
+                "activity.create",
+                {"body": "wrong payload"},
+                now=100,
+            )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                ledger.dead_letter_outbox(
+                    final.id,
+                    "permanent",
+                    closure_cleanup_activity_id="activity-cleanup",
+                    closure_cleanup_body="The closure response could not be published.",
+                    now=101,
+                )
+
+            self.assertEqual(ledger.get_outbox_item(final.id)["state"], "in_flight")
+            self.assertEqual(ledger.get_closure("closure-conflict")["state"], "pending")
+            ledger.close()
 
     def test_dead_letter_and_redrive_keep_closure_state_aligned(self):
         with tempfile.TemporaryDirectory() as td:
@@ -460,6 +588,148 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         second = self.adapter._activity_uuid("thought:delivery-8")
         self.assertEqual(first, second)
         self.assertEqual(uuid.UUID(first).version, 4)
+
+    async def test_permanent_closure_response_failure_enqueues_indicator_cleanup_error(self):
+        class FinalResponseFailureLinear(FakeLinear):
+            async def create_activity(
+                self,
+                session_id,
+                activity_type,
+                body,
+                *,
+                activity_id,
+                ephemeral=False,
+            ):
+                if activity_type == "response":
+                    raise LinearAPIError("permanent closure response failure")
+                return await super().create_activity(
+                    session_id,
+                    activity_type,
+                    body,
+                    activity_id=activity_id,
+                    ephemeral=ephemeral,
+                )
+
+        self.adapter._linear = FinalResponseFailureLinear()
+        self.adapter._ledger.enqueue_closure_activity(
+            "closure-cleanup",
+            "issue-cleanup",
+            "session-cleanup",
+            "activity-final",
+            "Closure reconciliation complete.",
+            {"actor_id": "human-1"},
+            indicator_activity_id="activity-indicator",
+            indicator_body="Done received — closure is being verified.",
+        )
+
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+
+        self.assertEqual(self.adapter._ledger.get_closure("closure-cleanup")["state"], "failed")
+        self.assertEqual(
+            self.adapter._ledger.get_outbox_item("activity:closure:closure-cleanup")["state"],
+            "dead",
+        )
+        self.assertEqual(self.adapter._linear.calls[0][1], "thought")
+
+        await self.adapter._drain_outbox_once()
+
+        self.assertEqual([call[1] for call in self.adapter._linear.calls], ["thought", "error"])
+        self.assertIn("closure response could not be published", self.adapter._linear.calls[1][2])
+
+    async def test_generic_closure_response_failure_enqueues_cleanup_error(self):
+        class GenericFinalResponseFailureLinear(FakeLinear):
+            async def create_activity(
+                self,
+                session_id,
+                activity_type,
+                body,
+                *,
+                activity_id,
+                ephemeral=False,
+            ):
+                if activity_type == "response":
+                    raise RuntimeError("unexpected closure response failure")
+                return await super().create_activity(
+                    session_id,
+                    activity_type,
+                    body,
+                    activity_id=activity_id,
+                    ephemeral=ephemeral,
+                )
+
+        self.adapter._linear = GenericFinalResponseFailureLinear()
+        self.adapter._ledger.enqueue_closure_activity(
+            "generic-cleanup",
+            "issue-cleanup",
+            "session-cleanup",
+            "activity-final",
+            "Closure reconciliation complete.",
+            {},
+            indicator_activity_id="activity-indicator",
+            indicator_body="Done received — closure is being verified.",
+        )
+
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+
+        self.assertEqual([call[1] for call in self.adapter._linear.calls], ["thought", "error"])
+        self.assertEqual(
+            self.adapter._ledger.get_outbox_item("activity:closure:generic-cleanup")["state"],
+            "dead",
+        )
+        self.assertEqual(self.adapter._ledger.get_closure("generic-cleanup")["state"], "failed")
+
+    async def test_cleanup_failure_does_not_enqueue_recursive_cleanup(self):
+        class AllClosureActivitiesFailLinear(FakeLinear):
+            async def create_activity(self, *args, **kwargs):
+                activity_type = args[1]
+                if activity_type in {"response", "error"}:
+                    raise LinearAPIError(f"permanent {activity_type} failure")
+                return await super().create_activity(*args, **kwargs)
+
+        self.adapter._linear = AllClosureActivitiesFailLinear()
+        self.adapter._ledger.enqueue_closure_activity(
+            "nonrecursive-cleanup",
+            "issue-cleanup",
+            "session-cleanup",
+            "activity-final",
+            "Closure reconciliation complete.",
+            {},
+            indicator_activity_id="activity-indicator",
+            indicator_body="Done received — closure is being verified.",
+        )
+
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+
+        self.assertFalse(await self.adapter._drain_outbox_once())
+        self.assertEqual(self.adapter._ledger.outbox_counts()["dead"], 2)
+        self.assertIsNone(
+            self.adapter._ledger.get_outbox_item(
+                "activity:closure-error:error:nonrecursive-cleanup"
+            )
+        )
+
+    async def test_outbox_preserves_ephemeral_activity_flag(self):
+        self.adapter._ledger.enqueue_outbox(
+            "activity:ephemeral:1",
+            "session-ephemeral",
+            "activity.create",
+            {
+                "activity_id": "activity-ephemeral-1",
+                "agent_session_id": "session-ephemeral",
+                "activity_type": "thought",
+                "body": "Closure is being verified.",
+                "ephemeral": True,
+            },
+        )
+
+        await self.adapter._drain_outbox_once()
+
+        self.assertEqual(self.adapter._linear.activity_ephemeral, [True])
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -792,6 +1062,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_webhook(self.request_for(created))
         await asyncio.sleep(0)
         self.adapter._linear.calls.clear()
+        self.adapter._linear.activity_ephemeral.clear()
         self.events.clear()
         self.adapter._ledger.put_wait(
             "session-closure",
@@ -842,17 +1113,27 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._drain_outbox_once()
         self.assertEqual(len(self.adapter._linear.calls), 1)
         session_id, activity_type, body = self.adapter._linear.calls[0]
+        self.assertEqual((session_id, activity_type), ("session-closure", "thought"))
+        self.assertIn("Done received", body)
+        self.assertTrue(self.adapter._linear.activity_ephemeral[0])
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(len(self.adapter._linear.calls), 2)
+        session_id, activity_type, body = self.adapter._linear.calls[1]
         self.assertEqual((session_id, activity_type), ("session-closure", "response"))
+        self.assertFalse(self.adapter._linear.activity_ephemeral[1])
         self.assertIn("Closure reconciliation complete", body)
         self.assertIn("Mutlu", body)
         self.assertIn("In Progress", body)
         self.assertIn("Done", body)
         self.assertIn("not rerun", body)
+        self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 1)
         self.assertEqual(self.adapter._ledger.get_wait("session-closure")["state"], "canceled")
 
         late = await self.adapter.send("session-closure", "late main deliverable")
         self.assertTrue(late.success)
-        self.assertEqual(len(self.adapter._linear.calls), 1)
+        self.assertEqual(len(self.adapter._linear.calls), 2)
 
         self.adapter._ledger.bind_issue_session(
             "issue-closure", "session-newer", now=int(time.time()) + 1
@@ -861,7 +1142,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             completed, "issue-closure"
         )
         self.assertEqual(closure_duplicate, "closure_duplicate")
-        self.assertEqual(len(self.adapter._linear.calls), 1)
+        self.assertEqual(len(self.adapter._linear.calls), 2)
 
         tolerated_revision = dict(completed)
         tolerated_revision["data"] = {
@@ -873,12 +1154,12 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(closure_revision_rejected, "closure_rejected")
         self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 1)
-        self.assertEqual(len(self.adapter._linear.calls), 1)
+        self.assertEqual(len(self.adapter._linear.calls), 2)
 
         duplicate_delivery = dict(completed, webhookId="webhook-human-completed-2")
         duplicate = await self.adapter._handle_webhook(self.request_for(duplicate_delivery))
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
-        self.assertEqual(len(self.adapter._linear.calls), 1)
+        self.assertEqual(len(self.adapter._linear.calls), 2)
         self.assertEqual(self.events, [])
 
     async def test_done_before_session_creation_is_durably_fenced_and_reconciled(self):
@@ -948,7 +1229,13 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._drain_outbox_once()
         self.assertEqual(
             [call[1] for call in self.adapter._linear.calls],
-            ["response"],
+            ["thought"],
+        )
+        self.assertTrue(self.adapter._linear.activity_ephemeral[0])
+        await self.adapter._drain_outbox_once()
+        self.assertEqual(
+            [call[1] for call in self.adapter._linear.calls],
+            ["thought", "response"],
         )
 
     async def test_concurrent_done_before_session_creation_fences_dispatch(self):
@@ -1393,11 +1680,23 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
                 self.started = asyncio.Event()
                 self.release = asyncio.Event()
 
-            async def create_activity(self, session_id, activity_type, body, *, activity_id):
+            async def create_activity(
+                self,
+                session_id,
+                activity_type,
+                body,
+                *,
+                activity_id,
+                ephemeral=False,
+            ):
                 self.started.set()
                 await self.release.wait()
                 return await super().create_activity(
-                    session_id, activity_type, body, activity_id=activity_id
+                    session_id,
+                    activity_type,
+                    body,
+                    activity_id=activity_id,
+                    ephemeral=ephemeral,
                 )
 
         linear = BlockingLinear()
@@ -1450,7 +1749,11 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
 
         await self.adapter._drain_outbox_once()
-        self.assertEqual([call[1] for call in linear.calls], ["thought", "response"])
+        self.assertEqual([call[1] for call in linear.calls], ["thought", "thought"])
+        self.assertEqual(linear.activity_ephemeral, [False, True])
+        await self.adapter._drain_outbox_once()
+        self.assertEqual([call[1] for call in linear.calls], ["thought", "thought", "response"])
+        self.assertEqual(linear.activity_ephemeral, [False, True, False])
 
     async def test_dependency_resume_checks_closure_immediately_before_handle_message(self):
         payload = self.make_payload(
@@ -1815,6 +2118,34 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_activity_places_ephemeral_on_top_level_input(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("agentActivityCreate", query)
+            self.assertEqual(
+                variables,
+                {
+                    "input": {
+                        "id": "activity-1",
+                        "agentSessionId": "session-1",
+                        "content": {"type": "thought", "body": "Closure is being verified."},
+                        "ephemeral": True,
+                    }
+                },
+            )
+            return {"agentActivityCreate": {"success": True, "agentActivity": {"id": "activity-1"}}}
+
+        client.graphql = fake_graphql
+        result = await client.create_activity(
+            "session-1",
+            "thought",
+            "Closure is being verified.",
+            activity_id="activity-1",
+            ephemeral=True,
+        )
+        self.assertEqual(result, "activity-1")
+
     async def test_closure_context_does_not_query_internal_agent_sessions(self):
         client = LinearClient("/unused")
 

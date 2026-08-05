@@ -282,9 +282,13 @@ class DeliveryLedger:
         body: str,
         evidence: dict[str, Any],
         *,
+        indicator_activity_id: str | None = None,
+        indicator_body: str | None = None,
         now: int | None = None,
     ) -> bool:
-        """Atomically persist closure evidence and its deterministic Linear response."""
+        """Atomically persist closure evidence and its ordered Linear activities."""
+        if bool(indicator_activity_id) != bool(indicator_body):
+            raise ValueError("Closure indicator id and body must be provided together")
         now = int(time.time()) if now is None else int(now)
         outbox_id = f"activity:closure:{closure_key}"
         payload_json = json.dumps(
@@ -297,6 +301,23 @@ class DeliveryLedger:
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
+        )
+        indicator_outbox_id = f"activity:closure:indicator:{closure_key}"
+        indicator_payload_json = (
+            json.dumps(
+                {
+                    "activity_id": indicator_activity_id,
+                    "agent_session_id": session_id,
+                    "activity_type": "thought",
+                    "body": indicator_body,
+                    "ephemeral": True,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            if indicator_activity_id and indicator_body
+            else None
         )
         evidence_json = json.dumps(
             evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -326,6 +347,23 @@ class DeliveryLedger:
                 "WHERE aggregate_key = ? AND state IN ('pending', 'in_flight', 'dead')",
                 (now, now, session_id),
             )
+            if indicator_payload_json is not None:
+                self._db.execute(
+                    "INSERT INTO outbox("
+                    "id, aggregate_key, sequence, operation, payload_json, state, attempts, "
+                    "next_attempt_at, created_at, updated_at"
+                    ") VALUES (?, ?, ?, 'activity.create', ?, 'pending', 0, ?, ?, ?)",
+                    (
+                        indicator_outbox_id,
+                        session_id,
+                        sequence,
+                        indicator_payload_json,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                sequence += 1
             self._db.execute(
                 "INSERT INTO outbox("
                 "id, aggregate_key, sequence, operation, payload_json, state, attempts, "
@@ -481,19 +519,95 @@ class DeliveryLedger:
             )
             self._db.commit()
 
-    def dead_letter_outbox(self, item_id: str, error: str, *, now: int | None = None) -> None:
+    def dead_letter_outbox(
+        self,
+        item_id: str,
+        error: str,
+        *,
+        closure_cleanup_activity_id: str | None = None,
+        closure_cleanup_body: str | None = None,
+        now: int | None = None,
+    ) -> bool:
+        """Dead-letter an item and atomically stage cleanup for a final closure."""
+        if bool(closure_cleanup_activity_id) != bool(closure_cleanup_body):
+            raise ValueError("Closure cleanup activity id and body must be provided together")
         now = int(time.time()) if now is None else int(now)
+        truncated_error = error[:1000]
         with self._lock:
-            self._db.execute(
-                "UPDATE outbox SET state = 'dead', last_error = ?, updated_at = ? WHERE id = ?",
-                (error[:1000], now, item_id),
-            )
-            self._db.execute(
-                "UPDATE closure_reconciliations SET state = 'failed', last_error = ?, "
-                "updated_at = ? WHERE outbox_id = ?",
-                (error[:1000], now, item_id),
-            )
-            self._db.commit()
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "UPDATE outbox SET state = 'dead', last_error = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (truncated_error, now, item_id),
+                )
+                closure = self._db.execute(
+                    "SELECT closure_key, session_id FROM closure_reconciliations "
+                    "WHERE outbox_id = ?",
+                    (item_id,),
+                ).fetchone()
+                self._db.execute(
+                    "UPDATE closure_reconciliations SET state = 'failed', last_error = ?, "
+                    "updated_at = ? WHERE outbox_id = ?",
+                    (truncated_error, now, item_id),
+                )
+                cleanup_inserted = False
+                if closure is not None and closure_cleanup_activity_id and closure_cleanup_body:
+                    closure_key, session_id = map(str, closure)
+                    cleanup_id = f"activity:closure-error:{closure_key}"
+                    cleanup_aggregate = f"closure-cleanup:{closure_key}"
+                    cleanup_payload = json.dumps(
+                        {
+                            "activity_id": closure_cleanup_activity_id,
+                            "agent_session_id": session_id,
+                            "activity_type": "error",
+                            "body": closure_cleanup_body,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    existing = self._db.execute(
+                        "SELECT aggregate_key, operation, payload_json FROM outbox WHERE id = ?",
+                        (cleanup_id,),
+                    ).fetchone()
+                    if existing is not None and tuple(existing) != (
+                        cleanup_aggregate,
+                        "activity.create",
+                        cleanup_payload,
+                    ):
+                        raise sqlite3.IntegrityError(
+                            f"Conflicting deterministic closure cleanup item: {cleanup_id}"
+                        )
+                    if existing is None:
+                        sequence = int(
+                            self._db.execute(
+                                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM outbox "
+                                "WHERE aggregate_key = ?",
+                                (cleanup_aggregate,),
+                            ).fetchone()[0]
+                        )
+                        self._db.execute(
+                            "INSERT INTO outbox("
+                            "id, aggregate_key, sequence, operation, payload_json, state, "
+                            "attempts, next_attempt_at, created_at, updated_at"
+                            ") VALUES (?, ?, ?, 'activity.create', ?, 'pending', 0, ?, ?, ?)",
+                            (
+                                cleanup_id,
+                                cleanup_aggregate,
+                                sequence,
+                                cleanup_payload,
+                                now,
+                                now,
+                                now,
+                            ),
+                        )
+                        cleanup_inserted = True
+                self._db.commit()
+                return cleanup_inserted
+            except Exception:
+                self._db.rollback()
+                raise
 
     def outbox_counts(self) -> dict[str, int]:
         with self._lock:

@@ -211,6 +211,7 @@ query LinearNativeIssueClosure($id: String!) {
         body: str,
         *,
         activity_id: str,
+        ephemeral: bool = False,
     ) -> str:
         if activity_type not in {"thought", "response", "error", "elicitation"}:
             raise ValueError(f"Unsupported Linear activity type: {activity_type}")
@@ -222,16 +223,17 @@ mutation LinearNativeAgentActivity($input: AgentActivityCreateInput!) {
   }
 }
 """
+        activity_input: dict[str, Any] = {
+            "id": activity_id,
+            "agentSessionId": agent_session_id,
+            "content": {"type": activity_type, "body": body},
+        }
+        if ephemeral:
+            activity_input["ephemeral"] = True
         try:
             data = await self.graphql(
                 mutation,
-                {
-                    "input": {
-                        "id": activity_id,
-                        "agentSessionId": agent_session_id,
-                        "content": {"type": activity_type, "body": body},
-                    }
-                },
+                {"input": activity_input},
             )
         except LinearAPIError as exc:
             # A client-generated activity ID makes an ambiguous timeout safe to retry.
