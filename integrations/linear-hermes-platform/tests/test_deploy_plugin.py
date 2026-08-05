@@ -91,6 +91,19 @@ OPS73_MANIFEST = {
     "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
     "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
 }
+HEALTH_VERSION_COMMIT = "c12d73119e230437faf01f0cddc294bc5f364185"
+HEALTH_VERSION_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "ff9aa401976a0e41e22cdbf4604dcf7e7a292a9d0628bb30fabcb02ed9083c1c",
+    "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+    "linear_client.py": "b1a7b1ab431af6c26d22337caa4cb70b5feef6fe886fa4fb7e0e67b1ad351158",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+}
 
 
 def load_helper():
@@ -158,6 +171,13 @@ class DeployPluginTests(unittest.TestCase):
     def test_ops73_closure_reconciliation_commit_is_reviewed(self) -> None:
         helper = load_helper()
         self.assertEqual(helper.REVIEWED_MANIFESTS[OPS73_COMMIT], OPS73_MANIFEST)
+
+    def test_health_version_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[HEALTH_VERSION_COMMIT],
+            HEALTH_VERSION_MANIFEST,
+        )
 
     def test_deploy_promotes_exact_allowlist_and_preserves_rollback(self) -> None:
         helper = load_helper()
