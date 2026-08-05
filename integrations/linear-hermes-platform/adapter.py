@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 _WEBHOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,200}$")
 _ALLOWED_ACTIONS = {"created", "prompted"}
-_CLOSURE_TIMESTAMP_TOLERANCE_SECONDS = 5.0
 _CONTROL_EVENT_TYPES = {
     "Issue",
     "IssueRelation",
@@ -784,12 +783,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             ),
             None,
         )
-        try:
-            completion_matches = abs(
-                _iso_timestamp(completed_at) - event_updated_ts
-            ) <= _CLOSURE_TIMESTAMP_TOLERANCE_SECONDS
-        except ValueError:
-            completion_matches = False
+        current_state_id = str(state.get("id") or "")
         authoritative = bool(
             team_id in self._closure_allowed_team_ids
             and assignee_id
@@ -802,7 +796,6 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             and previous_live
             and str(previous_live.get("type") or "").casefold() == "started"
             and current_state_id
-            and completion_matches
         )
         if not authoritative:
             logger.warning("[linear] closure rejected issue=%s reason=authoritative_policy", issue_id)
@@ -828,7 +821,6 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             (
                 issue_id,
                 live_updated_at,
-                completed_at,
                 current_state_id,
                 actor_id,
                 delegate_id,

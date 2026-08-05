@@ -986,8 +986,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.adapter._linear.closure_contexts[issue_id] = {
             "id": issue_id,
-            "updated_at": "2026-08-04T12:33:00.000Z",
-            "completed_at": "2026-08-04T12:33:10.000Z",
+            "updated_at": "2026-08-04T12:33:10.000Z",
+            "completed_at": "2026-08-04T12:33:00.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
             "team_states": [
@@ -1056,6 +1056,59 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response.text)["status"], "closure_queued")
         self.assertEqual(self.events, [])
         self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+    async def test_closure_accepts_stale_completed_at_when_live_revision_matches(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-stale-completed-at"
+        self.adapter._ledger.bind_issue_session(issue_id, "session-stale-completed-at")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-05T07:04:39.273Z",
+            # Linear can retain the prior completion time after reopen/recomplete.
+            "completed_at": "2026-08-05T06:21:33.871Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-stale-completed-at-current-revision",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-05T07:04:39.273Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+        # Audit-only completedAt changes must not change semantic closure identity.
+        self.adapter._linear.closure_contexts[issue_id]["completed_at"] = (
+            "2026-08-05T07:04:39.273Z"
+        )
+        duplicate = await self.adapter._reconcile_human_completion(payload, issue_id)
+        self.assertEqual(duplicate, "closure_duplicate")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+        next_revision = json.loads(json.dumps(payload))
+        next_revision["data"]["updatedAt"] = "2026-08-05T07:05:39.273Z"
+        self.adapter._linear.closure_contexts[issue_id]["updated_at"] = (
+            "2026-08-05T07:05:39.273Z"
+        )
+        distinct = await self.adapter._reconcile_human_completion(next_revision, issue_id)
+        self.assertEqual(distinct, "closure_queued")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 2)
 
     async def test_closure_rejects_live_revision_mismatch(self):
         self.adapter._closure_reconciliation_enabled = True
@@ -1204,7 +1257,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events, [])
         self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 0)
 
-    async def test_closure_rejects_timestamp_skew_outside_bounded_tolerance(self):
+    async def test_closure_treats_completed_at_skew_as_audit_only(self):
         self.adapter._closure_reconciliation_enabled = True
         self.adapter._closure_allowed_team_ids = {"team-ops"}
         self.adapter._ledger.bind_issue_session("issue-skew", "session-skew")
@@ -1220,12 +1273,6 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             ],
             "assignee": {"id": "user-1", "name": "Mutlu"},
             "delegate": {"id": "agent-derya", "name": "Derya"},
-            "history": [{
-                "actor_id": "user-1",
-                "created_at": "2026-08-04T12:30:06.001Z",
-                "from_state": {"id": "started-1", "type": "started"},
-                "to_state": {"id": "done-1", "type": "completed"},
-            }],
         }
         payload = self.make_data_payload(
             webhookId="webhook-skew-too-large",
@@ -1239,8 +1286,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self.adapter._handle_webhook(self.request_for(payload))
 
-        self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
-        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
         self.assertEqual(self.adapter._linear.calls, [])
 
     async def test_closure_waits_for_claimed_network_dispatch_then_suppresses_later_writes(self):
