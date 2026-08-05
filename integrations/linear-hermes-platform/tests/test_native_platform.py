@@ -721,6 +721,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "id": "issue-closure",
             "identifier": "OPS-73",
             "title": "Closure",
+            "updated_at": "2026-08-04T12:21:04.002Z",
             "completed_at": "2026-08-04T12:21:07.002Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
@@ -784,10 +785,10 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             **completed["data"],
             "updatedAt": "2026-08-04T12:21:04.999Z",
         }
-        closure_revision_duplicate = await self.adapter._reconcile_human_completion(
+        closure_revision_rejected = await self.adapter._reconcile_human_completion(
             tolerated_revision, "issue-closure"
         )
-        self.assertEqual(closure_revision_duplicate, "closure_duplicate")
+        self.assertEqual(closure_revision_rejected, "closure_rejected")
         self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 1)
         self.assertEqual(len(self.adapter._linear.calls), 1)
 
@@ -804,6 +805,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "id": "issue-out-of-order",
             "identifier": "OPS-73",
             "title": "Out of order closure",
+            "updated_at": "2026-08-04T12:30:00.000Z",
             "completed_at": "2026-08-04T12:30:00.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
@@ -882,6 +884,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "id": issue_id,
             "identifier": "OPS-73",
             "title": "Concurrent closure",
+            "updated_at": "2026-08-04T12:31:00.000Z",
             "completed_at": "2026-08-04T12:31:00.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
@@ -983,7 +986,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.adapter._linear.closure_contexts[issue_id] = {
             "id": issue_id,
-            "completed_at": "2026-08-04T12:33:00.000Z",
+            "updated_at": "2026-08-04T12:33:00.000Z",
+            "completed_at": "2026-08-04T12:33:10.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
             "team_states": [
@@ -1014,16 +1018,157 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health_body["status"], "degraded")
         self.assertEqual(health_body["closures"]["pending_session_binding"], 1)
 
+    async def test_closure_accepts_current_signed_transition_without_history(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-history-stale"
+        session_id = "session-history-stale"
+        self.adapter._ledger.bind_issue_session(issue_id, session_id)
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "identifier": "OPS-78",
+            "title": "Reopened closure canary",
+            "updated_at": "2026-08-05T06:21:33.866Z",
+            "completed_at": "2026-08-05T06:21:33.866Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-history-stale-current-completion",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-05T06:21:33.866Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+
+    async def test_closure_rejects_live_revision_mismatch(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-live-revision-mismatch"
+        self.adapter._ledger.bind_issue_session(issue_id, "session-live-revision-mismatch")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-05T06:21:34.000Z",
+            "completed_at": "2026-08-05T06:21:33.866Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-live-revision-mismatch",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-05T06:21:33.866Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+
+    async def test_closure_rejects_missing_webhook_destination_state(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-missing-destination-state"
+        self.adapter._ledger.bind_issue_session(issue_id, "session-missing-destination-state")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-05T06:21:33.866Z",
+            "completed_at": "2026-08-05T06:21:33.866Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-missing-destination-state",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-05T06:21:33.866Z",
+                "state": {},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+
+    async def test_closure_rejects_non_started_previous_state(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-backlog-done"
+        self.adapter._ledger.bind_issue_session(issue_id, "session-backlog-done")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-05T06:16:56.110Z",
+            "completed_at": "2026-08-05T06:16:56.110Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        payload = self.make_data_payload(
+            webhookId="webhook-backlog-done-rejected",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-05T06:16:56.110Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_rejected")
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+        self.assertEqual(self.adapter._linear.calls, [])
+
     async def test_closure_fails_closed_for_spoofed_actor_wrong_team_or_wrong_delegate(self):
         self.adapter._closure_reconciliation_enabled = True
         self.adapter._closure_allowed_team_ids = {"team-ops"}
         cases = (
-            ("spoofed-actor", "attacker", "user-1", "team-ops", "agent-derya"),
-            ("wrong-team", "user-1", "user-1", "team-other", "agent-derya"),
-            ("wrong-delegate", "user-1", "user-1", "team-ops", "agent-other"),
-            ("forged-history", "user-1", "agent-derya", "team-ops", "agent-derya"),
+            ("spoofed-actor", "attacker", "team-ops", "agent-derya"),
+            ("wrong-team", "user-1", "team-other", "agent-derya"),
+            ("wrong-delegate", "user-1", "team-ops", "agent-other"),
         )
-        for index, (label, actor_id, history_actor_id, team_id, delegate_id) in enumerate(cases):
+        for index, (label, actor_id, team_id, delegate_id) in enumerate(cases):
             with self.subTest(label=label):
                 issue_id = f"issue-reject-{index}"
                 session_id = f"session-reject-{index}"
@@ -1031,6 +1176,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
                     "id": issue_id,
                     "identifier": f"OPS-{80 + index}",
                     "title": label,
+                    "updated_at": f"2026-08-04T12:22:0{index}.000Z",
                     "completed_at": f"2026-08-04T12:22:0{index}.000Z",
                     "state": {"id": "done-1", "name": "Done", "type": "completed"},
                     "team": {"id": team_id},
@@ -1040,12 +1186,6 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
                     ],
                     "assignee": {"id": "user-1", "name": "Mutlu"},
                     "delegate": {"id": delegate_id, "name": "Delegate"},
-                    "history": [{
-                        "actor_id": history_actor_id,
-                        "created_at": f"2026-08-04T12:22:0{index}.000Z",
-                        "from_state": {"id": "started-1", "type": "started"},
-                        "to_state": {"id": "done-1", "type": "completed"},
-                    }],
                 }
                 self.adapter._ledger.bind_issue_session(issue_id, session_id)
                 payload = self.make_data_payload(
@@ -1070,6 +1210,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._ledger.bind_issue_session("issue-skew", "session-skew")
         self.adapter._linear.closure_contexts["issue-skew"] = {
             "id": "issue-skew",
+            "updated_at": "2026-08-04T12:30:00.000Z",
             "completed_at": "2026-08-04T12:30:06.001Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
@@ -1123,6 +1264,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._ledger.bind_issue_session("issue-race", "session-race")
         linear.closure_contexts["issue-race"] = {
             "id": "issue-race",
+            "updated_at": "2026-08-04T12:40:00.000Z",
             "completed_at": "2026-08-04T12:40:00.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},
@@ -1247,6 +1389,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         linear.blockers[issue_id] = []
         linear.closure_contexts[issue_id] = {
             "id": issue_id,
+            "updated_at": "2026-08-04T12:45:00.000Z",
             "completed_at": "2026-08-04T12:45:00.000Z",
             "state": {"id": "done-1", "name": "Done", "type": "completed"},
             "team": {"id": "team-ops"},

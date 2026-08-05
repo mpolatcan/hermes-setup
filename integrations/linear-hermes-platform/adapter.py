@@ -726,8 +726,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         event_state_type = str(
             event_state.get("type") if isinstance(event_state, dict) else ""
         ).casefold()
-        if event_state_type and event_state_type != "completed":
-            return None
+        if not event_state_id or event_state_type != "completed":
+            logger.warning(
+                "[linear] closure rejected issue=%s reason=invalid_terminal_evidence",
+                issue_id,
+            )
+            return "closure_rejected"
         actor = payload.get("actor")
         if not isinstance(actor, dict):
             actor = payload.get("user")
@@ -771,33 +775,13 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         delegate = context.get("delegate") or {}
         assignee_id = str(assignee.get("id") or "")
         delegate_id = str(delegate.get("id") or "")
+        live_updated_at = str(context.get("updated_at") or "")
         completed_at = str(context.get("completed_at") or "")
         previous_live = next(
             (
                 item for item in context.get("team_states") or []
                 if hmac.compare_digest(str(item.get("id") or ""), previous_state_id)
             ),
-            None,
-        )
-        def _matches_transition(item: dict[str, Any]) -> bool:
-            try:
-                history_ts = _iso_timestamp(str(item.get("created_at") or ""))
-            except ValueError:
-                return False
-            return bool(
-                hmac.compare_digest(str(item.get("actor_id") or ""), actor_id)
-                and hmac.compare_digest(
-                    str((item.get("from_state") or {}).get("id") or ""), previous_state_id
-                )
-                and hmac.compare_digest(
-                    str((item.get("to_state") or {}).get("id") or ""), current_state_id
-                )
-                and abs(history_ts - event_updated_ts)
-                <= _CLOSURE_TIMESTAMP_TOLERANCE_SECONDS
-            )
-
-        transition = next(
-            (item for item in context.get("history") or [] if _matches_transition(item)),
             None,
         )
         try:
@@ -813,13 +797,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             and self._linear.actor_id
             and delegate_id
             and hmac.compare_digest(delegate_id, self._linear.actor_id)
+            and live_updated_at
+            and hmac.compare_digest(event_updated_at, live_updated_at)
             and previous_live
             and str(previous_live.get("type") or "").casefold() == "started"
-            and transition
-            and str((transition.get("from_state") or {}).get("type") or "").casefold()
-            == "started"
-            and str((transition.get("to_state") or {}).get("type") or "").casefold()
-            == "completed"
             and current_state_id
             and completion_matches
         )
@@ -827,7 +808,6 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             logger.warning("[linear] closure rejected issue=%s reason=authoritative_policy", issue_id)
             return "closure_rejected"
         assert previous_live is not None
-        assert transition is not None
         if not session_id:
             self._ledger.stage_pending_closure_event(
                 issue_id,
@@ -847,6 +827,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         material = "\0".join(
             (
                 issue_id,
+                live_updated_at,
                 completed_at,
                 current_state_id,
                 actor_id,
@@ -880,7 +861,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             "previous_state_id": previous_state_id,
             "current_state_id": current_state_id,
             "event_updated_at": event_updated_at,
-            "history_actor_id": str(transition.get("actor_id") or ""),
+            "live_updated_at": live_updated_at,
+            "verification_source": "signed_webhook_plus_live_readback",
             "completed_at": completed_at,
         }
         async with self._outbox_drain_lock:
