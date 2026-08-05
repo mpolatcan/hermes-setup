@@ -20,7 +20,7 @@ try:
     )
     from .oauth_store import LinearOAuthStore
     from .outbound_ledger import OutboundLedger, OutboundLedgerError
-    from .outbound_policy import OutboundPolicy
+    from .outbound_policy import OutboundPolicy, extract_linear_profile_url
 except ImportError:  # Direct module loading in standalone tests/scripts.
     from linear_client import LinearClient
     from mcp_client import (
@@ -32,9 +32,11 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     )
     from oauth_store import LinearOAuthStore
     from outbound_ledger import OutboundLedger, OutboundLedgerError
-    from outbound_policy import OutboundPolicy
+    from outbound_policy import OutboundPolicy, extract_linear_profile_url
 
-WRAPPER_FIELDS = frozenset({"operation_key", "target_team_id", "lifecycle_action"})
+WRAPPER_FIELDS = frozenset(
+    {"operation_key", "target_team_id", "lifecycle_action", "comment_purpose"}
+)
 TOOL_MAP = {
     "linear_get_issue": ("get_issue", False),
     "linear_list_issues": ("list_issues", False),
@@ -116,6 +118,11 @@ SAVE_COMMENT_SCHEMA = {
             "id": {"type": "string"},
             "issueId": {"type": "string"},
             "body": {"type": "string"},
+            "comment_purpose": {
+                "type": "string",
+                "enum": ["checkpoint", "mention", "handoff"],
+                "description": "Durable sessionless checkpoint, or an explicit @mention/handoff exception.",
+            },
         },
         "required": ["operation_key", "target_team_id", "issueId", "body"],
         "additionalProperties": False,
@@ -283,6 +290,34 @@ async def execute_with_clients(
     ):
         return {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
 
+    if vendor_tool == "save_comment":
+        issue_id = str(arguments.get("issueId") or "")
+        purpose = str(arguments.get("comment_purpose") or "checkpoint")
+        if purpose in {"mention", "handoff"}:
+            target_url = extract_linear_profile_url(str(arguments.get("body") or ""))
+            target = await graphql_client.get_user_by_url(str(target_url or ""))
+            if not target:
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "mention_target_unresolved",
+                }
+            if str(target.get("id") or "") == graph_actor:
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "mention_target_self",
+                }
+        sessions = await graphql_client.get_issue_agent_sessions(issue_id)
+        open_for_actor = any(
+            str(session.get("app_user_id") or "") == graph_actor
+            and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+            for session in sessions
+        )
+        if open_for_actor and purpose == "checkpoint":
+            return {
+                "error": "linear_policy_denied",
+                "reason": "session_activity_required",
+            }
+
     lifecycle_transition: dict[str, str] | None = None
     if arguments.get("lifecycle_action") == "start":
         lifecycle_transition, lifecycle_result = await _resolve_start_transition(
@@ -348,6 +383,31 @@ async def execute_with_clients(
             return {
                 "error": "linear_policy_denied",
                 "reason": "lifecycle_pre_dispatch_changed",
+            }
+
+    if vendor_tool == "save_comment" and str(
+        arguments.get("comment_purpose") or "checkpoint"
+    ) == "checkpoint":
+        issue_id = str(arguments.get("issueId") or "")
+        try:
+            sessions = await graphql_client.get_issue_agent_sessions(issue_id)
+            open_for_actor = any(
+                str(session.get("app_user_id") or "") == graph_actor
+                and str(session.get("status") or "")
+                in {"pending", "active", "awaitingInput"}
+                for session in sessions
+            )
+        except Exception:
+            open_for_actor = True
+        if open_for_actor:
+            await asyncio.to_thread(
+                ledger.mark_failed,
+                operation_key,
+                error_code="session_activity_required",
+            )
+            return {
+                "error": "linear_policy_denied",
+                "reason": "session_activity_required",
             }
 
     try:

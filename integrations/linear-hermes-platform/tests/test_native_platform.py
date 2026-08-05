@@ -2118,6 +2118,144 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_by_url_paginates_and_returns_one_exact_live_user(self):
+        client = LinearClient("/unused")
+        target_url = "https://linear.app/mpolatcan/profiles/doruk"
+        calls = []
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("users(first: 50, after: $after)", query)
+            calls.append(dict(variables or {}))
+            if variables["after"] is None:
+                return {"users": {
+                    "nodes": [{"id": "actor-1", "url": "https://linear.app/mpolatcan/profiles/derya"}],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                }}
+            return {"users": {
+                "nodes": [{"id": "actor-2", "url": target_url}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}
+
+        client.graphql = fake_graphql
+        self.assertEqual(
+            await client.get_user_by_url(target_url),
+            {"id": "actor-2", "url": target_url},
+        )
+        self.assertEqual(calls, [{"after": None}, {"after": "cursor-1"}])
+
+    async def test_user_by_url_returns_none_for_unresolved_target(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(_query, variables=None):
+            return {"users": {
+                "nodes": [{"id": "actor-1", "url": "https://linear.app/mpolatcan/profiles/derya"}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}
+
+        client.graphql = fake_graphql
+        self.assertIsNone(
+            await client.get_user_by_url("https://linear.app/mpolatcan/profiles/nobody")
+        )
+
+    async def test_issue_agent_sessions_returns_only_normalized_session_fields(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("agentSessions(first: 50, after: $after)", query)
+            self.assertIn("appUser { id }", query)
+            self.assertEqual(variables, {"id": "OPS-1", "after": None})
+            return {
+                "issue": {
+                    "id": "issue-1",
+                    "agentSessions": {
+                        "nodes": [{
+                            "id": "session-1",
+                            "status": "active",
+                            "startedAt": "2026-08-05T14:00:00Z",
+                            "endedAt": None,
+                            "appUser": {"id": "actor-1"},
+                        }],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    },
+                }
+            }
+
+        client.graphql = fake_graphql
+        sessions = await client.get_issue_agent_sessions("OPS-1")
+        self.assertEqual(sessions, [{
+            "id": "session-1",
+            "status": "active",
+            "started_at": "2026-08-05T14:00:00Z",
+            "ended_at": "",
+            "app_user_id": "actor-1",
+        }])
+
+    async def test_issue_agent_sessions_paginates_until_open_session_is_visible(self):
+        client = LinearClient("/unused")
+        calls = []
+
+        async def fake_graphql(_query, variables=None):
+            self.assertIsNotNone(variables)
+            variables = variables or {}
+            calls.append(variables)
+            if variables["after"] is None:
+                return {"issue": {"id": "issue-1", "agentSessions": {
+                    "nodes": [{
+                        "id": "complete-1", "status": "complete",
+                        "startedAt": "2026-08-01T00:00:00Z",
+                        "endedAt": "2026-08-01T00:01:00Z",
+                        "appUser": {"id": "actor-1"},
+                    }],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                }}}
+            return {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [{
+                    "id": "active-2", "status": "active",
+                    "startedAt": "2026-08-05T14:00:00Z", "endedAt": None,
+                    "appUser": {"id": "actor-1"},
+                }],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}
+
+        client.graphql = fake_graphql
+        sessions = await client.get_issue_agent_sessions("OPS-1")
+        self.assertEqual([item["id"] for item in sessions], ["complete-1", "active-2"])
+        self.assertEqual(calls, [{"id": "OPS-1", "after": None}, {"id": "OPS-1", "after": "cursor-1"}])
+
+    async def test_issue_agent_sessions_rejects_incomplete_policy_data(self):
+        client = LinearClient("/unused")
+        cases = [
+            {"issue": {"id": "issue-1", "agentSessions": None}},
+            {"issue": {"id": "issue-1", "agentSessions": {"nodes": [], "pageInfo": None}}},
+            {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [{"id": "session-1", "status": "active", "appUser": None}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}},
+            {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [{"id": 7, "status": "active", "appUser": {"id": "actor-1"}}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}},
+            {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [{"id": "session-1", "status": "active", "appUser": {"id": ["actor-1"]}}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}},
+            {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": True, "endCursor": ["cursor-1"]},
+            }}},
+            {"issue": {"id": "issue-1", "agentSessions": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": ["terminal-cursor"]},
+            }}},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                async def fake_graphql(_query, variables=None, payload=payload):
+                    return payload
+                client.graphql = fake_graphql
+                with self.assertRaises(LinearAPIError):
+                    await client.get_issue_agent_sessions("OPS-1")
+
     async def test_create_activity_places_ephemeral_on_top_level_input(self):
         client = LinearClient("/unused")
 

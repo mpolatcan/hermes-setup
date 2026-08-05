@@ -13,6 +13,11 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     from oauth_store import LINEAR_TOKEN_URL, LinearAPIError, LinearOAuthStore
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
+AGENT_SESSION_STATUSES = frozenset(
+    {"pending", "active", "complete", "awaitingInput", "error", "stale"}
+)
+MAX_AGENT_SESSION_PAGES = 100
+MAX_USER_PAGES = 100
 
 
 class LinearClient:
@@ -69,6 +74,53 @@ class LinearClient:
             raise LinearAPIError("Issue team could not be resolved for policy")
         return team_id
 
+    async def get_user_by_url(self, user_url: str) -> dict[str, str] | None:
+        """Resolve one exact organization user URL for a native Markdown mention."""
+        query = """
+query LinearPolicyMentionUsers($after: String) {
+  users(first: 50, after: $after) {
+    nodes { id url }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+        matches: list[dict[str, str]] = []
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_USER_PAGES):
+            data = await self.graphql(query, {"after": after})
+            connection = data.get("users")
+            if not isinstance(connection, dict):
+                raise LinearAPIError("Mention user connection was incomplete for policy")
+            nodes = connection.get("nodes")
+            page_info = connection.get("pageInfo")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise LinearAPIError("Mention user connection was incomplete for policy")
+            for raw in nodes:
+                if not isinstance(raw, dict):
+                    raise LinearAPIError("Mention user node was malformed for policy")
+                user_id = raw.get("id")
+                url = raw.get("url")
+                if not isinstance(user_id, str) or not user_id or not isinstance(url, str) or not url:
+                    raise LinearAPIError("Mention user node was incomplete for policy")
+                if url == user_url:
+                    matches.append({"id": user_id, "url": url})
+            has_next = page_info.get("hasNextPage")
+            cursor = page_info.get("endCursor")
+            if not isinstance(has_next, bool) or (
+                cursor is not None and not isinstance(cursor, str)
+            ):
+                raise LinearAPIError("Mention user pagination was incomplete for policy")
+            if not has_next:
+                if len(matches) > 1:
+                    raise LinearAPIError("Mention user URL was ambiguous for policy")
+                return matches[0] if matches else None
+            if not cursor or cursor in seen_cursors:
+                raise LinearAPIError("Mention user pagination did not advance")
+            seen_cursors.add(cursor)
+            after = cursor
+        raise LinearAPIError("Mention user pagination exceeded the policy limit")
+
     async def get_issue_start_context(self, issue_id: str) -> dict[str, Any]:
         """Read the official Linear inputs for a delegated non-terminal start."""
         data = await self.graphql(
@@ -115,6 +167,79 @@ query LinearPolicyCommentTeam($id: String!) {
         if not team_id:
             raise LinearAPIError("Comment team could not be resolved for policy")
         return team_id
+
+    async def get_issue_agent_sessions(self, issue_id: str) -> list[dict[str, str]]:
+        """Read normalized Agent Sessions used by outbound channel policy."""
+        query = """
+query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
+  issue(id: $id) {
+    id
+    agentSessions(first: 50, after: $after) {
+      nodes { id status startedAt endedAt appUser { id } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+        sessions: list[dict[str, str]] = []
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_AGENT_SESSION_PAGES):
+            data = await self.graphql(query, {"id": issue_id, "after": after})
+            issue = data.get("issue")
+            if (
+                not isinstance(issue, dict)
+                or not isinstance(issue.get("id"), str)
+                or not issue.get("id")
+            ):
+                raise LinearAPIError("Issue Agent Sessions could not be resolved for policy")
+            connection = issue.get("agentSessions")
+            if not isinstance(connection, dict):
+                raise LinearAPIError("Agent Session connection was incomplete for policy")
+            nodes = connection.get("nodes")
+            page_info = connection.get("pageInfo")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise LinearAPIError("Agent Session connection was incomplete for policy")
+            for raw in nodes:
+                if not isinstance(raw, dict):
+                    raise LinearAPIError("Agent Session node was malformed for policy")
+                session_id = raw.get("id")
+                status = raw.get("status")
+                app_user = raw.get("appUser")
+                app_user_id = app_user.get("id") if isinstance(app_user, dict) else None
+                started_at = raw.get("startedAt")
+                ended_at = raw.get("endedAt")
+                if (
+                    not isinstance(session_id, str)
+                    or not session_id
+                    or not isinstance(status, str)
+                    or status not in AGENT_SESSION_STATUSES
+                    or not isinstance(app_user_id, str)
+                    or not app_user_id
+                    or (started_at is not None and not isinstance(started_at, str))
+                    or (ended_at is not None and not isinstance(ended_at, str))
+                ):
+                    raise LinearAPIError("Agent Session node was incomplete for policy")
+                sessions.append({
+                    "id": session_id,
+                    "status": status,
+                    "started_at": started_at or "",
+                    "ended_at": ended_at or "",
+                    "app_user_id": app_user_id,
+                })
+            has_next = page_info.get("hasNextPage")
+            cursor = page_info.get("endCursor")
+            if not isinstance(has_next, bool) or (
+                cursor is not None and not isinstance(cursor, str)
+            ):
+                raise LinearAPIError("Agent Session pagination was incomplete for policy")
+            if not has_next:
+                return sessions
+            if not cursor or cursor in seen_cursors:
+                raise LinearAPIError("Agent Session pagination did not advance")
+            seen_cursors.add(cursor)
+            after = cursor
+        raise LinearAPIError("Agent Session pagination exceeded the policy limit")
 
     async def get_issue_closure_context(self, issue_id: str) -> dict[str, Any]:
         """Read authoritative fields required to accept a human terminal transition."""

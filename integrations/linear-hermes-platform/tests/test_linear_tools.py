@@ -15,6 +15,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from linear_tools import execute_with_clients, register_outbound_tools  # noqa: E402
 from mcp_client import LinearMCPToolError  # noqa: E402
+from oauth_store import LinearAPIError  # noqa: E402
 from outbound_ledger import OperationReservation, OutboundLedger  # noqa: E402
 from outbound_policy import OutboundPolicy  # noqa: E402
 
@@ -341,16 +342,35 @@ class FakeGraphQL:
     actor_id = "actor-1"
     organization_id = "org-1"
 
-    def __init__(self, issue_team="ops-1", issue_teams=None, start_contexts=None) -> None:
+    def __init__(
+        self,
+        issue_team="ops-1",
+        issue_teams=None,
+        start_contexts=None,
+        agent_sessions=None,
+        agent_session_reads=None,
+        mention_users=None,
+    ) -> None:
         self.issue_team = issue_team
         self.issue_teams = issue_teams or {}
         self.start_contexts = list(start_contexts or [])
+        self.agent_sessions = list(agent_sessions or [])
+        self.agent_session_reads = list(agent_session_reads or [])
+        self.mention_users = dict(mention_users or {})
 
     async def get_issue_team_id(self, issue_id):
         return self.issue_teams.get(issue_id, self.issue_team)
 
     async def get_comment_team_id(self, _comment_id):
         return self.issue_team
+
+    async def get_issue_agent_sessions(self, _issue_id):
+        if self.agent_session_reads:
+            return list(self.agent_session_reads.pop(0))
+        return list(self.agent_sessions)
+
+    async def get_user_by_url(self, url):
+        return self.mention_users.get(url)
 
     async def get_issue_start_context(self, _issue_id):
         if not self.start_contexts:
@@ -454,6 +474,180 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         forwarded = mutation_calls[0][1]
         self.assertNotIn("operation_key", forwarded)
         self.assertNotIn("target_team_id", forwarded)
+
+    async def test_open_same_actor_session_denies_checkpoint_comment_before_reservation(self):
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_comment",
+            arguments={
+                "operation_key": "op-session-checkpoint",
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": "Progress update",
+                "comment_purpose": "checkpoint",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(agent_sessions=[{
+                "id": "session-1", "status": "active", "app_user_id": "actor-1",
+            }]),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "session_activity_required"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_open_same_actor_session_allows_explicit_handoff_comment(self):
+        target_url = "https://linear.app/mpolatcan/profiles/doruk"
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_comment",
+            arguments={
+                "operation_key": "op-session-handoff",
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": f"{target_url} please verify the market evidence.",
+                "comment_purpose": "handoff",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(
+                agent_sessions=[{
+                    "id": "session-1", "status": "awaitingInput", "app_user_id": "actor-1",
+                }],
+                mention_users={target_url: {"id": "actor-2", "url": target_url}},
+            ),
+            mcp_client=mcp,
+        )
+        self.assertEqual(result["status"], "success")
+        forwarded = [call for call in mcp.calls if call[0] == "save_comment"][0][1]
+        self.assertNotIn("comment_purpose", forwarded)
+
+    async def test_unresolved_handoff_target_is_denied_before_reservation(self):
+        target_url = "https://linear.app/mpolatcan/profiles/nobody"
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_comment",
+            arguments={
+                "operation_key": "op-unresolved-handoff",
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": f"{target_url} please verify this.",
+                "comment_purpose": "handoff",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(mention_users={}),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "mention_target_unresolved"},
+        )
+        reservation = self.ledger.reserve(
+            operation_key="op-unresolved-handoff",
+            tool_name="save_comment",
+            payload={"issueId": "OPS-1", "body": "unused"},
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.assertTrue(reservation.dispatch)
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_self_handoff_target_is_denied_before_reservation(self):
+        target_url = "https://linear.app/mpolatcan/profiles/derya"
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_comment",
+            arguments={
+                "operation_key": "op-self-handoff",
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": f"{target_url} please verify this.",
+                "comment_purpose": "handoff",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(
+                mention_users={target_url: {"id": "actor-1", "url": target_url}}
+            ),
+            mcp_client=FakeMCP(),
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "mention_target_self"},
+        )
+
+    async def test_checkpoint_rechecks_session_after_reservation_before_dispatch(self):
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_comment",
+            arguments={
+                "operation_key": "op-session-race",
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": "Progress update",
+                "comment_purpose": "checkpoint",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(agent_session_reads=[[], [{
+                "id": "session-late", "status": "active", "app_user_id": "actor-1",
+            }]]),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "session_activity_required"},
+        )
+        replay = self.ledger.reserve(
+            operation_key="op-session-race",
+            tool_name="save_comment",
+            payload={"issueId": "OPS-1", "body": "Progress update"},
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.assertFalse(replay.dispatch)
+        self.assertEqual(replay.status, "failed")
+        self.assertEqual(replay.error_code, "session_activity_required")
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_indeterminate_agent_sessions_fail_before_comment_mutation(self):
+        class IndeterminateGraphQL(FakeGraphQL):
+            async def get_issue_agent_sessions(self, _issue_id):
+                raise LinearAPIError("Agent Session policy data incomplete")
+
+        mcp = FakeMCP()
+        with self.assertRaises(LinearAPIError):
+            await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_comment",
+                arguments={
+                    "operation_key": "op-indeterminate-session",
+                    "target_team_id": "ops-1",
+                    "issueId": "OPS-1",
+                    "body": "Checkpoint",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                graphql_client=IndeterminateGraphQL(),
+                mcp_client=mcp,
+            )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
     async def test_semantic_start_uses_lowest_position_started_state_and_reads_back(self):
         before = {

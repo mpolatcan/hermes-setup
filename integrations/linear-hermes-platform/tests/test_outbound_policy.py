@@ -38,6 +38,63 @@ class OutboundPolicyTests(unittest.TestCase):
         )
         self.assertEqual((decision.action, decision.reason), ("deny", "actor_mismatch"))
 
+    def test_comment_handoff_requires_canonical_linear_profile_url_first(self):
+        policy = self.standard()
+        for body in (
+            "@Doruk please verify this.",
+            "Please ask https://linear.app/mpolatcan/profiles/doruk to verify this.",
+            "https://example.com/mpolatcan/profiles/doruk please verify this.",
+        ):
+            with self.subTest(body=body):
+                decision = policy.evaluate(
+                    "save_comment",
+                    {
+                        "target_team_id": "ops-1",
+                        "issueId": "OPS-1",
+                        "body": body,
+                        "comment_purpose": "handoff",
+                    },
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("deny", "explicit_mention_required"),
+                )
+
+        allowed = policy.evaluate(
+            "save_comment",
+            {
+                "target_team_id": "ops-1",
+                "issueId": "OPS-1",
+                "body": "https://linear.app/mpolatcan/profiles/doruk please verify this.",
+                "comment_purpose": "handoff",
+            },
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual(allowed.action, "allow")
+
+    def test_comment_update_cannot_claim_mention_or_handoff_exception(self):
+        for purpose in ("mention", "handoff"):
+            with self.subTest(purpose=purpose):
+                decision = self.standard().evaluate(
+                    "save_comment",
+                    {
+                        "id": "comment-1",
+                        "target_team_id": "ops-1",
+                        "issueId": "OPS-1",
+                        "body": "https://linear.app/mpolatcan/profiles/doruk ping",
+                        "comment_purpose": purpose,
+                    },
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("deny", "comment_update_handoff_not_allowed"),
+                )
+
     def test_cross_team_mutation_is_denied(self):
         decision = self.standard().evaluate(
             "save_issue",
@@ -188,6 +245,68 @@ class OutboundPolicyTests(unittest.TestCase):
             live_organization_id="org-1",
         )
         self.assertEqual(decision.action, "allow")
+
+    def test_comment_purpose_requires_declared_exception_and_explicit_mention(self):
+        policy = self.standard()
+        base = {
+            "target_team_id": "ops-1",
+            "issueId": "OPS-1",
+        }
+        invalid = policy.evaluate(
+            "save_comment",
+            {**base, "body": "Please verify this.", "comment_purpose": "handoff"},
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        unknown = policy.evaluate(
+            "save_comment",
+            {**base, "body": "@Doruk verify this.", "comment_purpose": "progress"},
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        allowed = policy.evaluate(
+            "save_comment",
+            {
+                **base,
+                "body": "https://linear.app/mpolatcan/profiles/doruk verify this.",
+                "comment_purpose": "mention",
+            },
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual((invalid.action, invalid.reason), ("deny", "explicit_mention_required"))
+        self.assertEqual((unknown.action, unknown.reason), ("deny", "invalid_comment_purpose"))
+        self.assertEqual(allowed.action, "allow")
+
+    def test_comment_exception_rejects_non_target_at_signs(self):
+        policy = self.standard()
+        for body in (
+            "@",
+            "mail@example.com please verify",
+            r"\@Doruk please verify",
+            "`@Doruk` please verify",
+            "``@Doruk`` please verify",
+            "```text\n@Doruk\n``` please verify",
+            "~~~text\n@Doruk\n~~~ please verify",
+            "https://example.com/@Doruk please verify",
+            "Please ask @Doruk to verify",
+        ):
+            with self.subTest(body=body):
+                decision = policy.evaluate(
+                    "save_comment",
+                    {
+                        "target_team_id": "ops-1",
+                        "issueId": "OPS-1",
+                        "body": body,
+                        "comment_purpose": "handoff",
+                    },
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("deny", "explicit_mention_required"),
+                )
 
     def test_metadata_only_rejects_free_form_label_values(self):
         policy = OutboundPolicy(

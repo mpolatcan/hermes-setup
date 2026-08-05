@@ -41,7 +41,9 @@ SAVE_ISSUE_FIELDS = frozenset(
         "operation_key",
     }
 )
-SAVE_COMMENT_FIELDS = frozenset({"id", "issueId", "body", "target_team_id", "operation_key"})
+SAVE_COMMENT_FIELDS = frozenset(
+    {"id", "issueId", "body", "comment_purpose", "target_team_id", "operation_key"}
+)
 SENSITIVE_TEXT_FIELDS = frozenset({"title", "description", "body", "comment"})
 METADATA_UUID_ONLY_FIELDS = frozenset(
     {"state", "assignee", "delegate", "labels", "label", "project", "milestone", "cycle"}
@@ -62,6 +64,17 @@ ISSUE_REF_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
 )
+LINEAR_PROFILE_URL_RE = re.compile(
+    r"^\s*(https://linear\.app/[a-z0-9][a-z0-9-]{0,62}/profiles/"
+    r"[a-z0-9][a-z0-9-]{0,63})(?=$|[\s,;:!?])",
+    re.ASCII,
+)
+
+
+def extract_linear_profile_url(body: str) -> str | None:
+    """Return a canonical API mention URL only when it is the first visible token."""
+    match = LINEAR_PROFILE_URL_RE.search(str(body or ""))
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)
@@ -184,6 +197,15 @@ class OutboundPolicy:
                 or not 0 <= priority <= 4
             ):
                 return PolicyDecision("deny", "invalid_priority")
+        else:
+            purpose = str(arguments.get("comment_purpose") or "checkpoint")
+            if purpose not in {"checkpoint", "mention", "handoff"}:
+                return PolicyDecision("deny", "invalid_comment_purpose")
+            if purpose in {"mention", "handoff"}:
+                if arguments.get("id"):
+                    return PolicyDecision("deny", "comment_update_handoff_not_allowed")
+                if not extract_linear_profile_url(str(arguments.get("body") or "")):
+                    return PolicyDecision("deny", "explicit_mention_required")
 
         if self.sensitive_mode == "metadata_only":
             if any(field in arguments for field in METADATA_DENIED_FIELDS):
