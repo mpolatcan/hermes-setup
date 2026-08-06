@@ -101,6 +101,16 @@
 - The earlier approved `OPS-30` production canary remains the mutation/exactly-once evidence: top-level `save_issue.project=null` dispatched once, returned `result_id=OPS-30`, replayed the same namespaced operation key without a second vendor mutation, and authoritatively read back detached. No production mutation was dispatched during the `fa70d9f` lifecycle-hardening rollout.
 - Previously observed launchd service-definition age remains a separate approval-gated fleet concern and was not folded into this Linear rollout.
 
+## OPS-104 native home-delivery acceptance — 2026-08-07
+
+- Source commit `a0f815d0ad378ee421d025bc67753c705d8db48c` adds the official `PlatformEntry` home-delivery hooks: `apply_yaml_config_fn`, `cron_deliver_env_var=LINEAR_HOME_CHANNEL`, and `standalone_sender_fn`. Reviewed-manifest commit `bceeb216f5185275c01a36d565b1260341886f4b` pins the exact ten-file SHA-256 set. Plugin version is `0.8.4`.
+- All nine production profiles (`general`, `assistant`, `coder`, `finance`, `health`, `marketing`, `producer`, `researcher`, `writer`) serve `linear-native 0.8.4` with `status=ok`. Deployed artifact parity is `9/9 × 10/10`; each profile's Linear SQLite ledger passes `quick_check`, with `pending=0`, `processing=0`, and `dead=0` after acceptance.
+- Nine isolated clean-process probes loaded each deployed plugin and core cron scheduler with the profile's own `HERMES_HOME`. `deliver=linear` resolved exactly one target in every profile and matched that profile's configured Linear home AgentSession UUID (`9/9`). The probe explicitly removed the parent Derya process's `LINEAR_HOME_CHANNEL`; inherited explicit environment values intentionally have precedence over YAML.
+- Approved metadata-only standalone canary `OPS104_STANDALONE_CANARY_20260806T211243Z` used the `health` profile's configured home target. CLI exit was `0`; authoritative AgentSession read-back increased activity count `3 → 4` and found exactly one `AgentActivityResponseContent`, activity ID `4796f852-8fe6-42e4-a52d-ed1b95131da0`, with source comment `3167277e-7988-482c-abd9-3fb41c091759`.
+- Approved metadata-only native cron canary `OPS104_CRON_CANARY_20260806T211243Z` used the `finance` profile's configured home target. Gateway builtin scheduler job `0e1d9b39d669` ran once; execution `5477633534b44194ab5512933652e50c` completed without error and the gateway delivered through the live Linear adapter. Authoritative AgentSession read-back increased activity count `3 → 4` and found exactly one `AgentActivityResponseContent`, activity ID `20c0125a-0e77-4feb-8449-77d4551daad5`, with source comment `543d14df-d153-444b-b018-98a794d7ffaf`.
+- Repeat-one cron state removed the canary job automatically. The temporary script was deleted, no job-ID or canary-name output artifact remained, and final `health` and `finance` queue/ledger checks were clean. Operational inbox anchors `OPS-102` and `OPS-103` remain non-terminal transport anchors.
+- Fresh source verification passes `312/312` unittests, Ruff, and `git diff --check`.
+
 ## Rollback
 
 Each approved promotion emitted an immutable per-profile rollback path and digest. Use only the recorded profile-specific artifact with `scripts/deploy_plugin.py rollback`; never select a backup by recency.
