@@ -2028,6 +2028,12 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.adapter._linear.calls[-1], ("session-1", "response", body))
 
+    def test_linear_declares_noneditable_to_disable_streaming_previews(self):
+        self.assertFalse(
+            getattr(self.adapter, "SUPPORTS_MESSAGE_EDITING", True),
+            "Linear AgentActivities cannot edit streaming previews in place",
+        )
+
     async def test_home_channel_notice_is_nonterminal_thought(self):
         body = (
             "📬 No home channel is set for Linear. "

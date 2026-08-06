@@ -248,6 +248,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     supports_code_blocks = True
     supports_async_delivery = True
     splits_long_messages = False
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig, platform: Platform) -> None:
         super().__init__(config, platform)
@@ -460,7 +461,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.2",
+                "version": "0.8.3",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
