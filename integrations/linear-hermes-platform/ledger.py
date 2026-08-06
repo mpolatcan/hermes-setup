@@ -31,6 +31,7 @@ class DeliveryLedger:
         processing_timeout_seconds: int = 300,
         retention_seconds: int = 604800,
         outbox_claim_timeout_seconds: int = 60,
+        startup_recovery: bool = True,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,25 +105,28 @@ class DeliveryLedger:
         if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 4:
             self._db.execute("PRAGMA user_version=4")
         # A process restart proves that no previous local worker still owns a
-        # resuming claim. Replay uses the original stable delivery key, so the
-        # gateway/outbox idempotency layers suppress an ambiguous duplicate.
-        self._db.execute(
-            "UPDATE waiting_executions SET state = 'waiting', "
-            "last_error = COALESCE(last_error, 'Recovered interrupted resume'), "
-            "updated_at = ? WHERE state = 'resuming'",
-            (int(time.time()),),
-        )
-        self._db.execute(
-            "UPDATE closure_reconciliations SET state = 'completed', last_error = NULL, "
-            "updated_at = COALESCE((SELECT delivered_at FROM outbox "
-            "WHERE outbox.id = closure_reconciliations.outbox_id), updated_at), "
-            "completed_at = COALESCE((SELECT delivered_at FROM outbox "
-            "WHERE outbox.id = closure_reconciliations.outbox_id), completed_at) "
-            "WHERE state != 'completed' AND EXISTS (SELECT 1 FROM outbox "
-            "WHERE outbox.id = closure_reconciliations.outbox_id AND outbox.state = 'delivered')"
-        )
+        # resuming claim. Outbound-only clients may open this database while
+        # the gateway is live, so they must not run process-start recovery.
+        if startup_recovery:
+            self._db.execute(
+                "UPDATE waiting_executions SET state = 'waiting', "
+                "last_error = COALESCE(last_error, 'Recovered interrupted resume'), "
+                "updated_at = ? WHERE state = 'resuming'",
+                (int(time.time()),),
+            )
+            self._db.execute(
+                "UPDATE closure_reconciliations SET state = 'completed', last_error = NULL, "
+                "updated_at = COALESCE((SELECT delivered_at FROM outbox "
+                "WHERE outbox.id = closure_reconciliations.outbox_id), updated_at), "
+                "completed_at = COALESCE((SELECT delivered_at FROM outbox "
+                "WHERE outbox.id = closure_reconciliations.outbox_id), completed_at) "
+                "WHERE state != 'completed' AND EXISTS (SELECT 1 FROM outbox "
+                "WHERE outbox.id = closure_reconciliations.outbox_id "
+                "AND outbox.state = 'delivered')"
+            )
         self._db.commit()
-        self.prune()
+        if startup_recovery:
+            self.prune()
 
     def bind_issue_session(
         self, issue_id: str, session_id: str, *, now: int | None = None,

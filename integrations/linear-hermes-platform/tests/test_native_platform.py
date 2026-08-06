@@ -14,6 +14,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 from aiohttp import web
@@ -35,6 +36,7 @@ from gateway.config import Platform, PlatformConfig  # noqa: E402
 adapter_mod = __import__(f"{PACKAGE_NAME}.adapter", fromlist=["*"])
 client_mod = __import__(f"{PACKAGE_NAME}.linear_client", fromlist=["*"])
 ledger_mod = __import__(f"{PACKAGE_NAME}.ledger", fromlist=["*"])
+linear_tools_mod = __import__(f"{PACKAGE_NAME}.linear_tools", fromlist=["*"])
 
 LinearPlatformAdapter = adapter_mod.LinearPlatformAdapter
 build_agent_prompt = adapter_mod.build_agent_prompt
@@ -86,6 +88,120 @@ class FakeLinear:
 
     async def get_issue_closure_context(self, issue_id):
         return dict(self.closure_contexts.get(issue_id, {}))
+
+
+class PluginRegistrationTests(unittest.TestCase):
+    def test_cron_delivery_registration_bridges_yaml_home_channel(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+
+        kwargs = context.platform_kwargs
+        assert kwargs is not None
+        self.assertEqual(
+            kwargs.get("cron_deliver_env_var"),
+            "LINEAR_HOME_CHANNEL",
+        )
+        bridge = kwargs.get("apply_yaml_config_fn")
+        assert callable(bridge)
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LINEAR_HOME_CHANNEL", None)
+            bridge({}, {"home_channel": {"chat_id": "session-home-1"}})
+            self.assertEqual(os.environ.get("LINEAR_HOME_CHANNEL"), "session-home-1")
+            bridge({}, {"home_channel": {"chat_id": "session-home-2"}})
+            self.assertEqual(os.environ.get("LINEAR_HOME_CHANNEL"), "session-home-2")
+            bridge({}, {})
+            self.assertNotIn("LINEAR_HOME_CHANNEL", os.environ)
+
+        with mock.patch.dict(
+            os.environ,
+            {"LINEAR_HOME_CHANNEL": "explicit-session"},
+            clear=False,
+        ):
+            bridge({}, {"home_channel": {"chat_id": "yaml-session"}})
+            self.assertEqual(os.environ.get("LINEAR_HOME_CHANNEL"), "explicit-session")
+
+    def test_standalone_sender_uses_outbound_only_adapter(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+        kwargs = context.platform_kwargs
+        assert kwargs is not None
+        sender = kwargs.get("standalone_sender_fn")
+        assert callable(sender)
+        sender_fn = cast(Any, sender)
+
+        fake_adapter = mock.Mock()
+        fake_adapter.connect_outbound_only = mock.AsyncMock(return_value=True)
+        fake_adapter.send = mock.AsyncMock(
+            return_value=mock.Mock(success=True, message_id="activity-1", error=None)
+        )
+        fake_adapter.disconnect = mock.AsyncMock()
+        with mock.patch.object(
+            adapter_mod.LinearPlatformAdapter,
+            "from_config",
+            return_value=fake_adapter,
+        ):
+            result = asyncio.run(sender_fn(object(), "session-1", "cron body"))
+
+        self.assertEqual(
+            result,
+            {
+                "success": True,
+                "platform": "linear",
+                "chat_id": "session-1",
+                "message_id": "activity-1",
+            },
+        )
+        fake_adapter.connect_outbound_only.assert_awaited_once_with()
+        fake_adapter.send.assert_awaited_once_with("session-1", "cron body")
+        fake_adapter.disconnect.assert_awaited_once_with()
+
+    def test_standalone_sender_cleanup_failure_does_not_mask_success(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+        kwargs = context.platform_kwargs
+        assert kwargs is not None
+        sender = cast(Any, kwargs["standalone_sender_fn"])
+
+        fake_adapter = mock.Mock()
+        fake_adapter.connect_outbound_only = mock.AsyncMock(return_value=True)
+        fake_adapter.send = mock.AsyncMock(
+            return_value=mock.Mock(success=True, message_id="activity-2", error=None)
+        )
+        fake_adapter.disconnect = mock.AsyncMock(side_effect=RuntimeError("cleanup failed"))
+        with mock.patch.object(
+            adapter_mod.LinearPlatformAdapter,
+            "from_config",
+            return_value=fake_adapter,
+        ):
+            result = asyncio.run(sender(object(), "session-2", "body"))
+
+        self.assertEqual(result.get("success"), True)
+        self.assertEqual(result.get("message_id"), "activity-2")
 
 
 class LedgerTests(unittest.TestCase):
@@ -580,6 +696,62 @@ class PromptTests(unittest.TestCase):
         )
         self.assertIn("Native tamam", text)
         self.assertNotIn("(empty prompt)", text)
+
+
+class AdapterOutboundOnlyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_outbound_only_opens_oauth_and_ledger_without_webhook_server(self):
+        class FakeConnectableLinear:
+            instances = []
+
+            def __init__(self, oauth_file):
+                self.oauth_file = oauth_file
+                self.connected = False
+                self.closed = False
+                self.__class__.instances.append(self)
+
+            async def connect(self):
+                self.connected = True
+
+            async def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "outbox.sqlite3")
+            live_ledger = DeliveryLedger(db_path)
+            live_ledger.put_wait(
+                "session-active",
+                "issue-active",
+                "delivery-active",
+                {"body": "resume"},
+                [],
+                now=100,
+            )
+            self.assertTrue(live_ledger.claim_wait("session-active", now=101))
+            config = PlatformConfig(
+                enabled=True,
+                extra={
+                    "database_path": db_path,
+                    "oauth_file": str(Path(td) / "oauth.json"),
+                },
+            )
+            adapter = LinearPlatformAdapter(config, Platform.WEBHOOK)
+            with mock.patch.object(adapter_mod, "LinearClient", FakeConnectableLinear):
+                self.assertTrue(await adapter.connect_outbound_only())
+                self.assertIsNotNone(adapter._ledger)
+                self.assertEqual(
+                    live_ledger.get_wait("session-active")["state"],
+                    "resuming",
+                )
+                self.assertTrue(FakeConnectableLinear.instances[-1].connected)
+                self.assertIsNone(adapter._runner)
+                self.assertIsNone(adapter._site)
+                self.assertFalse(adapter._running)
+                await adapter.disconnect()
+
+            self.assertTrue(FakeConnectableLinear.instances[-1].closed)
+            self.assertIsNone(adapter._ledger)
+            self.assertEqual(live_ledger.get_wait("session-active")["state"], "resuming")
+            live_ledger.close()
 
 
 class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):

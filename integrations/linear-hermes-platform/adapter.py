@@ -355,6 +355,26 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     def from_config(cls, config: PlatformConfig) -> "LinearPlatformAdapter":
         return cls(config, Platform("linear"))
 
+    async def connect_outbound_only(self, *, startup_recovery: bool = False) -> bool:
+        """Open the durable outbox and OAuth client without binding the webhook port."""
+        try:
+            if self._ledger is None:
+                self._ledger = DeliveryLedger(
+                    self.database_path,
+                    processing_timeout_seconds=self._processing_timeout,
+                    retention_seconds=self._retention,
+                    outbox_claim_timeout_seconds=max(30, int(self._outbox_max_delay)),
+                    startup_recovery=startup_recovery,
+                )
+            if self._linear is None:
+                self._linear = LinearClient(self.oauth_file)
+                await self._linear.connect()
+            return True
+        except Exception as exc:
+            logger.error("[linear] Outbound-only adapter failed to connect: %s", exc, exc_info=True)
+            await self._cleanup()
+            return False
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
         try:
@@ -366,14 +386,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             self._signing_secrets = tuple(
                 secret for secret in (current_secret, previous_secret) if len(secret) >= 16
             )
-            self._ledger = DeliveryLedger(
-                self.database_path,
-                processing_timeout_seconds=self._processing_timeout,
-                retention_seconds=self._retention,
-                outbox_claim_timeout_seconds=max(30, int(self._outbox_max_delay)),
-            )
-            self._linear = LinearClient(self.oauth_file)
-            await self._linear.connect()
+            if not await self.connect_outbound_only(startup_recovery=True):
+                raise RuntimeError("Linear outbound dependencies failed to connect")
+            assert self._linear is not None
             app = web.Application(client_max_size=self.max_body_bytes)
             app.router.add_get("/", self._health)
             app.router.add_get("/health", self._health)
@@ -461,7 +476,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.3",
+                "version": "0.8.4",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
