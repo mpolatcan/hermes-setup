@@ -226,6 +226,14 @@ class MCPOutcomeUnknown(LinearMCPError):
     """A mutation may have committed but no authoritative response arrived."""
 
 
+class _MCPSessionLost(LinearMCPError):
+    """Internal signal used to recover a read after its response context closes."""
+
+
+class _MCPMutationSessionLost(MCPOutcomeUnknown):
+    """Internal signal used to clean up without redispatching a mutation."""
+
+
 class LinearMCPClient:
     def __init__(
         self,
@@ -246,9 +254,36 @@ class LinearMCPClient:
         self.protocol_version = INITIAL_PROTOCOL_VERSION
         self.tool_schemas: dict[str, dict[str, Any]] = {}
         self._session: aiohttp.ClientSession | None = None
+        self._provisional_session_id: str | None = None
+        self._provisional_protocol_version: str | None = None
         self._ids = itertools.count(1)
+        self._state_lock = asyncio.Lock()
+
+    def _invalidate_negotiated_state(self) -> None:
+        self.session_id = None
+        self.protocol_version = INITIAL_PROTOCOL_VERSION
+        self.tool_schemas = {}
+        self._provisional_session_id = None
+        self._provisional_protocol_version = None
 
     async def connect(self) -> None:
+        async with self._state_lock:
+            if self._session is not None:
+                await self._close_unlocked()
+            await self._connect_unlocked()
+
+    async def _connect_unlocked(self) -> None:
+        self._invalidate_negotiated_state()
+        try:
+            await self._connect_impl()
+        except BaseException:
+            try:
+                await self._close_unlocked()
+            except BaseException:
+                self._invalidate_negotiated_state()
+            raise
+
+    async def _connect_impl(self) -> None:
         if self._session is None:
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds, connect=4)
             self._session = aiohttp.ClientSession(timeout=timeout)
@@ -263,6 +298,7 @@ class LinearMCPClient:
         negotiated = str(initialize.get("protocolVersion") or "")
         if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
             raise LinearMCPError("Linear MCP negotiated an unsupported protocol version")
+        self._provisional_protocol_version = negotiated
         capabilities = initialize.get("capabilities")
         tools_capability = capabilities.get("tools") if isinstance(capabilities, dict) else None
         if not isinstance(tools_capability, dict):
@@ -277,8 +313,7 @@ class LinearMCPClient:
             for field in ("name", "version")
         ):
             raise LinearMCPError("Linear MCP initialize returned invalid server info")
-        self.protocol_version = negotiated
-        self.session_id = response_session_id
+        self._provisional_session_id = response_session_id
         await self._send_notification("notifications/initialized", {})
         tools: list[dict[str, Any]] = []
         tool_names: set[str] = set()
@@ -314,11 +349,11 @@ class LinearMCPClient:
             raise LinearMCPError("Linear MCP tools/list exceeded the page limit")
         if tool_names != EXPECTED_VENDOR_TOOL_NAMES:
             raise LinearMCPError("Linear MCP vendor tool-name contract drifted")
-        self.tool_schemas = {tool["name"]: tool for tool in tools}
-        missing = sorted(self.required_tools - set(self.tool_schemas))
+        validated_tool_schemas = {tool["name"]: tool for tool in tools}
+        missing = sorted(self.required_tools - set(validated_tool_schemas))
         if missing:
             raise LinearMCPError(f"Linear MCP missing required tools: {', '.join(missing)}")
-        for tool_name, tool in self.tool_schemas.items():
+        for tool_name, tool in validated_tool_schemas.items():
             schema = tool.get("inputSchema")
             if (
                 not isinstance(schema, dict)
@@ -326,7 +361,7 @@ class LinearMCPClient:
             ):
                 raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}")
         for tool_name, required_fields in REQUIRED_TOOL_INPUT_FIELDS.items():
-            schema = self.tool_schemas[tool_name].get("inputSchema")
+            schema = validated_tool_schemas[tool_name].get("inputSchema")
             properties = schema.get("properties") if isinstance(schema, dict) else None
             pinned_required = REQUIRED_VENDOR_INPUT_FIELDS[tool_name]
             expected_root_keys = {
@@ -362,36 +397,82 @@ class LinearMCPClient:
                     or len(required_by_vendor) != len(pinned_required)
                 ):
                     raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}.required")
+        self.session_id = self._provisional_session_id
+        self.protocol_version = negotiated
+        self.tool_schemas = validated_tool_schemas
+        self._provisional_session_id = None
+        self._provisional_protocol_version = None
 
     async def close(self) -> None:
+        async with self._state_lock:
+            await self._close_unlocked()
+
+    async def _close_unlocked(self) -> None:
         session = self._session
         if session is None:
+            self._invalidate_negotiated_state()
             return
-        if self.session_id:
-            try:
-                token = await self.oauth_store.access_token()
-                async with session.delete(
-                    self.endpoint,
-                    headers=self._headers(token),
-                    allow_redirects=False,
-                ):
+        session_id = self._provisional_session_id or self.session_id
+        protocol_version = (
+            self._provisional_protocol_version or self.protocol_version
+        )
+
+        async def delete_once(token: str) -> int:
+            async with session.delete(
+                self.endpoint,
+                headers=self._headers_for_state(
+                    token,
+                    protocol_version=protocol_version,
+                    session_id=session_id,
+                ),
+                allow_redirects=False,
+            ) as response:
+                return response.status
+
+        try:
+            if session_id:
+                try:
+                    token = await self.oauth_store.access_token()
+                    status = await delete_once(token)
+                    if status == 401:
+                        refreshed = await self.oauth_store.access_token(
+                            force_refresh=True,
+                            stale_token=token,
+                        )
+                        await delete_once(refreshed)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     pass
-            except Exception:
-                pass
-        await session.close()
-        self._session = None
-        self.session_id = None
-        self.tool_schemas = {}
+        finally:
+            self._session = None
+            self._invalidate_negotiated_state()
+            await session.close()
 
     def _headers(self, token: str) -> dict[str, str]:
+        return self._headers_for_state(
+            token,
+            protocol_version=(
+                self._provisional_protocol_version or self.protocol_version
+            ),
+            session_id=self._provisional_session_id or self.session_id,
+        )
+
+    @staticmethod
+    def _headers_for_state(
+        token: str,
+        *,
+        protocol_version: str,
+        session_id: str | None,
+    ) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
-            "MCP-Protocol-Version": self.protocol_version,
+            "MCP-Protocol-Version": protocol_version,
         }
-        if self.session_id:
-            headers["Mcp-Session-Id"] = self.session_id
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
         return headers
 
     @staticmethod
@@ -441,6 +522,7 @@ class LinearMCPClient:
         params: dict[str, Any],
         *,
         mutation: bool = False,
+        allow_session_recovery: bool = True,
     ) -> tuple[dict[str, Any], str | None]:
         request_id = next(self._ids)
         payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
@@ -449,6 +531,7 @@ class LinearMCPClient:
             request_id=request_id,
             mutation=mutation,
             accept_session_id=method == "initialize",
+            allow_session_recovery=allow_session_recovery,
         )
         has_result = "result" in envelope
         has_error = "error" in envelope
@@ -580,101 +663,125 @@ class LinearMCPClient:
     ) -> tuple[dict[str, Any], str | None]:
         if self._session is None:
             raise LinearMCPError("Linear MCP client is not connected")
-        token = await self.oauth_store.access_token()
+        refresh_available = allow_refresh
+        read_retry_available = allow_read_retry
+        dispatched = False
         try:
-            async with self._session.post(
-                self.endpoint,
-                headers=self._headers(token),
-                json=payload,
-                allow_redirects=False,
-            ) as response:
-                if response.status == 401 and allow_refresh:
-                    await self.oauth_store.access_token(force_refresh=True, stale_token=token)
-                    if mutation:
-                        raise MCPOutcomeUnknown(
-                            "Linear mutation authentication changed; mutation was not retried and outcome is unknown"
-                        )
-                    return await self._post(
-                        payload,
-                        request_id=request_id,
-                        mutation=mutation,
-                        accept_session_id=accept_session_id,
-                        allow_refresh=False,
-                        allow_read_retry=allow_read_retry,
-                        allow_session_recovery=allow_session_recovery,
-                    )
-                if response.status == 404 and self.session_id and allow_session_recovery:
-                    if mutation:
-                        raise MCPOutcomeUnknown("Linear mutation session was lost; outcome is unknown")
-                    self.session_id = None
-                    self.tool_schemas = {}
-                    await self.connect()
-                    return await self._post(
-                        payload,
-                        request_id=request_id,
-                        mutation=False,
-                        accept_session_id=accept_session_id,
-                        allow_refresh=allow_refresh,
-                        allow_read_retry=allow_read_retry,
-                        allow_session_recovery=False,
-                    )
-                if response.status == 429 or response.status >= 500:
-                    if mutation:
-                        raise MCPOutcomeUnknown(
-                            f"Linear mutation HTTP {response.status}; outcome is unknown"
-                        )
-                    if allow_read_retry:
-                        retry_after = response.headers.get("Retry-After")
+            while True:
+                token = await self.oauth_store.access_token()
+                retry_delay: float | None = None
+                retry_after_refresh = False
+                dispatched = True
+                async with self._session.post(
+                    self.endpoint,
+                    headers=self._headers(token),
+                    json=payload,
+                    allow_redirects=False,
+                ) as response:
+                    if response.status == 401 and refresh_available:
                         try:
-                            delay = min(2.0, max(0.0, float(retry_after or 0.2)))
-                        except ValueError:
-                            delay = 0.2
-                        await asyncio.sleep(delay)
-                        return await self._post(
-                            payload,
-                            request_id=request_id,
-                            mutation=False,
-                            accept_session_id=accept_session_id,
-                            allow_refresh=allow_refresh,
-                            allow_read_retry=False,
-                            allow_session_recovery=allow_session_recovery,
-                        )
-                    raise LinearMCPError("Linear MCP read failed after retry")
-                if response.status < 200 or response.status >= 300:
-                    if mutation:
-                        raise MCPOutcomeUnknown(
-                            f"Linear mutation HTTP {response.status}; outcome is unknown"
-                        )
-                    raise LinearMCPError(f"Linear MCP HTTP {response.status}")
-                response_session_headers = response.headers.getall("Mcp-Session-Id", [])
-                response_session_id: str | None = None
-                if response_session_headers:
-                    try:
-                        if len(response_session_headers) != 1:
-                            raise ValueError("duplicate MCP session id")
-                        validated_session_id = self._validate_session_id(
-                            response_session_headers[0]
-                        )
-                    except ValueError as exc:
-                        if mutation:
-                            raise MCPOutcomeUnknown(
-                                "Linear mutation returned an invalid session id; outcome is unknown"
-                            ) from exc
-                        raise LinearMCPError("Linear MCP returned an invalid session id") from exc
-                    if not accept_session_id:
-                        if mutation:
-                            raise MCPOutcomeUnknown(
-                                "Linear mutation returned an unexpected session id; outcome is unknown"
+                            await self.oauth_store.access_token(
+                                force_refresh=True,
+                                stale_token=token,
                             )
-                        raise LinearMCPError("Linear MCP returned an unexpected session id")
-                    response_session_id = validated_session_id
-                envelope = await self._decode_response(
-                    response,
-                    request_id=request_id,
-                    mutation=mutation,
-                )
-                return envelope, response_session_id
+                        except asyncio.CancelledError as exc:
+                            if mutation:
+                                raise MCPOutcomeUnknown(
+                                    "Linear mutation authentication refresh was cancelled; outcome is unknown"
+                                ) from exc
+                            raise
+                        except Exception as exc:
+                            if mutation:
+                                raise MCPOutcomeUnknown(
+                                    "Linear mutation authentication refresh failed; outcome is unknown"
+                                ) from exc
+                            raise LinearMCPError(
+                                "Linear MCP authentication refresh failed"
+                            ) from exc
+                        if mutation:
+                            raise MCPOutcomeUnknown(
+                                "Linear mutation authentication changed; mutation was not retried and outcome is unknown"
+                            )
+                        refresh_available = False
+                        retry_after_refresh = True
+                    elif (
+                        response.status == 404
+                        and (self._provisional_session_id or self.session_id)
+                        and allow_session_recovery
+                    ):
+                        if mutation:
+                            raise _MCPMutationSessionLost(
+                                "Linear mutation session was lost; outcome is unknown"
+                            )
+                        raise _MCPSessionLost("Linear MCP HTTP 404: session was lost")
+                    elif response.status == 429 or response.status >= 500:
+                        if mutation:
+                            raise MCPOutcomeUnknown(
+                                f"Linear mutation HTTP {response.status}; outcome is unknown"
+                            )
+                        if read_retry_available:
+                            retry_after = response.headers.get("Retry-After")
+                            try:
+                                retry_delay = min(2.0, max(0.0, float(retry_after or 0.2)))
+                            except ValueError:
+                                retry_delay = 0.2
+                            read_retry_available = False
+                        else:
+                            raise LinearMCPError("Linear MCP read failed after retry")
+                    elif response.status < 200 or response.status >= 300:
+                        if mutation:
+                            raise MCPOutcomeUnknown(
+                                f"Linear mutation HTTP {response.status}; outcome is unknown"
+                            )
+                        raise LinearMCPError(f"Linear MCP HTTP {response.status}")
+                    else:
+                        response_session_headers = response.headers.getall(
+                            "Mcp-Session-Id", []
+                        )
+                        response_session_id: str | None = None
+                        if response_session_headers:
+                            try:
+                                if len(response_session_headers) != 1:
+                                    raise ValueError("duplicate MCP session id")
+                                validated_session_id = self._validate_session_id(
+                                    response_session_headers[0]
+                                )
+                            except ValueError as exc:
+                                if mutation:
+                                    raise MCPOutcomeUnknown(
+                                        "Linear mutation returned an invalid session id; outcome is unknown"
+                                    ) from exc
+                                raise LinearMCPError(
+                                    "Linear MCP returned an invalid session id"
+                                ) from exc
+                            if not accept_session_id:
+                                if mutation:
+                                    raise MCPOutcomeUnknown(
+                                        "Linear mutation returned an unexpected session id; outcome is unknown"
+                                    )
+                                raise LinearMCPError(
+                                    "Linear MCP returned an unexpected session id"
+                                )
+                            response_session_id = validated_session_id
+                            self._provisional_session_id = validated_session_id
+                        envelope = await self._decode_response(
+                            response,
+                            request_id=request_id,
+                            mutation=mutation,
+                        )
+                        return envelope, response_session_id
+                if retry_after_refresh:
+                    continue
+                if retry_delay is not None:
+                    await asyncio.sleep(retry_delay)
+                    continue
         except MCPOutcomeUnknown:
+            raise
+        except asyncio.CancelledError as exc:
+            if mutation and dispatched:
+                raise MCPOutcomeUnknown(
+                    "Linear mutation was cancelled after dispatch; outcome is unknown"
+                ) from exc
             raise
         except asyncio.TimeoutError as exc:
             if mutation:
@@ -692,6 +799,22 @@ class LinearMCPClient:
         *,
         mutation: bool = False,
     ) -> dict[str, Any]:
+        async with self._state_lock:
+            return await self._call_tool_unlocked(name, arguments, mutation=mutation)
+
+    async def _discard_ambiguous_session_unlocked(self) -> None:
+        try:
+            await self._close_unlocked()
+        except BaseException:
+            pass
+
+    async def _call_tool_unlocked(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        mutation: bool = False,
+    ) -> dict[str, Any]:
         if name not in EXECUTABLE_VENDOR_TOOLS:
             raise LinearMCPError(f"Linear MCP tool is not authorized for execution: {name}")
         if name not in self.tool_schemas:
@@ -699,13 +822,45 @@ class LinearMCPClient:
         derived_mutation = name in MUTATION_VENDOR_TOOLS
         if mutation and not derived_mutation:
             raise LinearMCPError(f"Linear MCP read tool cannot be classified as mutation: {name}")
-        result, _response_session_id = await self._send_rpc(
-            "tools/call",
-            {"name": name, "arguments": arguments},
-            mutation=derived_mutation,
-        )
-        if result.get("isError") is True:
+        call_params = {"name": name, "arguments": arguments}
+        try:
+            result, _response_session_id = await self._send_rpc(
+                "tools/call",
+                call_params,
+                mutation=derived_mutation,
+            )
+        except _MCPMutationSessionLost:
+            await self._discard_ambiguous_session_unlocked()
+            raise
+        except _MCPSessionLost:
+            await self._close_unlocked()
+            await self._connect_unlocked()
+            result, _response_session_id = await self._send_rpc(
+                "tools/call",
+                call_params,
+                mutation=False,
+                allow_session_recovery=False,
+            )
+        except MCPOutcomeUnknown:
+            await self._discard_ambiguous_session_unlocked()
+            raise
+        is_error = result.get("isError", False)
+        if "isError" in result and type(is_error) is not bool:
             if derived_mutation:
+                try:
+                    await self._close_unlocked()
+                except BaseException:
+                    pass
+                raise MCPOutcomeUnknown(
+                    f"Linear MCP tool {name} returned an invalid isError value; outcome is unknown"
+                )
+            raise LinearMCPError(f"Linear MCP tool {name} returned an invalid isError value")
+        if is_error:
+            if derived_mutation:
+                try:
+                    await self._close_unlocked()
+                except BaseException:
+                    pass
                 raise MCPOutcomeUnknown(
                     f"Linear MCP tool {name} reported an error; outcome is unknown"
                 )
@@ -724,6 +879,7 @@ class LinearMCPClient:
         )
         if not valid_content:
             if derived_mutation:
+                await self._discard_ambiguous_session_unlocked()
                 raise MCPOutcomeUnknown(
                     f"Linear MCP tool {name} returned an invalid result contract; outcome is unknown"
                 )
@@ -735,6 +891,7 @@ class LinearMCPClient:
             except (TypeError, ValueError):
                 parsed = None
             if not isinstance(parsed, dict) or not isinstance(parsed.get("id"), str) or not parsed["id"]:
+                await self._discard_ambiguous_session_unlocked()
                 raise MCPOutcomeUnknown(
                     f"Linear MCP tool {name} returned no authoritative result id; outcome is unknown"
                 )

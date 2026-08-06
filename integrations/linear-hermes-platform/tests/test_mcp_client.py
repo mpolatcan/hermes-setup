@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import unittest
@@ -50,7 +51,14 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.tool_rpc_error = False
         self.protocol_headers = []
         self.delete_calls = 0
+        self.delete_headers = []
+        self.delete_status = 204
+        self.delete_unauthorized_once = False
         self.session_404_once = False
+        self.always_404_methods = set()
+        self.blocked_method = None
+        self.blocked_method_entered = asyncio.Event()
+        self.blocked_method_release = asyncio.Event()
         self.response_content_type = None
         self.session_id_header = "session-1"
         self.tool_session_id_header = None
@@ -180,6 +188,11 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 return web.json_response({"error": "expired"}, status=401)
             method = payload.get("method")
             request_id = payload.get("id")
+            if method == self.blocked_method:
+                self.blocked_method_entered.set()
+                await self.blocked_method_release.wait()
+            if method in self.always_404_methods:
+                return web.json_response({"error": "session expired"}, status=404)
             if method not in {"initialize", "notifications/initialized"} and self.session_404_once:
                 self.session_404_once = False
                 return web.json_response({"error": "session expired"}, status=404)
@@ -257,9 +270,21 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 )
             return web.json_response({"error": "unknown"}, status=400)
 
-        async def delete_handler(_request: web.Request) -> web.Response:
+        async def delete_handler(request: web.Request) -> web.Response:
             self.delete_calls += 1
-            return web.Response(status=204)
+            self.delete_headers.append(
+                (
+                    request.headers.get("Mcp-Session-Id"),
+                    request.headers.get("MCP-Protocol-Version"),
+                )
+            )
+            if (
+                self.delete_unauthorized_once
+                and request.headers.get("Authorization") == "Bearer old-access"
+            ):
+                self.delete_unauthorized_once = False
+                return web.Response(status=401)
+            return web.Response(status=self.delete_status)
 
         app = web.Application()
         app.router.add_post("/mcp", handler)
@@ -425,6 +450,118 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_schema_drift_does_not_commit_an_executable_contract(self):
+        target = next(tool for tool in self.tools if tool["name"] == "save_issue")
+        target["inputSchema"]["properties"]["title"] = {"type": "integer"}
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "schema drift"):
+                await client.connect()
+            self.assertEqual(client.tool_schemas, {})
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            requests_before_call = len(self.requests)
+            with self.assertRaisesRegex(LinearMCPError, "negotiated contract"):
+                await client.call_tool("save_issue", {"title": "must-not-dispatch"})
+            self.assertEqual(len(self.requests), requests_before_call)
+        finally:
+            await client.close()
+
+    async def test_handshake_state_is_provisional_until_discovery_succeeds(self):
+        self.protocol_version = "2025-06-18"
+        self.blocked_method = "notifications/initialized"
+        client = self.client()
+        task = asyncio.create_task(client.connect())
+        try:
+            await self.blocked_method_entered.wait()
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
+            initialized_index = next(
+                index
+                for index, request in enumerate(self.requests)
+                if request.get("method") == "notifications/initialized"
+            )
+            self.assertEqual(self.protocol_headers[initialized_index], "2025-06-18")
+            task.cancel()
+            self.blocked_method_release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(self.delete_headers, [("session-1", "2025-06-18")])
+            self.assertIsNone(client._session)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
+        finally:
+            if not task.done():
+                task.cancel()
+            self.blocked_method_release.set()
+            try:
+                await task
+            except BaseException:
+                pass
+            await client.close()
+
+    async def test_failed_repeat_discovery_invalidates_the_previous_contract(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.assertIn("save_issue", client.tool_schemas)
+            target = next(tool for tool in self.tools if tool["name"] == "save_issue")
+            target["inputSchema"]["properties"]["title"] = {"type": "integer"}
+            with self.assertRaisesRegex(LinearMCPError, "schema drift"):
+                await client.connect()
+            self.assertEqual(client.tool_schemas, {})
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            requests_before_call = len(self.requests)
+            with self.assertRaisesRegex(LinearMCPError, "negotiated contract"):
+                await client.call_tool("save_issue", {"title": "must-not-dispatch"})
+            self.assertEqual(len(self.requests), requests_before_call)
+        finally:
+            await client.close()
+
+    async def test_failed_handshake_deletes_provisional_session_with_negotiated_headers(self):
+        self.protocol_version = "2025-06-18"
+        target = next(tool for tool in self.tools if tool["name"] == "save_issue")
+        target["inputSchema"]["properties"]["title"] = {"type": "integer"}
+        client = self.client()
+        with self.assertRaisesRegex(LinearMCPError, "schema drift"):
+            await client.connect()
+        self.assertEqual(self.delete_headers, [("session-1", "2025-06-18")])
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
+
+    async def test_call_and_repeat_connect_are_serialized(self):
+        client = self.client()
+        try:
+            await client.connect()
+            original_send_rpc = client._send_rpc
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def blocking_send_rpc(method, params, *, mutation=False):
+                if method == "tools/call":
+                    entered.set()
+                    await release.wait()
+                return await original_send_rpc(method, params, mutation=mutation)
+
+            client._send_rpc = blocking_send_rpc
+            call_task = asyncio.create_task(client.call_tool("get_user", {"query": "me"}))
+            await entered.wait()
+            reconnect_task = asyncio.create_task(client.connect())
+            await asyncio.sleep(0)
+            self.assertFalse(reconnect_task.done())
+            release.set()
+            await call_task
+            await reconnect_task
+            self.assertTrue(client.tool_schemas)
+            self.assertEqual(self.delete_calls, 1)
+        finally:
+            await client.close()
+
     async def test_required_tool_schema_type_and_requiredness_drift_fails_closed(self):
         cases = [
             ("get_issue", "id", {"type": "integer"}, None),
@@ -564,12 +701,14 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_mutation_rpc_or_tool_error_is_outcome_unknown(self):
         client = self.client()
         try:
-            await client.connect()
             for attribute in ("tool_rpc_error", "tool_error"):
                 with self.subTest(attribute=attribute):
+                    await client.connect()
                     setattr(self, attribute, True)
                     with self.assertRaises(MCPOutcomeUnknown):
                         await client.call_tool("save_issue", {"id": "OPS-1"}, mutation=True)
+                    self.assertIsNone(client.session_id)
+                    self.assertEqual(client.tool_schemas, {})
                     setattr(self, attribute, False)
         finally:
             await client.close()
@@ -661,6 +800,71 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         await client.close()
         self.assertEqual(self.delete_calls, 1)
 
+    async def test_close_invalidates_negotiated_protocol_and_contract(self):
+        self.protocol_version = "2025-06-18"
+        client = self.client()
+        await client.connect()
+        self.assertTrue(client.tool_schemas)
+        await client.close()
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.tool_schemas, {})
+
+    async def test_close_token_failure_is_best_effort_and_never_masks(self):
+        client = self.client()
+        await client.connect()
+
+        async def fail_token(*, force_refresh=False, stale_token=None):
+            raise RuntimeError("token unavailable during close")
+
+        self.store.access_token = fail_token
+        await client.close()
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
+
+    async def test_close_refreshes_delete_401_once_with_pinned_session_headers(self):
+        self.protocol_version = "2025-06-18"
+        client = self.client()
+        await client.connect()
+        self.delete_unauthorized_once = True
+        await client.close()
+        self.assertEqual(self.delete_calls, 2)
+        self.assertEqual(
+            self.delete_headers,
+            [("session-1", "2025-06-18"), ("session-1", "2025-06-18")],
+        )
+        self.assertIn((True, "old-access"), self.store.calls)
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+
+    async def test_cancelled_close_still_invalidates_all_state(self):
+        client = self.client()
+        original_access_token = self.store.access_token
+        await client.connect()
+        entered = asyncio.Event()
+        never = asyncio.Event()
+
+        async def blocked_access_token(*, force_refresh=False, stale_token=None):
+            entered.set()
+            await never.wait()
+            return await original_access_token(
+                force_refresh=force_refresh,
+                stale_token=stale_token,
+            )
+
+        self.store.access_token = blocked_access_token
+        task = asyncio.create_task(client.close())
+        await entered.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
+
     async def test_session_id_with_non_visible_ascii_fails_closed(self):
         self.session_id_header = "invalid session"
         client = self.client()
@@ -707,7 +911,8 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             self.tool_session_id_header = "session-2"
             with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
                 await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
-            self.assertEqual(client.session_id, "session-1")
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
@@ -718,7 +923,8 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             self.tool_session_id_header = ""
             with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
                 await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
-            self.assertEqual(client.session_id, "session-1")
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
@@ -732,6 +938,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 await client.call_tool("save_issue", {}, mutation=True)
             self.sse = False
             self.duplicate_sse = False
+            await client.connect()
             self.oversized_tool_result = True
             with self.assertRaises(MCPOutcomeUnknown):
                 await client.call_tool("save_issue", {}, mutation=True)
@@ -745,6 +952,32 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             self.tool_error = True
             with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
                 await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+        finally:
+            await client.close()
+
+    async def test_non_boolean_is_error_fails_read_closed(self):
+        client = self.client()
+        try:
+            await client.connect()
+            for value in ("true", 1, None, [], {}):
+                with self.subTest(value=value):
+                    self.tool_error = value
+                    with self.assertRaisesRegex(LinearMCPError, "isError"):
+                        await client.call_tool("get_user", {"query": "me"})
+        finally:
+            await client.close()
+
+    async def test_non_boolean_mutation_is_error_is_outcome_unknown(self):
+        client = self.client()
+        try:
+            for value in ("true", 1, None, [], {}):
+                with self.subTest(value=value):
+                    await client.connect()
+                    self.tool_error = value
+                    with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                        await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+                    self.assertIsNone(client.session_id)
+                    self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
@@ -765,13 +998,14 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             self.malformed_tool_result = True
             with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
                 await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
     async def test_mutation_requires_authoritative_result_id(self):
         client = self.client()
         try:
-            await client.connect()
             cases = [
                 ("not-json", False),
                 ('{"name":"missing-id"}', False),
@@ -780,6 +1014,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             ]
             for text, accepted in cases:
                 with self.subTest(text=text):
+                    await client.connect()
                     self.tool_result_text = text
                     if accepted:
                         result = await client.call_tool("save_issue", {}, mutation=True)
@@ -787,10 +1022,15 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         with self.assertRaises(MCPOutcomeUnknown):
                             await client.call_tool("save_issue", {}, mutation=True)
+                        self.assertIsNone(client.session_id)
+                        self.assertEqual(client.tool_schemas, {})
 
+            await client.connect()
             self.empty_tool_content = True
             with self.assertRaises(MCPOutcomeUnknown):
                 await client.call_tool("save_comment", {}, mutation=True)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
@@ -808,6 +1048,170 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_read_recovery_fails_closed_when_initialized_notification_loses_session(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.session_404_once = True
+            self.always_404_methods = {"notifications/initialized"}
+            with self.assertRaises(LinearMCPError):
+                await asyncio.wait_for(
+                    client.call_tool("get_user", {"query": "me"}),
+                    timeout=1,
+                )
+            methods = [request.get("method") for request in self.requests]
+            self.assertEqual(methods.count("tools/call"), 1)
+            self.assertEqual(methods.count("initialize"), 1)
+            self.assertEqual(methods.count("notifications/initialized"), 1)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
+        finally:
+            await client.close()
+
+    async def test_read_recovery_fails_closed_when_tools_list_loses_session(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.session_404_once = True
+            self.always_404_methods = {"tools/list"}
+            with self.assertRaises(LinearMCPError):
+                await asyncio.wait_for(
+                    client.call_tool("get_user", {"query": "me"}),
+                    timeout=1,
+                )
+            methods = [request.get("method") for request in self.requests]
+            self.assertEqual(methods.count("tools/call"), 1)
+            self.assertEqual(methods.count("initialize"), 1)
+            self.assertEqual(methods.count("tools/list"), 1)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
+        finally:
+            await client.close()
+
+    async def test_read_gets_only_one_recovery_when_redispatch_loses_session(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.always_404_methods = {"tools/call"}
+            with self.assertRaisesRegex(LinearMCPError, "HTTP 404"):
+                await client.call_tool("get_user", {"query": "me"})
+            methods = [request.get("method") for request in self.requests]
+            self.assertEqual(methods.count("tools/call"), 2)
+            self.assertEqual(methods.count("initialize"), 1)
+        finally:
+            await client.close()
+
+    async def test_cancelled_dispatched_mutation_has_unknown_outcome(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.delete_status = 500
+            self.blocked_method = "tools/call"
+            task = asyncio.create_task(
+                client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+            )
+            await self.blocked_method_entered.wait()
+            task.cancel()
+            with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                await task
+            tool_calls = [
+                request for request in self.requests if request.get("method") == "tools/call"
+            ]
+            self.assertEqual(len(tool_calls), 1)
+            self.assertEqual(self.delete_calls, 1)
+            self.assertIsNone(client._session)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
+        finally:
+            self.blocked_method_release.set()
+            await client.close()
+
+    async def test_cancelled_mutation_preserves_unknown_when_cleanup_token_fails(self):
+        client = self.client()
+        await client.connect()
+        original_access_token = self.store.access_token
+        access_calls = 0
+
+        async def fail_cleanup_access_token(*, force_refresh=False, stale_token=None):
+            nonlocal access_calls
+            access_calls += 1
+            if access_calls == 1:
+                return await original_access_token(
+                    force_refresh=force_refresh,
+                    stale_token=stale_token,
+                )
+            raise RuntimeError("cleanup token unavailable")
+
+        self.store.access_token = fail_cleanup_access_token
+        self.blocked_method = "tools/call"
+        task = asyncio.create_task(
+            client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+        )
+        await self.blocked_method_entered.wait()
+        task.cancel()
+        with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+            await task
+        self.blocked_method_release.set()
+        self.assertEqual(access_calls, 2)
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
+
+    async def test_mutation_refresh_failure_after_401_is_outcome_unknown(self):
+        client = self.client()
+        await client.connect()
+        original_access_token = self.store.access_token
+
+        async def fail_refresh(*, force_refresh=False, stale_token=None):
+            if force_refresh:
+                raise RuntimeError("refresh unavailable")
+            return await original_access_token(
+                force_refresh=force_refresh,
+                stale_token=stale_token,
+            )
+
+        self.store.access_token = fail_refresh
+        self.requests.clear()
+        self.unauthorized_once = True
+        with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+            await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+        tool_calls = [item for item in self.requests if item.get("method") == "tools/call"]
+        self.assertEqual(len(tool_calls), 1)
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
+
+    async def test_lost_session_reinitialize_header_matches_initialize_body(self):
+        self.protocol_version = "2025-06-18"
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.protocol_headers.clear()
+            self.session_404_once = True
+            await client.call_tool("get_user", {"query": "me"})
+            paired = list(zip(self.requests, self.protocol_headers, strict=True))
+            reinitialize = [
+                (request, header)
+                for request, header in paired
+                if request.get("method") == "initialize"
+            ]
+            self.assertEqual(len(reinitialize), 1)
+            request, header = reinitialize[0]
+            self.assertEqual(request["params"]["protocolVersion"], INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(header, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.protocol_version, "2025-06-18")
+        finally:
+            await client.close()
+
     async def test_mutation_does_not_resend_after_lost_session(self):
         client = self.client()
         try:
@@ -818,9 +1222,38 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
             tool_calls = [item for item in self.requests if item.get("method") == "tools/call"]
             self.assertEqual(len(tool_calls), 1)
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+            self.assertEqual(client.tool_schemas, {})
         finally:
             await client.close()
 
+    async def test_mutation_lost_session_preserves_unknown_when_cleanup_token_fails(self):
+        client = self.client()
+        await client.connect()
+        original_access_token = self.store.access_token
+        access_calls = 0
+
+        async def fail_cleanup_access_token(*, force_refresh=False, stale_token=None):
+            nonlocal access_calls
+            access_calls += 1
+            if access_calls == 1:
+                return await original_access_token(
+                    force_refresh=force_refresh,
+                    stale_token=stale_token,
+                )
+            raise RuntimeError("cleanup token unavailable")
+
+        self.store.access_token = fail_cleanup_access_token
+        self.requests.clear()
+        self.session_404_once = True
+        with self.assertRaises(MCPOutcomeUnknown):
+            await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+        self.assertEqual(access_calls, 2)
+        self.assertIsNone(client._session)
+        self.assertIsNone(client.session_id)
+        self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        self.assertEqual(client.tool_schemas, {})
 
 if __name__ == "__main__":
     unittest.main()
