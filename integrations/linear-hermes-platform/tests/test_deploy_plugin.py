@@ -182,6 +182,19 @@ AGENTSESSION_AWARE_OUTBOUND_MANIFEST = {
     "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
     "plugin.yaml": "ad0c41f5c2e93a2a37b6ee379d48a0f7578791cf841651092caa86648be98881",
 }
+NONTERMINAL_NOTICE_COMMIT = "05ac704b18630625fc49622b2b1df2eeb6cf7b57"
+NONTERMINAL_NOTICE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "a40a0344ae6f0d30bd7c9e0dc833b9395539538b2ae476d7849eecb0ab9afdba",
+    "ledger.py": "ac00c13e3d62da2a81d2c6f89ea98a6405911886c3b848e8d3300735b0ee21d1",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "70327e431a2059e959e0aa8102cb24ec30c98be25006d8e8873034f66e726c81",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
+    "plugin.yaml": "9ce3a34baaaa2997149bc882e35b083d5f600ec087cbe48103d5270bf65225ee",
+}
 
 
 def load_helper():
@@ -250,6 +263,13 @@ class DeployPluginTests(unittest.TestCase):
         self.assertEqual(
             helper.REVIEWED_MANIFESTS[AGENTSESSION_AWARE_OUTBOUND_COMMIT],
             AGENTSESSION_AWARE_OUTBOUND_MANIFEST,
+        )
+
+    def test_nonterminal_notice_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[NONTERMINAL_NOTICE_COMMIT],
+            NONTERMINAL_NOTICE_MANIFEST,
         )
 
     def test_human_final_acceptance_commit_is_reviewed(self) -> None:
