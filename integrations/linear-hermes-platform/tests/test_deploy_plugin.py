@@ -208,6 +208,19 @@ NONEDITABLE_STREAMING_MANIFEST = {
     "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
     "plugin.yaml": "fbcc5c7c01c393eb80be0c8f335e1ecc65b38d9309f2bfaa4f9e572dcf8afd9f",
 }
+CRON_STANDALONE_COMMIT = "a0f815d0ad378ee421d025bc67753c705d8db48c"
+CRON_STANDALONE_MANIFEST = {
+    "__init__.py": "90565b9f72024822d3a0aa595d7f739c1bd2622730a68078de18b99c74d0a888",
+    "adapter.py": "4e058c8f7a12989baca2c7ade16db9f7bc466a55c0351f4c46dd82e39d12ed25",
+    "ledger.py": "c039c8b321c0a2b487a897a226375c3eda99075a3ed2291b28b9630bbefb85cf",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "e212bed43f86846bc9e55f70425622dda4f903421e5ea529e75845f8be23ac25",
+    "outbound_policy.py": "565fde4e6e0c2dc1ccb215641d1a821b60c6be7faa779232bdc3c8fe2d6d4a50",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "22ad70c1eef8c6bd5b062daf9ba7bf9fda29ded75280ae9ce1a549278ad7f3af",
+    "plugin.yaml": "e77a1592959cd7de3157894f79a4c2126ae29d44d839a9c20a1e84f39153aeaf",
+}
 
 
 def load_helper():
@@ -290,6 +303,13 @@ class DeployPluginTests(unittest.TestCase):
         self.assertEqual(
             helper.REVIEWED_MANIFESTS[NONEDITABLE_STREAMING_COMMIT],
             NONEDITABLE_STREAMING_MANIFEST,
+        )
+
+    def test_cron_standalone_delivery_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[CRON_STANDALONE_COMMIT],
+            CRON_STANDALONE_MANIFEST,
         )
 
     def test_human_final_acceptance_commit_is_reviewed(self) -> None:
