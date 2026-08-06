@@ -92,13 +92,13 @@
 
 ## Runtime audit snapshot
 
-- Reviewed source commit `571013eddb8b1a81a5b52336d6938eb0a010fb9c` is promoted and loaded across all nine profiles; deployable-file parity is `9/9 × 10/10`.
+- Reviewed source commit `aeeb3243ff2d13938bc25f993965b7916b0bc257` is promoted and loaded across all nine profiles; deployable-file parity is `9/9 × 10/10`.
 - General exposes reviewed read tools plus `linear_save_issue` and `linear_save_comment`; eight specialist profiles expose reviewed read tools plus `linear_save_comment` only. Raw `save_project` and project completion remain absent from all nine model surfaces.
-- Nine launchd gateway processes restarted successfully. Loopback acceptance passed `27/27` across health, unsigned webhook POST, and method fencing; all 18 inbound/outbound SQLite databases passed `quick_check` with no pending or dead outbox rows.
-- Derya's public ingress passed the seven-request edge/origin security matrix. Public DNS resolved consistently through 1.1.1.1 and 8.8.8.8.
+- Nine launchd gateway processes restarted successfully. Loopback acceptance passed `27/27` across health, unsigned webhook POST, and method fencing; all 18 inbound/outbound SQLite databases passed `quick_check`.
+- General canary passed live official MCP initialize/capability validation, 52-tool discovery and read execution. Derya's public ingress passed the seven-request edge/origin security matrix; public DNS resolved consistently through 1.1.1.1 and 8.8.8.8.
+- The approved `OPS-30` production canary dispatched top-level `save_issue.project=null` once, returned `result_id=OPS-30`, replayed the same namespaced operation key without a second vendor mutation, and authoritatively read back the issue still detached with no business-field or status change. The outbound ledger records `save_issue/success/OPS-30` and passes `quick_check`.
 - Launchd status reports service definitions older than the current Hermes install; plist remediation is a separate approval-gated fleet operation and was not folded into this Linear rollout.
-- The uncommitted initialize-capability/server-identity hardening documented above is source-only and is not part of loaded commit `571013e…`.
 
 ## Rollback
 
-Each approved promotion emitted an immutable per-profile rollback path and digest. Use only the recorded profile-specific artifact with `scripts/deploy_plugin.py rollback`; never select a backup by recency. The source-only initialize hardening requires no runtime rollback until separately committed, reviewed-manifested, promoted, and restarted.
+Each approved promotion emitted an immutable per-profile rollback path and digest. Use only the recorded profile-specific artifact with `scripts/deploy_plugin.py rollback`; never select a backup by recency.
