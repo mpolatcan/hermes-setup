@@ -38,6 +38,54 @@ class OutboundPolicyTests(unittest.TestCase):
         )
         self.assertEqual((decision.action, decision.reason), ("deny", "actor_mismatch"))
 
+    def test_only_project_accepts_explicit_null_on_model_surface(self):
+        policy = self.standard()
+        allowed = policy.evaluate(
+            "save_issue",
+            {"target_team_id": "ops-1", "team": "ops-1", "title": "Task", "project": None},
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual(allowed.action, "allow")
+
+        cases = (
+            ("get_issue", {"id": "OPS-1", "includeRelations": None}),
+            ("list_issues", {"team": "ops-1", "query": None}),
+            ("save_issue", {"target_team_id": "ops-1", "team": "ops-1", "title": None}),
+            (
+                "save_comment",
+                {
+                    "target_team_id": "ops-1",
+                    "issueId": "OPS-1",
+                    "body": None,
+                    "comment_purpose": "checkpoint",
+                },
+            ),
+        )
+        for tool_name, arguments in cases:
+            with self.subTest(tool=tool_name):
+                denied = policy.evaluate(
+                    tool_name,
+                    arguments,
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual((denied.action, denied.reason), ("deny", "invalid_null"))
+
+    def test_nested_explicit_null_is_rejected(self):
+        decision = self.standard().evaluate(
+            "save_issue",
+            {
+                "target_team_id": "ops-1",
+                "team": "ops-1",
+                "title": "Task",
+                "labels": [None],
+            },
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual((decision.action, decision.reason), ("deny", "invalid_null"))
+
     def test_comment_handoff_requires_canonical_linear_profile_url_first(self):
         policy = self.standard()
         for body in (

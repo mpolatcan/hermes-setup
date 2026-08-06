@@ -106,6 +106,10 @@ class RegistrationTests(unittest.TestCase):
         )
         issue_properties = ctx.tools["linear_save_issue"]["schema"]["parameters"]["properties"]
         self.assertEqual(issue_properties["priority"], {"type": "number"})
+        self.assertEqual(
+            issue_properties["project"],
+            {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        )
         self.assertNotIn("state", issue_properties)
         self.assertEqual(
             issue_properties["lifecycle_action"],
@@ -118,6 +122,15 @@ class RegistrationTests(unittest.TestCase):
         )
         self.assertEqual(ctx.hooks, {})
         self.assertEqual(ctx.events[0], ("tool", "linear_get_issue"))
+
+    def test_project_completion_capability_is_not_model_exposed(self):
+        ctx = FakeContext()
+        extra = self.extra(mutations=True)
+        extra["outbound_mcp"]["allowed_mutation_tools"] = [
+            "linear_complete_project"
+        ]
+        register_outbound_tools(ctx, extra=extra)
+        self.assertEqual(set(ctx.tools), {"linear_get_issue", "linear_list_issues"})
 
     def test_mutation_tools_require_an_explicit_per_profile_allowlist(self):
         ctx = FakeContext()
@@ -439,6 +452,31 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"error": "linear_policy_denied", "reason": "team_not_allowed"})
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
+    async def test_mutation_classification_mismatch_fails_before_identity_or_dispatch(self):
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "operation_key": "op-mutation-classification-mismatch",
+                "target_team_id": "ops-1",
+                "title": "Task",
+            },
+            mutation=False,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {
+                "error": "linear_policy_denied",
+                "reason": "mutation_classification_mismatch",
+            },
+        )
+        self.assertEqual(mcp.calls, [])
+
     async def test_successful_operation_key_replay_does_not_redispatch(self):
         mcp = FakeMCP()
         arguments = {
@@ -474,6 +512,29 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         forwarded = mutation_calls[0][1]
         self.assertNotIn("operation_key", forwarded)
         self.assertNotIn("target_team_id", forwarded)
+
+    async def test_save_issue_forwards_explicit_project_null(self):
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "operation_key": "clear-project-null",
+                "target_team_id": "ops-1",
+                "team": "ops-1",
+                "title": "Task",
+                "project": None,
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(),
+            mcp_client=mcp,
+        )
+        self.assertEqual(result["status"], "success")
+        forwarded = next(call[1] for call in mcp.calls if call[0] == "save_issue")
+        self.assertIn("project", forwarded)
+        self.assertIsNone(forwarded["project"])
 
     async def test_open_same_actor_session_denies_checkpoint_comment_before_reservation(self):
         mcp = FakeMCP()

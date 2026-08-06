@@ -77,6 +77,16 @@ def extract_linear_profile_url(body: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _contains_explicit_null(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_explicit_null(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_explicit_null(item) for item in value)
+    return False
+
+
 @dataclass(frozen=True)
 class PolicyDecision:
     action: str
@@ -135,6 +145,8 @@ class OutboundPolicy:
         if tool_name == "get_issue":
             if set(arguments) - GET_ISSUE_FIELDS:
                 return PolicyDecision("deny", "field_not_allowed")
+            if any(_contains_explicit_null(value) for value in arguments.values()):
+                return PolicyDecision("deny", "invalid_null")
             if arguments.get("includeRelations") not in (None, False):
                 return PolicyDecision("deny", "relations_not_allowed")
             if self.sensitive_mode == "metadata_only" and not ISSUE_REF_RE.fullmatch(
@@ -145,6 +157,8 @@ class OutboundPolicy:
         if tool_name == "list_issues":
             if set(arguments) - LIST_ISSUE_FIELDS:
                 return PolicyDecision("deny", "field_not_allowed")
+            if any(_contains_explicit_null(value) for value in arguments.values()):
+                return PolicyDecision("deny", "invalid_null")
             team_id = str(arguments.get("team") or "")
             if not team_id:
                 return PolicyDecision("deny", "team_required")
@@ -167,6 +181,12 @@ class OutboundPolicy:
         allowed_fields = SAVE_ISSUE_FIELDS if tool_name == "save_issue" else SAVE_COMMENT_FIELDS
         if set(arguments) - allowed_fields:
             return PolicyDecision("deny", "field_not_allowed")
+        if any(
+            _contains_explicit_null(value)
+            and not (tool_name == "save_issue" and field == "project" and value is None)
+            for field, value in arguments.items()
+        ):
+            return PolicyDecision("deny", "invalid_null")
         target_team_id = str(arguments.get("target_team_id") or "")
         if not target_team_id:
             return PolicyDecision("deny", "team_required")

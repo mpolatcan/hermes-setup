@@ -48,6 +48,9 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.protocol_headers = []
         self.delete_calls = 0
         self.session_404_once = False
+        self.response_content_type = None
+        self.session_id_header = "session-1"
+        self.tool_session_id_header = None
         fields = {
             "get_user": {"query"},
             "get_issue": {
@@ -156,6 +159,13 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                     content_type="text/event-stream",
                     headers=headers,
                 )
+            if self.response_content_type is not None:
+                response_headers = dict(headers or {})
+                response_headers["Content-Type"] = self.response_content_type
+                return web.Response(
+                    text=json.dumps(body),
+                    headers=response_headers,
+                )
             return web.json_response(body, headers=headers)
 
         async def handler(request: web.Request) -> web.Response:
@@ -181,7 +191,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                             "serverInfo": {"name": "linear", "version": "test"},
                         },
                     },
-                    headers={"Mcp-Session-Id": "session-1"},
+                    headers={"Mcp-Session-Id": self.session_id_header},
                 )
             if method == "notifications/initialized":
                 return web.Response(status=202)
@@ -235,7 +245,12 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                                 }
                             ],
                         },
-                    }
+                    },
+                    headers=(
+                        {"Mcp-Session-Id": self.tool_session_id_header}
+                        if self.tool_session_id_header is not None
+                        else None
+                    ),
                 )
             return web.json_response({"error": "unknown"}, status=400)
 
@@ -449,6 +464,33 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                     await client.close()
                 self.envelope_mode = None
 
+    async def test_unexpected_response_content_type_fails_closed(self):
+        self.response_content_type = "text/plain"
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "content type"):
+                await client.connect()
+        finally:
+            await client.close()
+
+    async def test_malformed_content_type_parameter_fails_closed(self):
+        self.response_content_type = "application/json;invalid"
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "content type"):
+                await client.connect()
+        finally:
+            await client.close()
+
+    async def test_asymmetrically_quoted_charset_fails_closed(self):
+        self.response_content_type = 'application/json;charset="utf-8'
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "content type"):
+                await client.connect()
+        finally:
+            await client.close()
+
     async def test_mutation_rpc_or_tool_error_is_outcome_unknown(self):
         client = self.client()
         try:
@@ -482,6 +524,20 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_mutation_401_is_not_redispatched(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.unauthorized_once = True
+            with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+            calls = [item for item in self.requests if item.get("method") == "tools/call"]
+            self.assertEqual(len(calls), 1)
+            self.assertIn((True, "old-access"), self.store.calls)
+        finally:
+            await client.close()
+
     async def test_mutation_5xx_is_unknown_and_not_retried(self):
         client = self.client()
         try:
@@ -499,6 +555,30 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(LinearMCPError, "official endpoint"):
             LinearMCPClient(self.store, endpoint=self.endpoint)
 
+    async def test_non_required_vendor_tool_cannot_be_called(self):
+        client = LinearMCPClient(
+            self.store,
+            endpoint=self.endpoint,
+            required_tools=EXPECTED_VENDOR_TOOL_NAMES,
+            allow_test_endpoint=True,
+        )
+        client.tool_schemas = {"save_project": {"inputSchema": {}}}
+        with self.assertRaisesRegex(LinearMCPError, "not authorized"):
+            await client.call_tool("save_project", {"id": "project-1"}, mutation=True)
+
+    async def test_mutation_classification_is_derived_from_tool_name(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.requests.clear()
+            self.mutation_status = 503
+            with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                await client.call_tool("save_issue", {"title": "safe-test"}, mutation=False)
+            calls = [item for item in self.requests if item.get("method") == "tools/call"]
+            self.assertEqual(len(calls), 1)
+        finally:
+            await client.close()
+
     async def test_sse_negotiated_protocol_and_session_delete(self):
         self.sse = True
         self.protocol_version = "2025-06-18"
@@ -510,6 +590,67 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.protocol_headers[-1], "2025-06-18")
         await client.close()
         self.assertEqual(self.delete_calls, 1)
+
+    async def test_session_id_with_non_visible_ascii_fails_closed(self):
+        self.session_id_header = "invalid session"
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "session id"):
+                await client.connect()
+        finally:
+            await client.close()
+
+    async def test_invalid_initialize_envelope_does_not_commit_session_id(self):
+        self.envelope_mode = "omit_jsonrpc"
+        client = self.client()
+        try:
+            with self.assertRaises(LinearMCPError):
+                await client.connect()
+            self.assertIsNone(client.session_id)
+        finally:
+            await client.close()
+
+    async def test_oversized_session_id_fails_closed(self):
+        self.session_id_header = "x" * 1025
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "session id"):
+                await client.connect()
+        finally:
+            await client.close()
+
+    async def test_non_initialization_session_id_header_fails_closed(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.tool_session_id_header = "session-2"
+            with self.assertRaisesRegex(LinearMCPError, "session id"):
+                await client.call_tool("get_user", {"query": "me"})
+            self.assertEqual(client.session_id, "session-1")
+        finally:
+            await client.close()
+
+    async def test_mutation_session_id_header_is_outcome_unknown(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.tool_session_id_header = "session-2"
+            with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+            self.assertEqual(client.session_id, "session-1")
+        finally:
+            await client.close()
+
+    async def test_empty_mutation_session_header_is_outcome_unknown(self):
+        client = self.client()
+        try:
+            await client.connect()
+            self.tool_session_id_header = ""
+            with self.assertRaisesRegex(MCPOutcomeUnknown, "outcome is unknown"):
+                await client.call_tool("save_issue", {"title": "safe-test"}, mutation=True)
+            self.assertEqual(client.session_id, "session-1")
+        finally:
+            await client.close()
 
     async def test_duplicate_sse_or_oversized_mutation_response_is_unknown(self):
         client = self.client()

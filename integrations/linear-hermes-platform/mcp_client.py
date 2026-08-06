@@ -19,6 +19,8 @@ INITIAL_PROTOCOL_VERSION = "2025-03-26"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18"})
 OFFICIAL_LINEAR_INPUT_SCHEMA_URI = "https://json-schema.org/draft/2020-12/schema"
 REQUIRED_TOOLS = frozenset({"get_user", "get_issue", "list_issues", "save_issue", "save_comment"})
+EXECUTABLE_VENDOR_TOOLS = REQUIRED_TOOLS
+MUTATION_VENDOR_TOOLS = frozenset({"save_issue", "save_comment"})
 EXPECTED_VENDOR_TOOL_NAMES = frozenset(
     {
         "create_attachment", "create_attachment_from_upload", "create_issue_label",
@@ -99,7 +101,8 @@ MAX_TOOL_LIST_PAGES = 20
 MAX_TOOLS_PER_PAGE = 100
 MAX_TOTAL_TOOLS = 256
 MAX_CURSOR_LENGTH = 1024
-MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_SESSION_ID_BYTES = 1024
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 10_000
 MAX_SSE_EVENTS = 16
@@ -238,7 +241,7 @@ class LinearMCPClient:
         self.oauth_store = oauth_store
         self.endpoint = endpoint
         self.timeout_seconds = float(timeout_seconds)
-        self.required_tools = required_tools
+        self.required_tools = frozenset(required_tools)
         self.session_id: str | None = None
         self.protocol_version = INITIAL_PROTOCOL_VERSION
         self.tool_schemas: dict[str, dict[str, Any]] = {}
@@ -249,7 +252,7 @@ class LinearMCPClient:
         if self._session is None:
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds, connect=4)
             self._session = aiohttp.ClientSession(timeout=timeout)
-        initialize = await self._send_rpc(
+        initialize, response_session_id = await self._send_rpc(
             "initialize",
             {
                 "protocolVersion": INITIAL_PROTOCOL_VERSION,
@@ -261,13 +264,16 @@ class LinearMCPClient:
         if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
             raise LinearMCPError("Linear MCP negotiated an unsupported protocol version")
         self.protocol_version = negotiated
+        self.session_id = response_session_id
         await self._send_notification("notifications/initialized", {})
         tools: list[dict[str, Any]] = []
         tool_names: set[str] = set()
         cursor: str | None = None
         seen_cursors: set[str] = set()
         for _page in range(MAX_TOOL_LIST_PAGES):
-            listed = await self._send_rpc("tools/list", {"cursor": cursor} if cursor else {})
+            listed, _response_session_id = await self._send_rpc(
+                "tools/list", {"cursor": cursor} if cursor else {}
+            )
             page_tools = listed.get("tools")
             if not isinstance(page_tools, list) or len(page_tools) > MAX_TOOLS_PER_PAGE:
                 raise LinearMCPError("Linear MCP tools/list returned an invalid contract")
@@ -374,6 +380,16 @@ class LinearMCPClient:
             headers["Mcp-Session-Id"] = self.session_id
         return headers
 
+    @staticmethod
+    def _validate_session_id(value: str) -> str:
+        if (
+            not value
+            or len(value.encode("ascii", errors="ignore")) > MAX_SESSION_ID_BYTES
+            or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
+        ):
+            raise ValueError("invalid MCP session id")
+        return value
+
     async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
         if self._session is None:
             raise LinearMCPError("Linear MCP client is not connected")
@@ -411,10 +427,15 @@ class LinearMCPClient:
         params: dict[str, Any],
         *,
         mutation: bool = False,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], str | None]:
         request_id = next(self._ids)
         payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        envelope = await self._post(payload, request_id=request_id, mutation=mutation)
+        envelope, response_session_id = await self._post(
+            payload,
+            request_id=request_id,
+            mutation=mutation,
+            accept_session_id=method == "initialize",
+        )
         has_result = "result" in envelope
         has_error = "error" in envelope
         if (
@@ -435,7 +456,7 @@ class LinearMCPClient:
             if mutation:
                 raise MCPOutcomeUnknown("Linear mutation result was invalid; outcome is unknown")
             raise LinearMCPError("Linear MCP result was not an object")
-        return result
+        return result, response_session_id
 
     @staticmethod
     async def _read_bounded_response(response: aiohttp.ClientResponse) -> bytes:
@@ -461,11 +482,39 @@ class LinearMCPClient:
         request_id: int,
         mutation: bool,
     ) -> dict[str, Any]:
-        content_type = response.headers.get("Content-Type", "").lower()
+        content_types = response.headers.getall("Content-Type", [])
+        media_type = ""
+        valid_content_type = len(content_types) == 1
+        if valid_content_type:
+            parts = [part.strip() for part in content_types[0].split(";")]
+            media_type = parts[0].lower()
+            valid_content_type = media_type in {"application/json", "text/event-stream"}
+            if len(parts) == 2:
+                key, separator, value = parts[1].partition("=")
+                raw_charset = value.strip()
+                valid_charset = raw_charset.lower() == "utf-8" or (
+                    len(raw_charset) >= 2
+                    and raw_charset[0] == raw_charset[-1] == '"'
+                    and raw_charset[1:-1].lower() == "utf-8"
+                )
+                valid_content_type = bool(
+                    valid_content_type
+                    and separator
+                    and key.strip().lower() == "charset"
+                    and valid_charset
+                )
+            elif len(parts) != 1:
+                valid_content_type = False
+        if not valid_content_type:
+            if mutation:
+                raise MCPOutcomeUnknown(
+                    "Linear mutation response had an invalid content type; outcome is unknown"
+                )
+            raise LinearMCPError("Linear MCP response had an invalid content type")
         try:
             raw = await LinearMCPClient._read_bounded_response(response)
             text = raw.decode("utf-8")
-            if content_type.startswith("text/event-stream"):
+            if media_type == "text/event-stream":
                 matches: list[dict[str, Any]] = []
                 data_lines: list[str] = []
                 event_count = 0
@@ -510,10 +559,11 @@ class LinearMCPClient:
         *,
         request_id: int,
         mutation: bool,
+        accept_session_id: bool,
         allow_refresh: bool = True,
         allow_read_retry: bool = True,
         allow_session_recovery: bool = True,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], str | None]:
         if self._session is None:
             raise LinearMCPError("Linear MCP client is not connected")
         token = await self.oauth_store.access_token()
@@ -524,14 +574,17 @@ class LinearMCPClient:
                 json=payload,
                 allow_redirects=False,
             ) as response:
-                if response.headers.get("Mcp-Session-Id"):
-                    self.session_id = response.headers["Mcp-Session-Id"]
                 if response.status == 401 and allow_refresh:
                     await self.oauth_store.access_token(force_refresh=True, stale_token=token)
+                    if mutation:
+                        raise MCPOutcomeUnknown(
+                            "Linear mutation authentication changed; mutation was not retried and outcome is unknown"
+                        )
                     return await self._post(
                         payload,
                         request_id=request_id,
                         mutation=mutation,
+                        accept_session_id=accept_session_id,
                         allow_refresh=False,
                         allow_read_retry=allow_read_retry,
                         allow_session_recovery=allow_session_recovery,
@@ -546,6 +599,7 @@ class LinearMCPClient:
                         payload,
                         request_id=request_id,
                         mutation=False,
+                        accept_session_id=accept_session_id,
                         allow_refresh=allow_refresh,
                         allow_read_retry=allow_read_retry,
                         allow_session_recovery=False,
@@ -566,6 +620,7 @@ class LinearMCPClient:
                             payload,
                             request_id=request_id,
                             mutation=False,
+                            accept_session_id=accept_session_id,
                             allow_refresh=allow_refresh,
                             allow_read_retry=False,
                             allow_session_recovery=allow_session_recovery,
@@ -577,11 +632,34 @@ class LinearMCPClient:
                             f"Linear mutation HTTP {response.status}; outcome is unknown"
                         )
                     raise LinearMCPError(f"Linear MCP HTTP {response.status}")
-                return await self._decode_response(
+                response_session_headers = response.headers.getall("Mcp-Session-Id", [])
+                response_session_id: str | None = None
+                if response_session_headers:
+                    try:
+                        if len(response_session_headers) != 1:
+                            raise ValueError("duplicate MCP session id")
+                        validated_session_id = self._validate_session_id(
+                            response_session_headers[0]
+                        )
+                    except ValueError as exc:
+                        if mutation:
+                            raise MCPOutcomeUnknown(
+                                "Linear mutation returned an invalid session id; outcome is unknown"
+                            ) from exc
+                        raise LinearMCPError("Linear MCP returned an invalid session id") from exc
+                    if not accept_session_id:
+                        if mutation:
+                            raise MCPOutcomeUnknown(
+                                "Linear mutation returned an unexpected session id; outcome is unknown"
+                            )
+                        raise LinearMCPError("Linear MCP returned an unexpected session id")
+                    response_session_id = validated_session_id
+                envelope = await self._decode_response(
                     response,
                     request_id=request_id,
                     mutation=mutation,
                 )
+                return envelope, response_session_id
         except MCPOutcomeUnknown:
             raise
         except asyncio.TimeoutError as exc:
@@ -600,15 +678,20 @@ class LinearMCPClient:
         *,
         mutation: bool = False,
     ) -> dict[str, Any]:
+        if name not in EXECUTABLE_VENDOR_TOOLS:
+            raise LinearMCPError(f"Linear MCP tool is not authorized for execution: {name}")
         if name not in self.tool_schemas:
             raise LinearMCPError(f"Linear MCP tool is not in the negotiated contract: {name}")
-        result = await self._send_rpc(
+        derived_mutation = name in MUTATION_VENDOR_TOOLS
+        if mutation and not derived_mutation:
+            raise LinearMCPError(f"Linear MCP read tool cannot be classified as mutation: {name}")
+        result, _response_session_id = await self._send_rpc(
             "tools/call",
             {"name": name, "arguments": arguments},
-            mutation=mutation,
+            mutation=derived_mutation,
         )
         if result.get("isError") is True:
-            if mutation:
+            if derived_mutation:
                 raise MCPOutcomeUnknown(
                     f"Linear MCP tool {name} reported an error; outcome is unknown"
                 )
@@ -626,13 +709,13 @@ class LinearMCPClient:
         )
         )
         if not valid_content:
-            if mutation:
+            if derived_mutation:
                 raise MCPOutcomeUnknown(
                     f"Linear MCP tool {name} returned an invalid result contract; outcome is unknown"
                 )
             raise LinearMCPError(f"Linear MCP tool {name} returned an invalid result contract")
         assert isinstance(content, list)
-        if mutation:
+        if derived_mutation:
             try:
                 parsed = json.loads(content[0]["text"]) if len(content) == 1 else None
             except (TypeError, ValueError):

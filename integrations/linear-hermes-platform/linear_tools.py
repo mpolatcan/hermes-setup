@@ -43,6 +43,9 @@ TOOL_MAP = {
     "linear_save_issue": ("save_issue", True),
     "linear_save_comment": ("save_comment", True),
 }
+VENDOR_MUTATION_TOOLS = frozenset(
+    vendor_tool for vendor_tool, is_mutation in TOOL_MAP.values() if is_mutation
+)
 
 READ_ISSUE_SCHEMA = {
     "name": "linear_get_issue",
@@ -90,7 +93,7 @@ SAVE_ISSUE_SCHEMA = {
             "assignee": {"type": "string"},
             "delegate": {"type": "string"},
             "labels": {"type": "array", "items": {"type": "string"}},
-            "project": {"type": "string"},
+            "project": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "parentId": {"type": "string"},
             "milestone": {"type": "string"},
             "cycle": {"type": "string"},
@@ -265,6 +268,13 @@ async def execute_with_clients(
     graphql_client: LinearClient,
     mcp_client: LinearMCPClient,
 ) -> dict[str, Any]:
+    derived_mutation = vendor_tool in VENDOR_MUTATION_TOOLS
+    if mutation != derived_mutation:
+        return {
+            "error": "linear_policy_denied",
+            "reason": "mutation_classification_mismatch",
+        }
+    mutation = derived_mutation
     mcp_identity = _extract_first_json(
         await mcp_client.call_tool("get_user", {"query": "me"})
     )
