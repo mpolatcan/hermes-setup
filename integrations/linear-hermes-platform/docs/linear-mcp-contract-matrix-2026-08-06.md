@@ -92,12 +92,14 @@
 
 ## Runtime audit snapshot
 
-- Reviewed source commit `aeeb3243ff2d13938bc25f993965b7916b0bc257` is promoted and loaded across all nine profiles; deployable-file parity is `9/9 × 10/10`.
+- Lifecycle-hardening source commit `fa70d9fd43a1fcb07db095fae53c593db742af1b` and reviewed-manifest commit `f5e9461076dd78a425ee2105924883afc93c966b` are pushed. The source artifact is promoted and loaded across all nine profiles; deployable-file parity is `9/9 × 10/10`, plugin directories are `0700`, and deployable files are `0600`.
+- The MCP client now publishes an executable protocol/session/tool contract only after provisional initialize, initialized notification, paginated discovery, and schema validation complete. Recursive session recovery is removed; read recovery has one explicit budget; every post-dispatch mutation ambiguity preserves `MCPOutcomeUnknown`, never redispatches, and best-effort invalidates the session even if OAuth or DELETE cleanup fails. Session DELETE refreshes once on `401` with pinned session/protocol headers.
+- The lifecycle regression suite passes `307/307`; focused MCP tests pass `61/61`; `compileall`, `py_compile`, and `git diff --check` pass. Two independent final security/release reviews reported `BLOCKERS: NONE`.
 - General exposes reviewed read tools plus `linear_save_issue` and `linear_save_comment`; eight specialist profiles expose reviewed read tools plus `linear_save_comment` only. Raw `save_project` and project completion remain absent from all nine model surfaces.
-- Nine launchd gateway processes restarted successfully. Loopback acceptance passed `27/27` across health, unsigned webhook POST, and method fencing; all 18 inbound/outbound SQLite databases passed `quick_check`.
-- General canary passed live official MCP initialize/capability validation, 52-tool discovery and read execution. Derya's public ingress passed the seven-request edge/origin security matrix; public DNS resolved consistently through 1.1.1.1 and 8.8.8.8.
-- The approved `OPS-30` production canary dispatched top-level `save_issue.project=null` once, returned `result_id=OPS-30`, replayed the same namespaced operation key without a second vendor mutation, and authoritatively read back the issue still detached with no business-field or status change. The outbound ledger records `save_issue/success/OPS-30` and passes `quick_check`.
-- Launchd status reports service definitions older than the current Hermes install; plist remediation is a separate approval-gated fleet operation and was not folded into this Linear rollout.
+- Nine launchd gateway processes restarted after artifact promotion and each acquired a new PID. All nine Linear health endpoints report `status=ok`, `pending=0`, `in_flight=0`, and `dead=0`; all nine outbound ledgers pass `quick_check`. Fresh timestamped stdout shows each profile reconnecting to Telegram and its profile-owned Linear listener.
+- General's post-restart canary authoritatively read `OPS-101` through the allowed official MCP contract. A request for forbidden `includeRelations` failed closed at local policy before the allowed read succeeded.
+- The earlier approved `OPS-30` production canary remains the mutation/exactly-once evidence: top-level `save_issue.project=null` dispatched once, returned `result_id=OPS-30`, replayed the same namespaced operation key without a second vendor mutation, and authoritatively read back detached. No production mutation was dispatched during the `fa70d9f` lifecycle-hardening rollout.
+- Previously observed launchd service-definition age remains a separate approval-gated fleet concern and was not folded into this Linear rollout.
 
 ## Rollback
 
