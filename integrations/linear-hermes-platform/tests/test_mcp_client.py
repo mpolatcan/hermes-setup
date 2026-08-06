@@ -13,6 +13,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from mcp_client import (  # noqa: E402
     EXPECTED_VENDOR_TOOL_NAMES,
+    INITIAL_PROTOCOL_VERSION,
     LinearMCPClient,
     LinearMCPError,
     MCPOutcomeUnknown,
@@ -42,6 +43,8 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.duplicate_sse = False
         self.oversized_tool_result = False
         self.protocol_version = "2025-03-26"
+        self.initialize_capabilities = {"tools": {}}
+        self.initialize_server_info = {"name": "linear", "version": "test"}
         self.next_cursor_override = None
         self.envelope_mode = None
         self.tool_rpc_error = False
@@ -187,8 +190,8 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                         "id": request_id,
                         "result": {
                             "protocolVersion": self.protocol_version,
-                            "capabilities": {"tools": {}},
-                            "serverInfo": {"name": "linear", "version": "test"},
+                            "capabilities": self.initialize_capabilities,
+                            "serverInfo": self.initialize_server_info,
                         },
                     },
                     headers={"Mcp-Session-Id": self.session_id_header},
@@ -286,6 +289,73 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 [item["method"] for item in self.requests[:3]],
                 ["initialize", "notifications/initialized", "tools/list"],
             )
+        finally:
+            await client.close()
+
+    async def test_missing_tools_capability_fails_before_initialized_notification(self):
+        self.initialize_capabilities = {}
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "tools capability"):
+                await client.connect()
+            self.assertEqual([item["method"] for item in self.requests], ["initialize"])
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        finally:
+            await client.close()
+
+    async def test_non_object_tools_capability_fails_closed(self):
+        self.initialize_capabilities = {"tools": True}
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "tools capability"):
+                await client.connect()
+            self.assertEqual([item["method"] for item in self.requests], ["initialize"])
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        finally:
+            await client.close()
+
+    async def test_non_boolean_list_changed_capability_fails_closed(self):
+        self.initialize_capabilities = {"tools": {"listChanged": "yes"}}
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "tools capability"):
+                await client.connect()
+            self.assertEqual([item["method"] for item in self.requests], ["initialize"])
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        finally:
+            await client.close()
+
+    async def test_invalid_server_info_fails_closed(self):
+        self.initialize_server_info = {"name": "Linear MCP", "version": 1}
+        client = self.client()
+        try:
+            with self.assertRaisesRegex(LinearMCPError, "server info"):
+                await client.connect()
+            self.assertEqual([item["method"] for item in self.requests], ["initialize"])
+            self.assertIsNone(client.session_id)
+            self.assertEqual(client.protocol_version, INITIAL_PROTOCOL_VERSION)
+        finally:
+            await client.close()
+
+    async def test_initialize_accepts_optional_and_additional_vendor_metadata(self):
+        self.initialize_capabilities = {
+            "tools": {"listChanged": True, "vendorExtension": {"enabled": True}},
+            "logging": {},
+        }
+        self.initialize_server_info = {
+            "name": "",
+            "version": "",
+            "title": "Linear",
+            "websiteUrl": "https://linear.app",
+        }
+        client = self.client()
+        try:
+            await client.connect()
+            self.assertEqual(client.session_id, "session-1")
+            self.assertEqual(client.protocol_version, "2025-03-26")
         finally:
             await client.close()
 

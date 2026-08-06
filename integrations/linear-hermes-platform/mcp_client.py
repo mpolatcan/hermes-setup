@@ -263,6 +263,20 @@ class LinearMCPClient:
         negotiated = str(initialize.get("protocolVersion") or "")
         if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
             raise LinearMCPError("Linear MCP negotiated an unsupported protocol version")
+        capabilities = initialize.get("capabilities")
+        tools_capability = capabilities.get("tools") if isinstance(capabilities, dict) else None
+        if not isinstance(tools_capability, dict):
+            raise LinearMCPError("Linear MCP initialize omitted a valid tools capability")
+        if "listChanged" in tools_capability and not isinstance(
+            tools_capability["listChanged"], bool
+        ):
+            raise LinearMCPError("Linear MCP initialize returned an invalid tools capability")
+        server_info = initialize.get("serverInfo")
+        if not isinstance(server_info, dict) or any(
+            not isinstance(server_info.get(field), str)
+            for field in ("name", "version")
+        ):
+            raise LinearMCPError("Linear MCP initialize returned invalid server info")
         self.protocol_version = negotiated
         self.session_id = response_session_id
         await self._send_notification("notifications/initialized", {})
