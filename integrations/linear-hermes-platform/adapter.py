@@ -56,6 +56,7 @@ _CONTEXT_EVENT_TYPES = {
     "EmojiReaction",
 }
 _DATA_EVENT_TYPES = _CONTROL_EVENT_TYPES | _CONTEXT_EVENT_TYPES
+_LINEAR_HOME_CHANNEL_NOTICE_PREFIX = "📬 No home channel is set for Linear."
 
 
 def _read_env_file(path: str) -> dict[str, str]:
@@ -459,7 +460,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.1",
+                "version": "0.8.2",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1327,7 +1328,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 message_id=self._activity_uuid(f"suppressed:closure:{chat_id}"),
             )
         try:
-            activity_id = self._enqueue_activity(chat_id, "response", content)
+            activity_type = (
+                "thought"
+                if content.startswith(_LINEAR_HOME_CHANNEL_NOTICE_PREFIX)
+                else "response"
+            )
+            activity_id = self._enqueue_activity(chat_id, activity_type, content)
             await self._drain_outbox_once()
             # Success means durably accepted. The outbox owns transport retries.
             return SendResult(success=True, message_id=activity_id)

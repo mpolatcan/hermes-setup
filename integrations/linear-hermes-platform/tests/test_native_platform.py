@@ -2028,6 +2028,30 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.adapter._linear.calls[-1], ("session-1", "response", body))
 
+    async def test_home_channel_notice_is_nonterminal_thought(self):
+        body = (
+            "📬 No home channel is set for Linear. "
+            "A home channel is where Hermes delivers cron job results "
+            "and cross-platform messages.\n\n"
+            "Type /sethome to make this chat your home channel, "
+            "or ignore to skip."
+        )
+        result = await self.adapter.send("session-setup", body)
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-setup", "thought", body),
+        )
+
+    async def test_near_match_home_channel_text_remains_response(self):
+        body = "📬 No home channel is set for Linear"
+        result = await self.adapter.send("session-near-match", body)
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-near-match", "response", body),
+        )
+
     async def test_cancelled_processing_does_not_write_duplicate_error_activity(self):
         event = MessageEvent(
             text="/stop",
