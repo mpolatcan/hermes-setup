@@ -250,6 +250,8 @@ class BackupPolicyContractTests(unittest.TestCase):
                     '-c',
                     (
                         'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                        'EXPECTED_DUPLICATE_OLDER_ROW_SHA3="ed0808d864cc83681c49fb42e2ff6d33f3d12635c67904423508c405a38f1b5b"; '
+                        'EXPECTED_DUPLICATE_LATER_ROW_SHA3="d05fe8bee3ce3f19217ca063f0fd3f3a404342af882481470e0ef0a4d898829d"; '
                         'WORK_DB="$2"; RECOVERED_DB="$3"; salvage_duplicate_message_collision'
                     ),
                     'bash',
@@ -294,6 +296,8 @@ class BackupPolicyContractTests(unittest.TestCase):
         for mode in (
             'wrong-role',
             'wrong-length',
+            'same-length-content-drift',
+            'tool-name-drift',
             'tied-timestamp',
             'extra-row',
             'inbound-reference',
@@ -306,7 +310,12 @@ class BackupPolicyContractTests(unittest.TestCase):
                 source = root / 'source.db'
                 recovered = root / 'recovered.db'
                 older_role = 'assistant' if mode == 'wrong-role' else 'user'
-                older_content = 'u' * (661 if mode == 'wrong-length' else 662)
+                if mode == 'wrong-length':
+                    older_content = 'u' * 661
+                elif mode == 'same-length-content-drift':
+                    older_content = 'v' * 662
+                else:
+                    older_content = 'u' * 662
                 later_timestamp = 1785990555.0 if mode == 'tied-timestamp' else 1785996761.8354
                 source_rows = [
                     (387, '20260712_223038_7a939f39', older_role, older_content, 1785990555.0),
@@ -326,6 +335,10 @@ class BackupPolicyContractTests(unittest.TestCase):
                     'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
                     source_rows,
                 )
+                if mode == 'tool-name-drift':
+                    source_conn.execute(
+                        "UPDATE messages SET tool_name='unexpected' WHERE id+0=387 AND role='user'"
+                    )
                 if mode == 'null-flag':
                     source_conn.execute(
                         'UPDATE messages SET observed=NULL WHERE rowid=(SELECT min(rowid) FROM messages)'
@@ -364,6 +377,8 @@ class BackupPolicyContractTests(unittest.TestCase):
                         '-c',
                         (
                             'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                            'EXPECTED_DUPLICATE_OLDER_ROW_SHA3="ed0808d864cc83681c49fb42e2ff6d33f3d12635c67904423508c405a38f1b5b"; '
+                            'EXPECTED_DUPLICATE_LATER_ROW_SHA3="d05fe8bee3ce3f19217ca063f0fd3f3a404342af882481470e0ef0a4d898829d"; '
                             'WORK_DB="$2"; RECOVERED_DB="$3"; salvage_duplicate_message_collision'
                         ),
                         'bash',

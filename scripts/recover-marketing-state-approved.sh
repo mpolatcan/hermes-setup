@@ -16,6 +16,8 @@ EXPECTED_DUPLICATE_OLDER_CONTENT_LENGTH="662"
 EXPECTED_DUPLICATE_LATER_ROLE="assistant"
 EXPECTED_DUPLICATE_LATER_TIMESTAMP="1785996761.8354"
 EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH="39"
+EXPECTED_DUPLICATE_OLDER_ROW_SHA3="3bd4006bdf956d74dc935493f48726af5eab99e0b75408bc186d329a1eed1b61"
+EXPECTED_DUPLICATE_LATER_ROW_SHA3="3168e115e5c7032592d167e3b13096cf62ea05f74b509ed931021df4ed7f48b2"
 EXPECTED_RECOVERED_MAX_MESSAGE_ID="420"
 EXPECTED_REKEYED_MESSAGE_ID="421"
 PROFILE_HOME="/Users/mutlupolatcan/.hermes/profiles/$PROFILE"
@@ -151,7 +153,7 @@ verify_service_preflight() {
 
 salvage_duplicate_message_collision() {
   local duplicate_summary reference_count physical_count recovered_count expected_recovered_count
-  local collision_fingerprint expected_fingerprint
+  local collision_fingerprint expected_fingerprint collision_payload_fingerprint expected_payload_fingerprint
   local timestamp_summary collision_rows collision_distinct_timestamps collision_min_timestamp collision_max_timestamp
   local recovered_max calculated_new_id new_id post_summary sequence_before sequence_after work_db_sql
 
@@ -183,6 +185,22 @@ salvage_duplicate_message_collision() {
        );")"
   expected_fingerprint="$EXPECTED_DUPLICATE_SESSION_ID|$EXPECTED_DUPLICATE_OLDER_ROLE|$EXPECTED_DUPLICATE_OLDER_TIMESTAMP|$EXPECTED_DUPLICATE_OLDER_CONTENT_LENGTH|0|1|0;$EXPECTED_DUPLICATE_SESSION_ID|$EXPECTED_DUPLICATE_LATER_ROLE|$EXPECTED_DUPLICATE_LATER_TIMESTAMP|$EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH|0|1|0"
   [ "$collision_fingerprint" = "$expected_fingerprint" ]
+
+  collision_payload_fingerprint="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT group_concat(row_sha3,';')
+       FROM (
+         SELECT lower(hex(sha3(json_array(
+                  session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+                  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+                  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+                  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+                ),256))) AS row_sha3
+           FROM messages NOT INDEXED
+          WHERE id+0=$EXPECTED_DUPLICATE_MESSAGE_ID
+          ORDER BY timestamp
+       );")"
+  expected_payload_fingerprint="$EXPECTED_DUPLICATE_OLDER_ROW_SHA3;$EXPECTED_DUPLICATE_LATER_ROW_SHA3"
+  [ "$collision_payload_fingerprint" = "$expected_payload_fingerprint" ]
 
   timestamp_summary="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
     "SELECT count(*),count(DISTINCT timestamp),min(timestamp),max(timestamp)
