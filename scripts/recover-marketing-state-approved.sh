@@ -5,6 +5,7 @@ umask 077
 
 PROFILE="marketing"
 EXPECTED_UID="501"
+HEALTH_ATTEMPTS="30"
 EXPECTED_SESSIONS="26"
 EXPECTED_MESSAGES="324"
 EXPECTED_ORPHANS="0"
@@ -600,7 +601,7 @@ POST_FTS="$(sqlite3 -batch -noheader -separator '|' "$LIVE_DB" \
 
 log "starting marketing gateway"
 start_service
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+for _ in $(seq 1 "$HEALTH_ATTEMPTS"); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     break
   fi

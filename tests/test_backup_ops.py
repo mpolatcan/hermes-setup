@@ -177,6 +177,7 @@ class BackupPolicyContractTests(unittest.TestCase):
         text = (REPO_ROOT / 'scripts/recover-marketing-state-approved.sh').read_text()
         required = (
             'EXPECTED_UID="501"',
+            'HEALTH_ATTEMPTS="30"',
             'EXPECTED_SESSIONS="26"',
             'EXPECTED_MESSAGES="324"',
             'EXPECTED_DUPLICATE_MESSAGE_ID="387"',
