@@ -219,7 +219,7 @@ Deployment is an approval-gated operation, not a blind fleet copy. There is inte
 
 The reviewed one-command helper is [`scripts/deploy_plugin.py`](scripts/deploy_plugin.py). It implements the source-manifest, descriptor confinement, profile lock, private staging, durable pre-mutation coordinates, state-aware signal recovery, atomic promotion, exact read-back and symmetric rollback invariants above. It deliberately does **not** edit Hermes config or restart a gateway.
 
-For the reviewed 0.8.5 source commit, the exact single-profile promotion command uses the new reviewed commit SHA:
+For the reviewed 0.8.6 source commit, the exact single-profile promotion command is:
 
 ```bash
 /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
@@ -227,7 +227,7 @@ For the reviewed 0.8.5 source commit, the exact single-profile promotion command
   --repo-root /Users/mutlupolatcan/.hermes/source/hermes-setup \
   --profiles-root /Users/mutlupolatcan/.hermes/profiles \
   --profile general \
-  --commit '<reviewed-0.8.5-commit-sha>'
+  --commit '9d96f4295496982967143fc063b78146fc73348b'
 ```
 
 The helper writes and prints the immutable rollback path and tree digest before the first rename. Rollback must use those exact values; never discover a backup by recency:
