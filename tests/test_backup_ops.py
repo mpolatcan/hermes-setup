@@ -298,6 +298,9 @@ class BackupPolicyContractTests(unittest.TestCase):
             'wrong-length',
             'same-length-content-drift',
             'tool-name-drift',
+            'extra-column',
+            'generated-column',
+            'unrelated-row-drift',
             'tied-timestamp',
             'extra-row',
             'inbound-reference',
@@ -330,7 +333,12 @@ class BackupPolicyContractTests(unittest.TestCase):
                 if mode == 'unexpected-max':
                     source_rows.append((421, 's2', 'assistant', 'newer', 1786001000.0))
                 source_conn = sqlite3.connect(source)
-                source_conn.execute(f'CREATE TABLE messages ({columns})')
+                source_columns = columns
+                if mode == 'extra-column':
+                    source_columns += ', unexpected_payload TEXT'
+                elif mode == 'generated-column':
+                    source_columns += ', unexpected_payload TEXT GENERATED ALWAYS AS (content) VIRTUAL'
+                source_conn.execute(f'CREATE TABLE messages ({source_columns})')
                 source_conn.executemany(
                     'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
                     source_rows,
@@ -353,6 +361,10 @@ class BackupPolicyContractTests(unittest.TestCase):
                 recovered_columns = columns.replace(
                     'id INTEGER,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1
                 )
+                if mode == 'extra-column':
+                    recovered_columns += ', unexpected_payload TEXT'
+                elif mode == 'generated-column':
+                    recovered_columns += ', unexpected_payload TEXT GENERATED ALWAYS AS (content) VIRTUAL'
                 recovered_conn.execute(f'CREATE TABLE messages ({recovered_columns})')
                 initial_rows = (
                     (387, '20260712_223038_7a939f39', 'assistant', 'a' * 39, later_timestamp),
@@ -364,6 +376,10 @@ class BackupPolicyContractTests(unittest.TestCase):
                     'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
                     initial_rows,
                 )
+                if mode == 'unrelated-row-drift':
+                    recovered_conn.execute(
+                        "UPDATE messages SET content='othar' WHERE id=420"
+                    )
                 if mode == 'high-sequence':
                     recovered_conn.execute(
                         "UPDATE sqlite_sequence SET seq=999 WHERE name='messages'"
@@ -391,6 +407,58 @@ class BackupPolicyContractTests(unittest.TestCase):
                     text=True,
                 )
                 self.assertNotEqual(result.returncode, 0, mode)
+                self.assertEqual(recovered.read_bytes(), before, mode)
+
+    def test_marketing_recovery_requires_non_message_table_schema_and_content_parity(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        for mode in ('match', 'row-drift', 'schema-drift', 'missing-table', 'extra-table'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / 'source.db'
+                recovered = root / 'recovered.db'
+                for path in (source, recovered):
+                    conn = sqlite3.connect(path)
+                    conn.execute('CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT)')
+                    conn.execute('CREATE TABLE state_meta(key TEXT PRIMARY KEY, value TEXT)')
+                    conn.execute("INSERT INTO sessions VALUES('s1','title')")
+                    conn.execute("INSERT INTO state_meta VALUES('schema','68')")
+                    conn.commit()
+                    conn.close()
+                conn = sqlite3.connect(recovered)
+                if mode == 'row-drift':
+                    conn.execute("UPDATE sessions SET title='other' WHERE id='s1'")
+                elif mode == 'schema-drift':
+                    conn.execute('ALTER TABLE sessions ADD COLUMN unexpected TEXT')
+                elif mode == 'missing-table':
+                    conn.execute('DROP TABLE state_meta')
+                elif mode == 'extra-table':
+                    conn.execute('CREATE TABLE unexpected(id INTEGER)')
+                conn.commit()
+                conn.close()
+                before = recovered.read_bytes()
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                            'EXPECTED_CANONICAL_TABLES="sessions;state_meta"; '
+                            'WORK_DB="$2"; RECOVERED_DB="$3"; '
+                            'verify_non_message_table_parity'
+                        ),
+                        'bash',
+                        str(helper),
+                        str(source),
+                        str(recovered),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if mode == 'match':
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, mode)
                 self.assertEqual(recovered.read_bytes(), before, mode)
 
     def test_marketing_recovery_detects_open_db_without_sidecars(self):

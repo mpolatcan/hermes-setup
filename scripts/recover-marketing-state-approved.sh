@@ -18,6 +18,8 @@ EXPECTED_DUPLICATE_LATER_TIMESTAMP="1785996761.8354"
 EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH="39"
 EXPECTED_DUPLICATE_OLDER_ROW_SHA3="3bd4006bdf956d74dc935493f48726af5eab99e0b75408bc186d329a1eed1b61"
 EXPECTED_DUPLICATE_LATER_ROW_SHA3="3168e115e5c7032592d167e3b13096cf62ea05f74b509ed931021df4ed7f48b2"
+EXPECTED_MESSAGES_SCHEMA_SHA3="ca1f913197ba1eb5994812f01f349cc9dc3a2b8b8170122c2b60776b979d0d5d"
+EXPECTED_CANONICAL_TABLES="async_delegations;compression_locks;delivery_obligations;gateway_routing;schema_version;session_model_usage;sessions;state_meta"
 EXPECTED_RECOVERED_MAX_MESSAGE_ID="420"
 EXPECTED_REKEYED_MESSAGE_ID="421"
 PROFILE_HOME="/Users/mutlupolatcan/.hermes/profiles/$PROFILE"
@@ -151,11 +153,48 @@ verify_service_preflight() {
     && [ "$preflight_launch_output" = "$expected_launch_output" ]
 }
 
+verify_non_message_table_parity() {
+  local source_tables recovered_tables table source_sha3 recovered_sha3
+
+  source_tables="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT group_concat(name,';')
+       FROM (
+         SELECT name
+           FROM sqlite_master
+          WHERE type='table'
+            AND name NOT LIKE 'messages_fts%'
+            AND name NOT IN ('messages','sqlite_sequence')
+          ORDER BY name
+       );")"
+  recovered_tables="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT group_concat(name,';')
+       FROM (
+         SELECT name
+           FROM sqlite_master
+          WHERE type='table'
+            AND name NOT LIKE 'messages_fts%'
+            AND name NOT IN ('messages','sqlite_sequence')
+          ORDER BY name
+       );")"
+  [ "$source_tables" = "$EXPECTED_CANONICAL_TABLES" ]
+  [ "$recovered_tables" = "$EXPECTED_CANONICAL_TABLES" ]
+
+  while IFS= read -r table; do
+    [ -n "$table" ]
+    source_sha3="$(printf '.sha3sum --schema --sha3-256 %s\n' "$table" | sqlite3 -batch "$WORK_DB")"
+    recovered_sha3="$(printf '.sha3sum --schema --sha3-256 %s\n' "$table" | sqlite3 -batch "$RECOVERED_DB")"
+    [ -n "$source_sha3" ]
+    [ "$source_sha3" = "$recovered_sha3" ]
+  done < <(printf '%s\n' "$EXPECTED_CANONICAL_TABLES" | tr ';' '\n')
+}
+
 salvage_duplicate_message_collision() {
   local duplicate_summary reference_count physical_count recovered_count expected_recovered_count
   local collision_fingerprint expected_fingerprint collision_payload_fingerprint expected_payload_fingerprint
   local timestamp_summary collision_rows collision_distinct_timestamps collision_min_timestamp collision_max_timestamp
   local recovered_max calculated_new_id new_id post_summary sequence_before sequence_after work_db_sql
+  local source_column_names recovered_column_names recovered_schema_sha3
+  local source_noncollision_sha3 recovered_noncollision_sha3 expected_full_sha3 recovered_full_sha3
 
   duplicate_summary="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
     "SELECT count(*),min(physical_id),max(physical_id),min(copies),max(copies)
@@ -201,6 +240,49 @@ salvage_duplicate_message_collision() {
        );")"
   expected_payload_fingerprint="$EXPECTED_DUPLICATE_OLDER_ROW_SHA3;$EXPECTED_DUPLICATE_LATER_ROW_SHA3"
   [ "$collision_payload_fingerprint" = "$expected_payload_fingerprint" ]
+
+  source_column_names="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT group_concat(cid || ':' || name || ':' || hidden,';') FROM pragma_table_xinfo('messages');")"
+  recovered_column_names="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT group_concat(cid || ':' || name || ':' || hidden,';') FROM pragma_table_xinfo('messages');")"
+  [ "$source_column_names" = "$recovered_column_names" ]
+  recovered_schema_sha3="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT lower(hex(sha3(group_concat(piece,';'),256)))
+       FROM (
+         SELECT cid || ':' || name || ':' || type || ':' || \"notnull\" || ':' ||
+                quote(dflt_value) || ':' || pk || ':' || hidden AS piece
+           FROM pragma_table_xinfo('messages')
+          ORDER BY cid
+       );")"
+  [ "$recovered_schema_sha3" = "$EXPECTED_MESSAGES_SCHEMA_SHA3" ]
+
+  source_noncollision_sha3="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT lower(hex(sha3(group_concat(row_sha3,';'),256)))
+       FROM (
+         SELECT lower(hex(sha3(json_array(
+                  id+0,session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+                  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+                  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+                  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+                ),256))) AS row_sha3
+           FROM messages NOT INDEXED
+          WHERE id+0!=$EXPECTED_DUPLICATE_MESSAGE_ID
+          ORDER BY id+0
+       );")"
+  recovered_noncollision_sha3="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT lower(hex(sha3(group_concat(row_sha3,';'),256)))
+       FROM (
+         SELECT lower(hex(sha3(json_array(
+                  id,session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+                  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+                  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+                  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+                ),256))) AS row_sha3
+           FROM messages NOT INDEXED
+          WHERE id!=$EXPECTED_DUPLICATE_MESSAGE_ID
+          ORDER BY id
+       );")"
+  [ "$source_noncollision_sha3" = "$recovered_noncollision_sha3" ]
 
   timestamp_summary="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
     "SELECT count(*),count(DISTINCT timestamp),min(timestamp),max(timestamp)
@@ -264,6 +346,41 @@ SQL
   sequence_after="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
     "SELECT seq FROM sqlite_sequence WHERE name='messages';")"
   [ "$sequence_after" = "$new_id" ]
+  expected_full_sha3="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT lower(hex(sha3(group_concat(row_sha3,';'),256)))
+       FROM (
+         SELECT lower(hex(sha3(json_array(
+                  CASE
+                    WHEN id+0=$EXPECTED_DUPLICATE_MESSAGE_ID
+                     AND printf('%.17g',timestamp)='$EXPECTED_DUPLICATE_LATER_TIMESTAMP'
+                    THEN $new_id ELSE id+0
+                  END,
+                  session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+                  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+                  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+                  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+                ),256))) AS row_sha3,
+                CASE
+                  WHEN id+0=$EXPECTED_DUPLICATE_MESSAGE_ID
+                   AND printf('%.17g',timestamp)='$EXPECTED_DUPLICATE_LATER_TIMESTAMP'
+                  THEN $new_id ELSE id+0
+                END AS canonical_id
+           FROM messages NOT INDEXED
+          ORDER BY canonical_id
+       );")"
+  recovered_full_sha3="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT lower(hex(sha3(group_concat(row_sha3,';'),256)))
+       FROM (
+         SELECT lower(hex(sha3(json_array(
+                  id,session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+                  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+                  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+                  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+                ),256))) AS row_sha3
+           FROM messages NOT INDEXED
+          ORDER BY id
+       );")"
+  [ "$recovered_full_sha3" = "$expected_full_sha3" ]
   log "salvaged duplicate message id=$EXPECTED_DUPLICATE_MESSAGE_ID rekeyed_later_id=$new_id"
 }
 
@@ -429,6 +546,7 @@ log "recovering from working copy into isolated database"
 sqlite3 "$WORK_DB" '.recover --ignore-freelist' > "$RECOVER_SQL"
 chmod 600 "$RECOVER_SQL"
 sqlite3 -bail "$RECOVERED_DB" < "$RECOVER_SQL"
+verify_non_message_table_parity
 salvage_duplicate_message_collision
 sqlite3 -bail "$RECOVERED_DB" \
   "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
