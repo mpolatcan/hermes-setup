@@ -60,6 +60,19 @@ curl -fsS http://127.0.0.1:9119/ >/dev/null
 
 The managed-runtime pattern was exercised for the `0.19.0` / `v2026.7.20` Quicksilver rollout on 2026-07-23–24. Homebrew `0.18.2` remains installed only as a rollback surface; no production gateway or dashboard executes it.
 
+### Preserve the 07:00 Telegram session boundary
+
+Hermes changed `SessionResetPolicy.mode` from `both` to `none` in July 2026 so conversations persist by default. An omitted reset policy therefore no longer preserves this fleet's historical daily rollover. Keep the intent explicit in every profile config:
+
+```yaml
+session_reset:
+  mode: daily
+  at_hour: 7
+  notify: true
+```
+
+`at_hour` uses the host's local time. After each Hermes upgrade, resolve the effective `GatewayConfig.default_reset_policy` for all nine profiles and verify that the next Telegram message after 07:00 creates a new session with the previous active session ended as `session_reset`. Retention pruning is separate: it removes old ended sessions and must not be treated as active-session rotation.
+
 ## 21. Backup system — current state (2026-07-26)
 
 Two deterministic, non-agent layers own backup work:

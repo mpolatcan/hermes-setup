@@ -258,6 +258,75 @@ class PluginRegistrationTests(unittest.TestCase):
             {"error": "Linear GraphQL request timed out", "retryable": True},
         )
 
+    def test_standalone_sender_preserves_retryable_connect_failure(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+        sender = cast(Any, context.platform_kwargs["standalone_sender_fn"])
+        fake_adapter = mock.Mock()
+        fake_adapter.connect_outbound_only = mock.AsyncMock(return_value=False)
+        fake_adapter.last_connect_error = LinearAPIError(
+            "transport timeout with private details", retryable=True
+        )
+        fake_adapter.disconnect = mock.AsyncMock()
+
+        with mock.patch.object(
+            adapter_mod.LinearPlatformAdapter,
+            "from_config",
+            return_value=fake_adapter,
+        ):
+            result = asyncio.run(sender(object(), "session-4", "body"))
+
+        self.assertEqual(
+            result,
+            {
+                "error": "Linear outbound-only adapter failed to connect",
+                "retryable": True,
+            },
+        )
+        self.assertNotIn("private details", result["error"])
+
+    def test_standalone_sender_marks_auth_connect_failure_permanent(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+        sender = cast(Any, context.platform_kwargs["standalone_sender_fn"])
+        fake_adapter = mock.Mock()
+        fake_adapter.connect_outbound_only = mock.AsyncMock(return_value=False)
+        fake_adapter.last_connect_error = LinearAPIError(
+            "invalid bearer credential", retryable=False
+        )
+        fake_adapter.disconnect = mock.AsyncMock()
+
+        with mock.patch.object(
+            adapter_mod.LinearPlatformAdapter,
+            "from_config",
+            return_value=fake_adapter,
+        ):
+            result = asyncio.run(sender(object(), "session-5", "body"))
+
+        self.assertEqual(
+            result,
+            {
+                "error": "Linear outbound-only adapter failed to connect",
+                "retryable": False,
+            },
+        )
+
 
 class LedgerTests(unittest.TestCase):
     def test_populated_v4_database_migrates_to_v5_without_losing_rows(self):
@@ -945,6 +1014,35 @@ class AdapterOutboundOnlyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(live_ledger.get_wait("session-active")["state"], "resuming")
             live_ledger.close()
 
+    async def test_connect_outbound_only_exposes_linear_error_retryability(self):
+        for retryable in (True, False):
+            with self.subTest(retryable=retryable), tempfile.TemporaryDirectory() as td:
+                class FailingLinear:
+                    def __init__(self, _oauth_file):
+                        pass
+
+                    async def connect(self):
+                        raise LinearAPIError("safe connection failure", retryable=retryable)
+
+                    async def close(self):
+                        pass
+
+                config = PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "database_path": str(Path(td) / "outbox.sqlite3"),
+                        "oauth_file": str(Path(td) / "oauth.json"),
+                    },
+                )
+                adapter = LinearPlatformAdapter(config, Platform.WEBHOOK)
+                with mock.patch.object(adapter_mod, "LinearClient", FailingLinear):
+                    self.assertFalse(await adapter.connect_outbound_only())
+
+                self.assertIsInstance(adapter.last_connect_error, LinearAPIError)
+                self.assertEqual(adapter.last_connect_error.retryable, retryable)
+                self.assertIsNone(adapter._linear)
+                self.assertIsNone(adapter._ledger)
+
 
 class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
     def test_activity_uuid_is_deterministic_and_v4_shaped(self):
@@ -1308,6 +1406,136 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         activation = self.adapter._ledger.get_manager_activation(issue_id)
         self.assertEqual(activation["state"], "session_started")
         self.assertEqual(activation["session_id"], self.events[0].source.chat_id)
+
+    async def test_foreign_actor_created_manager_session_uses_manager_cas_path(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-foreign-actor"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-foreign", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegated")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-manager-foreign",
+            actor={"id": "user-foreign", "name": "Other actor"},
+            agentSession={
+                "id": "session-manager-foreign",
+                "issue": {"id": issue_id, "identifier": "OPS-206", "title": "Foreign"},
+            },
+        )
+
+        with (
+            mock.patch.object(
+                self.adapter._linear,
+                "get_issue_closure_context",
+                wraps=self.adapter._linear.get_issue_closure_context,
+            ) as readback,
+            mock.patch.object(
+                self.adapter._ledger,
+                "claim_manager_session",
+                wraps=self.adapter._ledger.claim_manager_session,
+            ) as claim_session,
+        ):
+            response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        readback.assert_awaited_once_with(issue_id)
+        claim_session.assert_called_once_with(issue_id, "session-manager-foreign")
+        self.assertEqual(len(self.events), 1)
+        activation = self.adapter._ledger.get_manager_activation(issue_id)
+        self.assertEqual(activation["state"], "session_started")
+        self.assertEqual(activation["session_id"], "session-manager-foreign")
+
+    async def test_delegation_unknown_self_created_event_retries_until_readback_confirms(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-delegation-unknown"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-delegation-unknown", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegation_unknown")
+        context = {
+            "id": issue_id,
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "assignee": {"id": "user-1"},
+            "delegate": {},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        created = self.make_payload(
+            webhookId="webhook-manager-delegation-unknown",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-manager-delegation-unknown",
+                "issue": {"id": issue_id, "identifier": "OPS-207", "title": "Unknown"},
+            },
+        )
+
+        deferred = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(deferred.status, 503)
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "delegation_unknown",
+        )
+
+        context["delegate"] = {"id": "agent-derya"}
+        accepted = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(accepted.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+
+    async def test_concurrent_mixed_actor_manager_sessions_cas_one_dispatch(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-mixed-actors"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-mixed", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegated")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+
+        async def slow_capture(event):
+            self.events.append(event)
+            await asyncio.sleep(0.05)
+
+        self.adapter.handle_message = slow_capture
+        payloads = [
+            self.make_payload(
+                webhookId=f"webhook-manager-mixed-{index}",
+                actor={"id": actor_id},
+                agentSession={
+                    "id": f"session-manager-mixed-{index}",
+                    "issue": {"id": issue_id, "identifier": "OPS-208", "title": "Mixed"},
+                },
+            )
+            for index, actor_id in ((1, "agent-derya"), (2, "user-foreign"))
+        ]
+
+        responses = await asyncio.gather(
+            *(self.adapter._handle_webhook(self.request_for(item)) for item in payloads)
+        )
+
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(
+            sorted(json.loads(response.text)["status"] for response in responses),
+            ["accepted", "manager_session_duplicate"],
+        )
 
     async def test_manager_dispatch_rechecks_live_todo_policy_and_delegate(self):
         self.adapter._planned_activation_enabled = True
@@ -2402,19 +2630,50 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
         self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
 
-    async def test_human_done_fences_when_session_list_read_fails(self):
+    async def test_human_done_retries_when_session_list_read_fails_then_replays(self):
         issue_id = "issue-session-read-failure"
         completed = self.configure_unbound_human_done(
             issue_id, "2026-08-07T02:03:00.000Z"
         )
         self.adapter._linear.get_issue_agent_sessions = mock.AsyncMock(
-            side_effect=LinearAPIError("temporary policy read failure", retryable=True)
+            side_effect=[
+                LinearAPIError("temporary policy read failure", retryable=True),
+                [{
+                    "id": "session-after-retry",
+                    "status": "active",
+                    "app_user_id": "agent-derya",
+                }],
+            ]
+        )
+
+        deferred = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(deferred.status, 503)
+        self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+
+        replay = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(replay.text)["status"], "closure_queued")
+        self.assertEqual(
+            self.adapter._ledger.get_issue_session(issue_id), "session-after-retry"
+        )
+
+    async def test_human_done_fails_closed_on_permanent_session_policy_failure(self):
+        issue_id = "issue-session-permanent-failure"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:03:30.000Z"
+        )
+        self.adapter._linear.get_issue_agent_sessions = mock.AsyncMock(
+            side_effect=LinearAPIError("incomplete policy data", retryable=False)
         )
 
         response = await self.adapter._handle_webhook(self.request_for(completed))
 
         self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
         self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 1)
 
     async def test_human_done_fences_when_issue_has_no_sessions(self):
         issue_id = "issue-without-sessions"

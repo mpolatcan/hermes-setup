@@ -44,23 +44,56 @@ PY
 }
 
 VERIFIED=0
+FAILED_PROFILES=""
+FAILURE_REASONS=""
+
+record_profile_failure() {
+  local profile="$1"
+  local reason="$2"
+  FAILED_PROFILES="${FAILED_PROFILES}${FAILED_PROFILES:+ }$profile"
+  FAILURE_REASONS="${FAILURE_REASONS}${FAILURE_REASONS:+; }$profile: $reason"
+  printf '%s FAIL quick profile=%s: %s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$profile" "$reason" >> "$LOG"
+}
+
 for profile in $PROFILES; do
   home="$ROOT/profiles/$profile"
   started="$(date +%s)"
   if ! output="$(HERMES_HOME="$home" "$HERMES" backup --quick --label scheduled-daily 2>&1)"; then
-    fail "native quick backup command failed for $profile"
+    record_profile_failure "$profile" "native quick backup command failed"
+    continue
   fi
   if ! printf '%s\n' "$output" | grep -q 'State snapshot created:'; then
-    fail "native quick backup did not confirm snapshot creation for $profile"
+    record_profile_failure "$profile" "native quick backup did not confirm snapshot creation"
+    continue
   fi
   if printf '%s\n' "$output" | grep -q 'CRITICAL: could not snapshot DB'; then
-    fail "SQLite snapshot incomplete for $profile"
+    record_profile_failure "$profile" "SQLite snapshot incomplete"
+    continue
   fi
-  snapshot="$(latest_snapshot_since "$home" "$started")" || fail "fresh snapshot not created for $profile"
-  python3 "$OPS" verify-snapshot "$snapshot" >/dev/null || fail "snapshot verification failed for $profile"
-  python3 "$OPS" prune-snapshots "$home/state-snapshots" --keep 7 >/dev/null
+  if ! snapshot="$(latest_snapshot_since "$home" "$started")"; then
+    record_profile_failure "$profile" "fresh snapshot not created"
+    continue
+  fi
+  if ! python3 "$OPS" verify-snapshot "$snapshot" >/dev/null; then
+    record_profile_failure "$profile" "snapshot verification failed"
+    continue
+  fi
+  if ! python3 "$OPS" prune-snapshots "$home/state-snapshots" --keep 7 >/dev/null; then
+    record_profile_failure "$profile" "snapshot retention prune failed"
+    continue
+  fi
   VERIFIED=$((VERIFIED+1))
 done
+
+if [ -n "$FAILED_PROFILES" ]; then
+  trap - ERR
+  summary="completed with failures; verified=$VERIFIED failed=$FAILED_PROFILES; $FAILURE_REASONS"
+  printf '%s FAIL quick: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$summary" >> "$LOG"
+  chmod 600 "$LOG"
+  "$SEND" general --to telegram "⚠️ Hermes quick backup FAILED: $summary" >/dev/null 2>&1 || true
+  exit 1
+fi
 
 printf '%s OK quick: %s verified profiles\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$VERIFIED" >> "$LOG"
 chmod 600 "$LOG"

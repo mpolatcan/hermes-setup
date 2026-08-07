@@ -5,12 +5,14 @@ import os
 import plistlib
 import sqlite3
 import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 ROOT = Path('/Users/mutlupolatcan/.hermes')
+REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'scripts' / 'backup_ops.py'
 
 
@@ -123,6 +125,50 @@ class BackupPolicyContractTests(unittest.TestCase):
         self.assertIn('umask 077', text)
         self.assertIn("grep -q 'CRITICAL: could not snapshot DB'", text)
         self.assertNotIn('verify-hermes-zip', text)
+
+    def test_profile_failure_does_not_starve_later_backups(self):
+        text = (REPO_ROOT / 'scripts/profile-backup-quick.sh').read_text()
+        self.assertIn('record_profile_failure', text)
+        self.assertIn('continue', text)
+        self.assertIn('FAILED_PROFILES', text)
+        self.assertIn('completed with failures', text)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_hermes = root / 'hermes'
+            fake_ops = root / 'backup_ops.py'
+            fake_send = root / 'send'
+            script = root / 'profile-backup-quick.sh'
+            fake_hermes.write_text(
+                '#!/bin/bash\n'
+                'set -e\n'
+                'snap="$HERMES_HOME/state-snapshots/$(date +%s)-scheduled-daily"\n'
+                'mkdir -p "$snap"\n'
+                'printf "State snapshot created: %s\\n" "$snap"\n'
+            )
+            fake_ops.write_text(
+                '#!/usr/bin/env python3\n'
+                'import sys\n'
+                'if sys.argv[1] == "verify-snapshot" and "/bad/" in sys.argv[2]:\n'
+                '    raise SystemExit(1)\n'
+            )
+            fake_send.write_text('#!/bin/bash\nexit 0\n')
+            for executable in (fake_hermes, fake_ops, fake_send):
+                executable.chmod(0o700)
+            script.write_text(
+                text.replace('ROOT="/Users/mutlupolatcan/.hermes"', f'ROOT="{root}"')
+                .replace('OPS="$ROOT/scripts/backup_ops.py"', f'OPS="{fake_ops}"')
+                .replace('HERMES="/Users/mutlupolatcan/.local/bin/hermes"', f'HERMES="{fake_hermes}"')
+                .replace('SEND="$ROOT/scripts/hermes-send-keychain.sh"', f'SEND="{fake_send}"')
+                .replace(
+                    'PROFILES="general assistant coder finance health marketing producer researcher writer"',
+                    'PROFILES="bad good"',
+                )
+            )
+            result = subprocess.run(['/bin/bash', str(script)], check=False)
+            log = (root / 'backups/hermes/quick-backup.log').read_text()
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(any((root / 'profiles/good/state-snapshots').iterdir()))
+            self.assertIn('verified=1 failed=bad', log)
         self.assertNotIn(' backup -o ', text)
         self.assertNotIn('grep -qv', text)
 

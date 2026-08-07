@@ -322,6 +322,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._signing_secrets: tuple[str, ...] = ()
         self._ledger: DeliveryLedger | None = None
         self._linear: LinearClient | None = None
+        self._last_connect_error: LinearAPIError | None = None
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._ack_tasks: dict[str, set[asyncio.Task]] = {}
@@ -402,6 +403,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
 
     async def connect_outbound_only(self, *, startup_recovery: bool = False) -> bool:
         """Open the durable outbox and OAuth client without binding the webhook port."""
+        self._last_connect_error = None
         try:
             if self._ledger is None:
                 self._ledger = DeliveryLedger(
@@ -416,9 +418,16 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 await self._linear.connect()
             return True
         except Exception as exc:
+            if isinstance(exc, LinearAPIError):
+                self._last_connect_error = exc
             logger.error("[linear] Outbound-only adapter failed to connect: %s", exc, exc_info=True)
             await self._cleanup()
             return False
+
+    @property
+    def last_connect_error(self) -> LinearAPIError | None:
+        """Return safe retry metadata for the most recent outbound connection failure."""
+        return self._last_connect_error
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
@@ -630,14 +639,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 manager_activation
                 and manager_activation.get("state") == "delegated"
             )
-            if (
-                action == "created"
-                and issue_id
-                and event_actor_id
-                and self._linear.actor_id
-                and hmac.compare_digest(event_actor_id, self._linear.actor_id)
-                and manager_activation is not None
-            ):
+            if action == "created" and issue_id and manager_activation is not None:
                 return await self._handle_manager_session_created(
                     payload,
                     delivery_key,
@@ -861,14 +863,21 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if state == "session_started":
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "manager_session_duplicate"}, status=200)
-            if state != "delegated":
+            if state == "canceled":
                 self._ledger.mark_done(delivery_key)
-                return web.json_response({"status": "ignored_self"}, status=200)
+                return web.json_response({"status": "activation_policy_denied"}, status=200)
             context = await self._linear.get_issue_closure_context(issue_id)
             if not self._live_activation_policy_allows(context):
+                if state in {"claimed", "failed", "delegation_unknown"}:
+                    self._ledger.release(delivery_key)
+                    return web.json_response(
+                        {"status": "delegation_ambiguous"}, status=503
+                    )
                 self._ledger.mark_manager_activation(issue_id, "canceled")
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "activation_policy_denied"}, status=200)
+            if state in {"claimed", "failed", "delegation_unknown"}:
+                self._ledger.mark_manager_activation(issue_id, "delegated")
             if not self._ledger.claim_manager_session(issue_id, session_id):
                 current = self._ledger.get_manager_activation(issue_id) or {}
                 status = (
@@ -1248,6 +1257,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     issue_id,
                     type(exc).__name__,
                 )
+                if exc.retryable:
+                    raise
                 sessions = []
             owned_sessions = [
                 item

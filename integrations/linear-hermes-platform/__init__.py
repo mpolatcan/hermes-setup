@@ -62,7 +62,11 @@ async def _standalone_send(
     try:
         adapter = LinearPlatformAdapter.from_config(pconfig)
         if not await adapter.connect_outbound_only():
-            return {"error": "Linear outbound-only adapter failed to connect"}
+            connect_error = adapter.last_connect_error
+            return {
+                "error": "Linear outbound-only adapter failed to connect",
+                "retryable": bool(connect_error and connect_error.retryable),
+            }
         result = await adapter.send(str(chat_id), str(message or ""))
         if not result.success:
             return {
