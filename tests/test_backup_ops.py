@@ -478,6 +478,36 @@ class BackupPolicyContractTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, expected)
 
+    def test_marketing_recovery_probes_isolate_err_trap_but_real_failure_keeps_it(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state.db'
+            db.write_bytes(b'sqlite-placeholder')
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    (
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; LIVE_DB="$2"; '
+                        'launchctl(){ printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '
+                        'lsof(){ return 1; }; '
+                        'trap \'printf parent-fired; exit 99\' ERR; '
+                        'verify_service_preflight; printf preflight-ok\\|; '
+                        'no_live_handles; printf lsof-ok\\|; '
+                        'false; printf unreachable'
+                    ),
+                    'bash',
+                    str(helper),
+                    str(db),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 99, result.stderr)
+            self.assertEqual(result.stdout, 'preflight-ok|lsof-ok|parent-fired')
+            self.assertNotIn('unreachable', result.stdout)
+
     def test_marketing_recovery_rejects_service_reappearance_before_swap(self):
         helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
         with tempfile.TemporaryDirectory() as tmp:

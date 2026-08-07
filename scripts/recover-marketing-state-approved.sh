@@ -37,6 +37,13 @@ log() {
   printf '[marketing-recovery] %s\n' "$*"
 }
 
+run_probe() {
+  # Expected negative probe results must not invoke the inherited main ERR
+  # trap inside command-substitution subshells.
+  trap - ERR
+  "$@"
+}
+
 require_regular_owned_file() {
   path="$1"
   [ -f "$path" ] || { log "required file missing: $path"; return 1; }
@@ -61,7 +68,7 @@ no_live_handles() {
   for candidate in "$LIVE_DB" "$LIVE_DB-wal" "$LIVE_DB-shm"; do
     [ -e "$candidate" ] || continue
     output=""
-    if output="$(lsof "$candidate" 2>&1)"; then
+    if output="$(run_probe lsof "$candidate" 2>&1)"; then
       log "live SQLite handle probe returned success; not accepting absence: $candidate"
       return 1
     else
@@ -77,7 +84,7 @@ no_live_handles() {
 wait_for_quiescence() {
   for _ in $(seq 1 30); do
     launch_output=""
-    if launch_output="$(launchctl print "$SERVICE" 2>&1)"; then
+    if launch_output="$(run_probe launchctl print "$SERVICE" 2>&1)"; then
       sleep 1
       continue
     else
@@ -95,7 +102,7 @@ wait_for_quiescence() {
     fi
 
     listener_output=""
-    if listener_output="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>&1)"; then
+    if listener_output="$(run_probe lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>&1)"; then
       log "listener probe returned success; service may still own port $PORT"
       return 1
     else
@@ -122,7 +129,7 @@ reprove_quiescence() {
 
 verify_service_preflight() {
   preflight_launch_output=""
-  if preflight_launch_output="$(launchctl print "$SERVICE" 2>&1)"; then
+  if preflight_launch_output="$(run_probe launchctl print "$SERVICE" 2>&1)"; then
     return 0
   else
     preflight_launch_rc=$?
