@@ -539,7 +539,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.5",
+                "version": "0.8.6",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1231,6 +1231,11 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             None,
         )
         current_state_id = str(state.get("id") or "")
+        previous_state_type = (
+            str(previous_live.get("type") or "").casefold()
+            if previous_live
+            else ""
+        )
         authoritative = bool(
             team_id in self._closure_allowed_team_ids
             and assignee_id
@@ -1241,7 +1246,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             and live_updated_at
             and hmac.compare_digest(event_updated_at, live_updated_at)
             and previous_live
-            and str(previous_live.get("type") or "").casefold() == "started"
+            and previous_state_type in {"started", "unstarted"}
             and current_state_id
         )
         if not authoritative:
@@ -1328,14 +1333,14 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         closure_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
         actor_name = str(assignee.get("name") or actor.get("name") or "Human assignee")
         delegate_name = str(delegate.get("name") or self._linear.actor_name or "Hermes")
-        previous_name = str(previous_live.get("name") or "Started")
+        previous_name = str(previous_live.get("name") or previous_state_type.title())
         current_name = str(state.get("name") or "Completed")
         body = "\n".join(
             (
                 "Closure reconciliation complete.",
                 "",
                 f"- Human assignee: {actor_name}",
-                f"- Verified transition: {previous_name} (`started`) → {current_name} (`completed`)",
+                f"- Verified transition: {previous_name} (`{previous_state_type}`) → {current_name} (`completed`)",
                 f"- Delegate: {delegate_name}",
                 "- Main deliverable: not rerun",
                 "- Terminal issue state: preserved",

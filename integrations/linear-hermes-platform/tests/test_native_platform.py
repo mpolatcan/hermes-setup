@@ -2422,6 +2422,69 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.adapter._linear.calls), 2)
         self.assertEqual(self.events, [])
 
+    async def test_human_todo_to_completed_queues_closure_when_status_writeback_disabled(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        created = self.make_payload(
+            webhookId="webhook-todo-closure-session",
+            agentSession={
+                "id": "session-todo-closure",
+                "issue": {
+                    "id": "issue-todo-closure",
+                    "identifier": "OPS-115",
+                    "title": "Todo closure",
+                },
+            },
+        )
+        await self.adapter._handle_webhook(self.request_for(created))
+        await asyncio.sleep(0)
+        self.adapter._linear.calls.clear()
+        self.adapter._linear.activity_ephemeral.clear()
+        self.events.clear()
+        self.adapter._linear.closure_contexts["issue-todo-closure"] = {
+            "id": "issue-todo-closure",
+            "identifier": "OPS-115",
+            "title": "Todo closure",
+            "updated_at": "2026-08-07T09:51:18.302Z",
+            "completed_at": "2026-08-07T09:51:18.287Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+            "history": [{
+                "actor_id": "user-1",
+                "created_at": "2026-08-07T09:51:18.299Z",
+                "from_state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                "to_state": {"id": "done-1", "name": "Done", "type": "completed"},
+            }],
+        }
+        completed = self.make_data_payload(
+            webhookId="webhook-human-todo-completed",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": "issue-todo-closure",
+                "updatedAt": "2026-08-07T09:51:18.302Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "todo-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+        await self.adapter._drain_outbox_once()
+        await self.adapter._drain_outbox_once()
+        self.assertEqual([call[1] for call in self.adapter._linear.calls], ["thought", "response"])
+        self.assertIn("Todo (`unstarted`) → Done (`completed`)", self.adapter._linear.calls[1][2])
+        self.assertIn("not rerun", self.adapter._linear.calls[1][2])
+        self.assertEqual(self.events, [])
+
     async def test_done_before_session_creation_is_durably_fenced_and_reconciled(self):
         self.adapter._closure_reconciliation_enabled = True
         self.adapter._closure_allowed_team_ids = {"team-ops"}
