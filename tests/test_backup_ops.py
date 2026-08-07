@@ -6,6 +6,7 @@ import plistlib
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -125,6 +126,8 @@ class BackupPolicyContractTests(unittest.TestCase):
         self.assertIn('umask 077', text)
         self.assertIn("grep -q 'CRITICAL: could not snapshot DB'", text)
         self.assertNotIn('verify-hermes-zip', text)
+        self.assertNotIn(' backup -o ', text)
+        self.assertNotIn('grep -qv', text)
 
     def test_profile_failure_does_not_starve_later_backups(self):
         text = (REPO_ROOT / 'scripts/profile-backup-quick.sh').read_text()
@@ -169,8 +172,299 @@ class BackupPolicyContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertTrue(any((root / 'profiles/good/state-snapshots').iterdir()))
             self.assertIn('verified=1 failed=bad', log)
-        self.assertNotIn(' backup -o ', text)
-        self.assertNotIn('grep -qv', text)
+
+    def test_marketing_recovery_helper_is_fail_closed(self):
+        text = (REPO_ROOT / 'scripts/recover-marketing-state-approved.sh').read_text()
+        required = (
+            'EXPECTED_UID="501"',
+            'EXPECTED_SESSIONS="26"',
+            'EXPECTED_MESSAGES="321"',
+            'stop_service_strict',
+            'no_live_handles',
+            'raw.sha256',
+            "'.recover --ignore-freelist'",
+            "VALUES('integrity-check', 1)",
+            'FTS_COUNTS',
+            'CORRUPT_LIVE',
+            'rollback',
+            'refusing bootstrap without quiescence proof',
+        )
+        for marker in required:
+            self.assertIn(marker, text)
+        self.assertNotIn('rm -rf', text)
+        subprocess.run(
+            ['/bin/bash', '-n', str(REPO_ROOT / 'scripts/recover-marketing-state-approved.sh')],
+            check=True,
+        )
+
+    def test_marketing_recovery_detects_open_db_without_sidecars(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state.db'
+            db.write_bytes(b'sqlite-placeholder')
+            holder = subprocess.Popen(
+                [
+                    sys.executable,
+                    '-c',
+                    'import sys; f=open(sys.argv[1], "rb"); print("ready", flush=True); sys.stdin.read()',
+                    str(db),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertIsNotNone(holder.stdout)
+                self.assertIsNotNone(holder.stdin)
+                assert holder.stdout is not None
+                assert holder.stdin is not None
+                self.assertEqual(holder.stdout.readline().strip(), 'ready')
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; LIVE_DB="$2"; no_live_handles',
+                        'bash',
+                        str(helper),
+                        str(db),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('not accepting absence', result.stdout)
+            finally:
+                assert holder.stdin is not None
+                assert holder.stdout is not None
+                holder.stdin.close()
+                holder.wait(timeout=5)
+                holder.stdout.close()
+
+    def test_marketing_recovery_rejects_empty_successful_handle_probe(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state.db'
+            db.write_bytes(b'sqlite-placeholder')
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; LIVE_DB="$2"; lsof(){ return 0; }; no_live_handles',
+                    'bash',
+                    str(helper),
+                    str(db),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not accepting absence', result.stdout)
+
+    def test_marketing_recovery_invalidates_quiescence_before_bootstrap(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'state'
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    (
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                        'QUIESCENT=1; SERVICE_STOPPED=1; PLIST="$2/fake.plist"; '
+                        'launchctl(){ return 42; }; '
+                        'STATE_FILE="$2/state"; '
+                        "trap 'printf \"%s|%s\" \"$QUIESCENT\" \"$BOOTSTRAP_ATTEMPTED\" > \"$STATE_FILE\"' EXIT; "
+                        'start_service'
+                    ),
+                    'bash',
+                    str(helper),
+                    tmp,
+                ],
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(state.read_text(), '0|1')
+
+    def test_marketing_recovery_restores_complete_sqlite_set_after_bootstrap_failure(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = root / 'state.db'
+            corrupt = root / 'corrupt.db'
+            failed = root / 'failed.db'
+            for suffix in ('', '-wal', '-shm'):
+                (Path(str(live) + suffix)).write_text('recovered' + suffix)
+                (Path(str(corrupt) + suffix)).write_text('original' + suffix)
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    (
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; ROOT="$2"; '
+                        'LIVE_DB="$ROOT/state.db"; '
+                        'CORRUPT_LIVE="$ROOT/corrupt.db"; CORRUPT_WAL="$ROOT/corrupt.db-wal"; CORRUPT_SHM="$ROOT/corrupt.db-shm"; '
+                        'FAILED_RECOVERED="$ROOT/failed.db"; FAILED_WAL="$ROOT/failed.db-wal"; FAILED_SHM="$ROOT/failed.db-shm"; '
+                        'SWAP_STARTED=1; SWAPPED=1; ORIGINAL_DB_MOVED=1; ORIGINAL_WAL_MOVED=1; ORIGINAL_SHM_MOVED=1; RECOVERED_DB_INSTALLED=1; '
+                        'QUIESCENT=0; SERVICE_STOPPED=0; BOOTSTRAP_ATTEMPTED=1; '
+                        'stop_service_strict(){ printf stopped > "$ROOT/stopped"; QUIESCENT=1; SERVICE_STOPPED=1; return 0; }; '
+                        'start_service(){ SERVICE_STOPPED=0; return 0; }; '
+                        'rollback 17'
+                    ),
+                    'bash',
+                    str(helper),
+                    tmp,
+                ],
+                check=False,
+            )
+            self.assertEqual(result.returncode, 17)
+            self.assertTrue((root / 'stopped').exists())
+            for suffix in ('', '-wal', '-shm'):
+                self.assertEqual(Path(str(live) + suffix).read_text(), 'original' + suffix)
+                self.assertEqual(Path(str(failed) + suffix).read_text(), 'recovered' + suffix)
+
+    def test_marketing_recovery_reconciles_every_partial_swap_boundary(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        scenarios = {
+            'after-wal': {'live': ('', '-shm'), 'corrupt': ('-wal',)},
+            'after-shm': {'live': ('',), 'corrupt': ('-wal', '-shm')},
+            'after-db': {'live': (), 'corrupt': ('', '-wal', '-shm')},
+        }
+        for name, layout in scenarios.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                live = root / 'state.db'
+                corrupt = root / 'corrupt.db'
+                failed = root / 'failed.db'
+                for suffix in layout['live']:
+                    Path(str(live) + suffix).write_text('original' + suffix)
+                for suffix in layout['corrupt']:
+                    Path(str(corrupt) + suffix).write_text('original' + suffix)
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; ROOT="$2"; '
+                            'LIVE_DB="$ROOT/state.db"; '
+                            'CORRUPT_LIVE="$ROOT/corrupt.db"; CORRUPT_WAL="$ROOT/corrupt.db-wal"; CORRUPT_SHM="$ROOT/corrupt.db-shm"; '
+                            'FAILED_RECOVERED="$ROOT/failed.db"; FAILED_WAL="$ROOT/failed.db-wal"; FAILED_SHM="$ROOT/failed.db-shm"; '
+                            'SWAP_STARTED=1; SWAPPED=0; QUIESCENT=1; SERVICE_STOPPED=1; BOOTSTRAP_ATTEMPTED=0; '
+                            'stop_service_strict(){ printf stopped > "$ROOT/stopped"; QUIESCENT=1; SERVICE_STOPPED=1; return 0; }; '
+                            'start_service(){ SERVICE_STOPPED=0; return 0; }; '
+                            'rollback 23'
+                        ),
+                        'bash',
+                        str(helper),
+                        tmp,
+                    ],
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 23)
+                self.assertTrue((root / 'stopped').exists())
+                for suffix in ('', '-wal', '-shm'):
+                    self.assertEqual(Path(str(live) + suffix).read_text(), 'original' + suffix)
+                    self.assertFalse(Path(str(failed) + suffix).exists())
+
+    def test_marketing_recovery_stop_failure_causes_zero_file_mutation(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        for mode in ('launch-error', 'wrong-launch-message', 'listener-error', 'listener-zero-empty'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                live = root / 'state.db'
+                corrupt = root / 'corrupt.db'
+                failed = root / 'failed.db'
+                for suffix in ('', '-wal', '-shm'):
+                    Path(str(live) + suffix).write_text('recovered' + suffix)
+                    Path(str(corrupt) + suffix).write_text('original' + suffix)
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; ROOT="$2"; MODE="$3"; '
+                            'LIVE_DB="$ROOT/state.db"; '
+                            'CORRUPT_LIVE="$ROOT/corrupt.db"; CORRUPT_WAL="$ROOT/corrupt.db-wal"; CORRUPT_SHM="$ROOT/corrupt.db-shm"; '
+                            'FAILED_RECOVERED="$ROOT/failed.db"; FAILED_WAL="$ROOT/failed.db-wal"; FAILED_SHM="$ROOT/failed.db-shm"; '
+                            'SWAP_STARTED=1; SWAPPED=1; QUIESCENT=0; SERVICE_STOPPED=0; BOOTSTRAP_ATTEMPTED=1; '
+                            'launchctl(){ if [ "$MODE" = launch-error ]; then return 2; fi; '
+                            'if [ "$MODE" = wrong-launch-message ]; then printf \'Bad request.\\nCould not find service "other" in domain for user gui: %s\\n\' "$EXPECTED_UID" >&2; return 113; fi; '
+                            'printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '
+                            'lsof(){ if [ "$MODE" = listener-error ]; then return 2; fi; '
+                            'if [ "$MODE" = listener-zero-empty ]; then return 0; fi; return 1; }; rollback 29'
+                        ),
+                        'bash',
+                        str(helper),
+                        tmp,
+                        mode,
+                    ],
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 29)
+                for suffix in ('', '-wal', '-shm'):
+                    self.assertEqual(Path(str(live) + suffix).read_text(), 'recovered' + suffix)
+                    self.assertEqual(Path(str(corrupt) + suffix).read_text(), 'original' + suffix)
+                    self.assertFalse(Path(str(failed) + suffix).exists())
+
+    def test_marketing_quiescence_accepts_only_canonical_absence(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        cases = (
+            ('canonical', 'ok'),
+            ('launch-error', 'fail'),
+            ('wrong-launch-message', 'fail'),
+            ('listener-error', 'fail'),
+            ('listener-zero-empty', 'fail'),
+        )
+        for mode, expected in cases:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; MODE="$2"; LIVE_DB="$3/missing.db"; '
+                            'launchctl(){ if [ "$MODE" = launch-error ]; then return 2; fi; '
+                            'if [ "$MODE" = wrong-launch-message ]; then printf \'Bad request.\\nCould not find service "other" in domain for user gui: %s\\n\' "$EXPECTED_UID" >&2; return 113; fi; '
+                            'printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '
+                            'lsof(){ if [ "$MODE" = listener-error ]; then return 2; fi; '
+                            'if [ "$MODE" = listener-zero-empty ]; then return 0; fi; return 1; }; '
+                            'if wait_for_quiescence; then printf ok; else printf fail; fi'
+                        ),
+                        'bash',
+                        str(helper),
+                        mode,
+                        tmp,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertTrue(result.stdout.rstrip().endswith(expected), result.stdout)
+
+    def test_marketing_recovery_rejects_service_reappearance_before_swap(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    (
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; LIVE_DB="$2/missing.db"; QUIESCENT=1; '
+                        'launchctl(){ return 0; }; lsof(){ return 1; }; sleep(){ :; }; '
+                        'if reprove_quiescence; then printf unexpected-success; else printf "rejected|%s" "$QUIESCENT"; fi'
+                    ),
+                    'bash',
+                    str(helper),
+                    tmp,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, 'rejected|0')
 
     def test_launchd_schedules_are_spread_and_layered(self):
         with (Path.home() / 'Library/LaunchAgents/ai.hermes.backup-honcho.plist').open('rb') as fh:
