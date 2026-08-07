@@ -388,6 +388,7 @@ class BackupPolicyContractTests(unittest.TestCase):
                             'CORRUPT_LIVE="$ROOT/corrupt.db"; CORRUPT_WAL="$ROOT/corrupt.db-wal"; CORRUPT_SHM="$ROOT/corrupt.db-shm"; '
                             'FAILED_RECOVERED="$ROOT/failed.db"; FAILED_WAL="$ROOT/failed.db-wal"; FAILED_SHM="$ROOT/failed.db-shm"; '
                             'SWAP_STARTED=1; SWAPPED=1; QUIESCENT=0; SERVICE_STOPPED=0; BOOTSTRAP_ATTEMPTED=1; '
+                            'sleep(){ :; }; '
                             'launchctl(){ if [ "$MODE" = launch-error ]; then return 2; fi; '
                             'if [ "$MODE" = wrong-launch-message ]; then printf \'Bad request.\\nCould not find service "other" in domain for user gui: %s\\n\' "$EXPECTED_UID" >&2; return 113; fi; '
                             'printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '
@@ -424,6 +425,7 @@ class BackupPolicyContractTests(unittest.TestCase):
                         '-c',
                         (
                             'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; MODE="$2"; LIVE_DB="$3/missing.db"; '
+                            'sleep(){ :; }; '
                             'launchctl(){ if [ "$MODE" = launch-error ]; then return 2; fi; '
                             'if [ "$MODE" = wrong-launch-message ]; then printf \'Bad request.\\nCould not find service "other" in domain for user gui: %s\\n\' "$EXPECTED_UID" >&2; return 113; fi; '
                             'printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '

@@ -83,9 +83,14 @@ wait_for_quiescence() {
     else
       launch_rc=$?
       expected_launch_output="$(printf 'Bad request.\nCould not find service "%s" in domain for user gui: %s' "$LABEL" "$EXPECTED_UID")"
-      if [ "$launch_rc" -ne 113 ] || [ "$launch_output" != "$expected_launch_output" ]; then
+      if [ "$launch_rc" -ne 113 ]; then
         log "ambiguous launchctl probe failure: rc=$launch_rc"
         return 1
+      fi
+      if [ "$launch_output" != "$expected_launch_output" ]; then
+        log "transient non-canonical launchctl absence; retrying"
+        sleep 1
+        continue
       fi
     fi
 
