@@ -81,6 +81,28 @@ class DeliveryLedger:
             "ON waiting_executions(issue_id, state, updated_at)"
         )
         self._db.execute(
+            "CREATE TABLE IF NOT EXISTS activation_waits ("
+            "issue_id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, "
+            "delivery_key TEXT NOT NULL, prompt_json TEXT NOT NULL, activation_key TEXT UNIQUE, "
+            "state TEXT NOT NULL CHECK(state IN "
+            "('waiting', 'dispatch_unknown', 'resumed', 'canceled', 'failed')), "
+            "last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, "
+            "resumed_at INTEGER)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS activation_state_idx "
+            "ON activation_waits(state, updated_at)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS manager_activations ("
+            "issue_id TEXT PRIMARY KEY, activation_key TEXT NOT NULL UNIQUE, "
+            "state TEXT NOT NULL CHECK(state IN "
+            "('claimed', 'delegation_unknown', 'delegated', 'dispatch_unknown', "
+            "'session_started', 'canceled', 'failed')), "
+            "session_id TEXT, evidence_json TEXT NOT NULL, last_error TEXT, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        self._db.execute(
             "CREATE TABLE IF NOT EXISTS issue_session_bindings ("
             "issue_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, "
             "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
@@ -102,8 +124,8 @@ class DeliveryLedger:
             "issue_id TEXT PRIMARY KEY, event_revision REAL NOT NULL, "
             "event_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 4:
-            self._db.execute("PRAGMA user_version=4")
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 5:
+            self._db.execute("PRAGMA user_version=5")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Outbound-only clients may open this database while
         # the gateway is live, so they must not run process-start recovery.
@@ -112,6 +134,12 @@ class DeliveryLedger:
                 "UPDATE waiting_executions SET state = 'waiting', "
                 "last_error = COALESCE(last_error, 'Recovered interrupted resume'), "
                 "updated_at = ? WHERE state = 'resuming'",
+                (int(time.time()),),
+            )
+            self._db.execute(
+                "UPDATE manager_activations SET state='failed', "
+                "last_error=COALESCE(last_error, 'Recovered interrupted manager delegation'), "
+                "updated_at=? WHERE state='claimed'",
                 (int(time.time()),),
             )
             self._db.execute(
@@ -149,6 +177,238 @@ class DeliveryLedger:
                 (issue_id,),
             ).fetchone()
         return str(row[0]) if row else None
+
+    @staticmethod
+    def _decode_activation_wait(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "issue_id": str(row[0]),
+            "session_id": str(row[1]),
+            "delivery_key": str(row[2]),
+            "prompt": json.loads(row[3]),
+            "activation_key": str(row[4]) if row[4] is not None else None,
+            "state": str(row[5]),
+            "last_error": row[6],
+            "created_at": int(row[7]),
+            "updated_at": int(row[8]),
+            "resumed_at": int(row[9]) if row[9] is not None else None,
+        }
+
+    def put_activation_wait(
+        self,
+        session_id: str,
+        issue_id: str,
+        delivery_key: str,
+        prompt: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> None:
+        """Persist a parked Planned session before acknowledging its creation."""
+        now = int(time.time()) if now is None else int(now)
+        prompt_json = json.dumps(
+            prompt, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO activation_waits("
+                "issue_id, session_id, delivery_key, prompt_json, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'waiting', ?, ?) "
+                "ON CONFLICT(issue_id) DO UPDATE SET "
+                "session_id=excluded.session_id, delivery_key=excluded.delivery_key, "
+                "prompt_json=excluded.prompt_json, updated_at=excluded.updated_at "
+                "WHERE activation_waits.state = 'waiting'",
+                (issue_id, session_id, delivery_key, prompt_json, now, now),
+            )
+            self._db.commit()
+
+    def get_activation_wait(self, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT issue_id, session_id, delivery_key, prompt_json, activation_key, "
+                "state, last_error, created_at, updated_at, resumed_at "
+                "FROM activation_waits WHERE issue_id = ?",
+                (issue_id,),
+            ).fetchone()
+        return self._decode_activation_wait(row) if row else None
+
+    def claim_activation(
+        self,
+        issue_id: str,
+        activation_key: str,
+        *,
+        now: int | None = None,
+    ) -> bool:
+        """Fence one activation dispatch; an interrupted call remains ambiguous."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT state, activation_key FROM activation_waits WHERE issue_id = ?",
+                (issue_id,),
+            ).fetchone()
+            if row is None or str(row[0]) != "waiting":
+                self._db.rollback()
+                return False
+            existing_key = str(row[1]) if row[1] is not None else None
+            if existing_key not in (None, activation_key):
+                self._db.rollback()
+                return False
+            self._db.execute(
+                "UPDATE activation_waits SET state = 'dispatch_unknown', activation_key = ?, "
+                "last_error = NULL, updated_at = ? WHERE issue_id = ? AND state = 'waiting'",
+                (activation_key, now, issue_id),
+            )
+            self._db.commit()
+            return True
+
+    def mark_activation_resumed(
+        self, issue_id: str, *, now: int | None = None,
+    ) -> None:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "UPDATE activation_waits SET state = 'resumed', updated_at = ?, resumed_at = ? "
+                "WHERE issue_id = ? AND state = 'dispatch_unknown'",
+                (now, now, issue_id),
+            )
+            self._db.commit()
+
+    def fail_activation(
+        self, issue_id: str, error: str, *, now: int | None = None,
+    ) -> None:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "UPDATE activation_waits SET last_error = ?, updated_at = ? "
+                "WHERE issue_id = ? AND state = 'dispatch_unknown'",
+                (error[:1000], now, issue_id),
+            )
+            self._db.commit()
+
+    def cancel_activation_for_session(
+        self, session_id: str, *, now: int | None = None,
+    ) -> None:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "UPDATE activation_waits SET state = 'canceled', updated_at = ? "
+                "WHERE session_id = ? AND state IN ('waiting', 'resuming')",
+                (now, session_id),
+            )
+            self._db.commit()
+
+    def cancel_activation_for_issue(
+        self, issue_id: str, *, now: int | None = None,
+    ) -> None:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "UPDATE activation_waits SET state = 'canceled', updated_at = ? "
+                "WHERE issue_id = ? AND state IN ('waiting', 'dispatch_unknown')",
+                (now, issue_id),
+            )
+            self._db.commit()
+
+    def claim_manager_activation(
+        self,
+        issue_id: str,
+        activation_key: str,
+        evidence: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> bool:
+        """Claim one Todo manager intake before mutating the issue delegate."""
+        now = int(time.time()) if now is None else int(now)
+        evidence_json = json.dumps(
+            evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT activation_key, state FROM manager_activations WHERE issue_id = ?",
+                (issue_id,),
+            ).fetchone()
+            if row is not None:
+                same_key = str(row[0]) == activation_key
+                retryable = str(row[1]) == "failed"
+                if same_key and retryable:
+                    self._db.execute(
+                        "UPDATE manager_activations SET state='claimed', evidence_json=?, "
+                        "last_error=NULL, updated_at=? WHERE issue_id=?",
+                        (evidence_json, now, issue_id),
+                    )
+                    self._db.commit()
+                    return True
+                self._db.rollback()
+                return False
+            self._db.execute(
+                "INSERT INTO manager_activations("
+                "issue_id, activation_key, state, evidence_json, created_at, updated_at) "
+                "VALUES (?, ?, 'claimed', ?, ?, ?)",
+                (issue_id, activation_key, evidence_json, now, now),
+            )
+            self._db.commit()
+            return True
+
+    def get_manager_activation(self, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT issue_id, activation_key, state, session_id, evidence_json, "
+                "last_error, created_at, updated_at FROM manager_activations WHERE issue_id=?",
+                (issue_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "issue_id": str(row[0]),
+            "activation_key": str(row[1]),
+            "state": str(row[2]),
+            "session_id": str(row[3]) if row[3] is not None else None,
+            "evidence": json.loads(row[4]),
+            "last_error": row[5],
+            "created_at": int(row[6]),
+            "updated_at": int(row[7]),
+        }
+
+    def mark_manager_activation(
+        self,
+        issue_id: str,
+        state: str,
+        *,
+        session_id: str | None = None,
+        error: str | None = None,
+        now: int | None = None,
+    ) -> None:
+        if state not in {
+            "delegation_unknown",
+            "delegated",
+            "dispatch_unknown",
+            "session_started",
+            "canceled",
+            "failed",
+        }:
+            raise ValueError("invalid manager activation state")
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute(
+                "UPDATE manager_activations SET state=?, session_id=COALESCE(?, session_id), "
+                "last_error=?, updated_at=? WHERE issue_id=?",
+                (state, session_id, error[:1000] if error else None, now, issue_id),
+            )
+            self._db.commit()
+
+    def claim_manager_session(
+        self, issue_id: str, session_id: str, *, now: int | None = None,
+    ) -> bool:
+        """CAS one delegated manager issue to one ambiguity-fenced session."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE manager_activations SET state='dispatch_unknown', session_id=?, "
+                "last_error=NULL, updated_at=? WHERE issue_id=? AND state='delegated'",
+                (session_id, now, issue_id),
+            )
+            self._db.commit()
+            return bool(cur.rowcount)
 
     def stage_pending_closure_event(
         self,
@@ -343,6 +603,17 @@ class DeliveryLedger:
                 "UPDATE waiting_executions SET state = 'canceled', updated_at = ? "
                 "WHERE session_id = ? AND state IN ('waiting', 'resuming')",
                 (now, session_id),
+            )
+            self._db.execute(
+                "UPDATE activation_waits SET state = 'canceled', updated_at = ? "
+                "WHERE session_id = ? AND state IN ('waiting', 'dispatch_unknown')",
+                (now, session_id),
+            )
+            self._db.execute(
+                "UPDATE manager_activations SET state='canceled', updated_at=? "
+                "WHERE issue_id=? AND state IN "
+                "('claimed', 'delegation_unknown', 'delegated', 'dispatch_unknown')",
+                (now, issue_id),
             )
             self._db.execute(
                 "UPDATE outbox SET state = 'delivered', "
@@ -808,6 +1079,48 @@ class DeliveryLedger:
         result.update({str(state): int(count) for state, count in rows})
         return result
 
+    def activation_counts(self, *, now: int | None = None) -> dict[str, Any]:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, COUNT(*) FROM activation_waits GROUP BY state"
+            ).fetchall()
+            oldest = self._db.execute(
+                "SELECT MIN(created_at) FROM activation_waits WHERE state = 'waiting'"
+            ).fetchone()[0]
+            error_row = self._db.execute(
+                "SELECT last_error FROM activation_waits WHERE last_error IS NOT NULL "
+                "ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        result: dict[str, Any] = {
+            "waiting": 0,
+            "dispatch_unknown": 0,
+            "resumed": 0,
+            "canceled": 0,
+            "failed": 0,
+            "oldest_wait_seconds": max(0, now - int(oldest)) if oldest is not None else None,
+            "last_error": error_row[0] if error_row else None,
+        }
+        result.update({str(state): int(count) for state, count in rows})
+        return result
+
+    def manager_activation_counts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, COUNT(*) FROM manager_activations GROUP BY state"
+            ).fetchall()
+        result = {
+            "claimed": 0,
+            "delegation_unknown": 0,
+            "delegated": 0,
+            "dispatch_unknown": 0,
+            "session_started": 0,
+            "canceled": 0,
+            "failed": 0,
+        }
+        result.update({str(state): int(count) for state, count in rows})
+        return result
+
     def prune(self, *, now: int | None = None) -> int:
         now = int(time.time()) if now is None else int(now)
         cutoff = now - self.retention_seconds
@@ -824,8 +1137,19 @@ class DeliveryLedger:
                 "DELETE FROM waiting_executions WHERE state IN ('resumed', 'canceled') "
                 "AND updated_at < ?", (cutoff,),
             ).rowcount
+            activations = self._db.execute(
+                "DELETE FROM activation_waits WHERE state IN ('resumed', 'canceled') "
+                "AND updated_at < ?", (cutoff,),
+            ).rowcount
+            managers = self._db.execute(
+                "DELETE FROM manager_activations WHERE state IN ('session_started', 'canceled') "
+                "AND updated_at < ?", (cutoff,),
+            ).rowcount
             self._db.commit()
-            return int(inbound) + int(outbound) + int(waits)
+            return (
+                int(inbound) + int(outbound) + int(waits)
+                + int(activations) + int(managers)
+            )
 
     def close(self) -> None:
         with self._lock:

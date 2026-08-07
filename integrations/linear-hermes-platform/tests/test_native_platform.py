@@ -65,6 +65,11 @@ class FakeLinear:
         self.activity_ephemeral: list[bool] = []
         self.blockers: dict[str, list[dict[str, str]]] = {}
         self.closure_contexts: dict[str, dict] = {}
+        self.delegate_assignments: list[tuple[str, str]] = []
+
+    async def assign_issue_delegate(self, issue_id, delegate_id):
+        self.delegate_assignments.append((issue_id, delegate_id))
+        return issue_id
 
     async def create_activity(
         self,
@@ -205,6 +210,105 @@ class PluginRegistrationTests(unittest.TestCase):
 
 
 class LedgerTests(unittest.TestCase):
+    def test_populated_v4_database_migrates_to_v5_without_losing_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "v4.sqlite3"
+            existing_at = int(time.time())
+            populated = DeliveryLedger(str(path), startup_recovery=False)
+            populated.claim("existing-delivery", now=existing_at)
+            populated.mark_done("existing-delivery", now=existing_at)
+            populated.bind_issue_session(
+                "existing-issue", "existing-session", now=existing_at
+            )
+            populated.put_wait(
+                "waiting-session",
+                "waiting-issue",
+                "waiting-delivery",
+                {"type": "AgentSessionEvent", "action": "created"},
+                [{"id": "blocker-1"}],
+                now=existing_at,
+            )
+            populated.stage_pending_closure_event(
+                "terminal-issue",
+                float(existing_at),
+                {"data": {"id": "terminal-issue"}},
+                now=existing_at,
+            )
+            populated.enqueue_outbox(
+                "existing-outbox",
+                "existing-session",
+                "activity.create",
+                {"body": "preserved"},
+                now=existing_at,
+            )
+            populated.close()
+
+            db = sqlite3.connect(path)
+            db.execute("DROP TABLE activation_waits")
+            db.execute("DROP TABLE manager_activations")
+            db.execute("PRAGMA user_version=4")
+            db.commit()
+            db.close()
+
+            ledger = DeliveryLedger(str(path))
+
+            self.assertEqual(
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 5
+            )
+            self.assertEqual(
+                ledger._db.execute(
+                    "SELECT state, updated_at FROM deliveries WHERE webhook_id=?",
+                    ("existing-delivery",),
+                ).fetchone(),
+                ("done", existing_at),
+            )
+            self.assertEqual(
+                ledger.get_issue_session("existing-issue"), "existing-session"
+            )
+            self.assertEqual(ledger.get_wait("waiting-session")["state"], "waiting")
+            self.assertEqual(
+                ledger.get_pending_closure_event("terminal-issue")["event"]["data"]["id"],
+                "terminal-issue",
+            )
+            self.assertEqual(
+                ledger.get_outbox_item("existing-outbox")["payload"],
+                {"body": "preserved"},
+            )
+            self.assertEqual(ledger.activation_counts()["waiting"], 0)
+            self.assertEqual(ledger.manager_activation_counts()["delegated"], 0)
+            ledger.close()
+
+    def test_activation_dispatch_ambiguity_is_restart_durable_and_not_replayable(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "activation.sqlite3")
+            payload = {"type": "AgentSessionEvent", "action": "created"}
+            ledger = DeliveryLedger(path)
+            ledger.put_activation_wait(
+                "session-activation",
+                "issue-activation",
+                "delivery-activation",
+                payload,
+                now=100,
+            )
+            self.assertTrue(
+                ledger.claim_activation(
+                    "issue-activation", "activation-key-1", now=101
+                )
+            )
+            ledger.close()
+
+            recovered = DeliveryLedger(path)
+            wait = recovered.get_activation_wait("issue-activation")
+            self.assertEqual(wait["state"], "dispatch_unknown")
+            self.assertFalse(
+                recovered.claim_activation(
+                    "issue-activation", "activation-key-1", now=102
+                )
+            )
+            self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
+            recovered.close()
+
     def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
         with tempfile.TemporaryDirectory() as td:
             path = str(Path(td) / "bindings.sqlite3")
@@ -296,7 +400,7 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(second.id, "second")
             ledger.close()
 
-    def test_wait_persists_and_resume_claim_is_exactly_once(self):
+    def test_wait_persists_and_resume_claim_suppresses_live_duplicates(self):
         with tempfile.TemporaryDirectory() as td:
             path = str(Path(td) / "wait.sqlite3")
             payload = {"type": "AgentSessionEvent", "action": "created"}
@@ -320,7 +424,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -437,7 +541,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
@@ -563,14 +667,22 @@ class AdapterCredentialTests(unittest.TestCase):
             "closure_allowed_team_ids": ["team-ops"],
             "issue_status_writeback_enabled": False,
             "dependency_wait_enabled": False,
+            "planned_activation_enabled": False,
+            "activation_allowed_team_ids": [],
+            "planned_owner_ids": [],
         }
         unsafe_values = (
             {"closure_reconciliation_enabled": "false"},
             {"data_change_events_enabled": "true"},
             {"issue_status_writeback_enabled": "false"},
             {"dependency_wait_enabled": "false"},
+            {"planned_activation_enabled": "false"},
             {"closure_allowed_team_ids": "team-ops"},
             {"closure_allowed_team_ids": ["team-ops", 73]},
+            {"activation_allowed_team_ids": "team-ops"},
+            {"activation_allowed_team_ids": ["team-ops", 73]},
+            {"planned_owner_ids": "user-1"},
+            {"planned_owner_ids": ["user-1", 73]},
         )
         with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
             for unsafe in unsafe_values:
@@ -586,8 +698,11 @@ class AdapterCredentialTests(unittest.TestCase):
                     "closure_reconciliation_enabled": "false",
                     "data_change_events_enabled": "true",
                     "dependency_wait_enabled": "true",
+                    "planned_activation_enabled": "true",
                     "issue_status_writeback_enabled": "true",
                     "closure_allowed_team_ids": "team-ops",
+                    "activation_allowed_team_ids": "team-ops",
+                    "planned_owner_ids": "user-1",
                 },
             ),
             Platform.WEBHOOK,
@@ -595,8 +710,11 @@ class AdapterCredentialTests(unittest.TestCase):
         self.assertFalse(constructed._closure_reconciliation_enabled)
         self.assertFalse(constructed._data_change_events_enabled)
         self.assertFalse(constructed._dependency_wait_enabled)
+        self.assertFalse(constructed._planned_activation_enabled)
         self.assertFalse(constructed._status_writeback_enabled)
         self.assertEqual(constructed._closure_allowed_team_ids, set())
+        self.assertEqual(constructed._activation_allowed_team_ids, set())
+        self.assertEqual(constructed._planned_owner_ids, set())
 
     def test_validate_config_accepts_process_environment_secret_without_file(self):
         config = PlatformConfig(
@@ -627,6 +745,30 @@ class AdapterCredentialTests(unittest.TestCase):
                 {"data_change_events_enabled": False},
                 {"closure_allowed_team_ids": []},
                 {"issue_status_writeback_enabled": True},
+            ):
+                self.assertFalse(
+                    LinearPlatformAdapter.validate_config(
+                        PlatformConfig(enabled=True, extra={**base, **unsafe})
+                    )
+                )
+
+    def test_planned_activation_requires_data_events_and_team_allowlist(self):
+        base = {
+            "oauth_file": "/tmp/linear-oauth.json",
+            "database_path": "/tmp/linear.sqlite3",
+            "planned_activation_enabled": True,
+            "data_change_events_enabled": True,
+            "activation_allowed_team_ids": ["team-ops"],
+            "planned_owner_ids": ["user-1"],
+        }
+        with mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "s" * 32}, clear=False):
+            self.assertTrue(
+                LinearPlatformAdapter.validate_config(PlatformConfig(enabled=True, extra=base))
+            )
+            for unsafe in (
+                {"data_change_events_enabled": False},
+                {"activation_allowed_team_ids": []},
+                {"planned_owner_ids": []},
             ):
                 self.assertFalse(
                     LinearPlatformAdapter.validate_config(
@@ -913,6 +1055,9 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._ledger = DeliveryLedger(db_path)
         self.adapter._data_change_events_enabled = True
         self.adapter._dependency_wait_enabled = True
+        self.adapter._planned_activation_enabled = False
+        self.adapter._activation_allowed_team_ids = set()
+        self.adapter._planned_owner_ids = set()
         self.adapter._closure_reconciliation_enabled = False
         self.adapter._closure_allowed_team_ids = set()
         self.events = []
@@ -993,6 +1138,671 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate.status, 200)
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
+
+    async def test_todo_transition_delegates_and_starts_one_manager_session(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-intake"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T10:01:00.000Z",
+            "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {},
+        }
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-intake",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T10:01:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        delegated = await self.adapter._handle_webhook(self.request_for(transition))
+        self.assertEqual(json.loads(delegated.text)["status"], "manager_delegated")
+        self.assertEqual(
+            self.adapter._linear.delegate_assignments,
+            [(issue_id, "agent-derya")],
+        )
+        self.adapter._linear.closure_contexts[issue_id]["delegate"] = {
+            "id": "agent-derya",
+            "name": "Derya",
+        }
+        created = self.make_payload(
+            webhookId="webhook-manager-session",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-manager-intake",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-202",
+                    "title": "Manager intake",
+                },
+            },
+        )
+        accepted = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(accepted.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        self.assertIn("Adapter-verified lifecycle activation", self.events[0].text)
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "session_started",
+        )
+
+        replay = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(replay.text)["status"], "duplicate")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(len(self.adapter._linear.delegate_assignments), 1)
+
+    async def test_distinct_concurrent_self_created_sessions_cas_one_manager_dispatch(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-concurrent"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T10:01:00.000Z",
+            "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-concurrent", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegated")
+
+        entered = asyncio.Event()
+
+        async def slow_capture(event):
+            self.events.append(event)
+            entered.set()
+            await asyncio.sleep(0.05)
+
+        self.adapter.handle_message = slow_capture
+        payloads = [
+            self.make_payload(
+                webhookId=f"webhook-manager-concurrent-{index}",
+                actor={"id": "agent-derya", "name": "Derya"},
+                agentSession={
+                    "id": f"session-manager-concurrent-{index}",
+                    "issue": {
+                        "id": issue_id,
+                        "identifier": "OPS-203",
+                        "title": "Concurrent manager intake",
+                    },
+                },
+            )
+            for index in (1, 2)
+        ]
+
+        first, second = await asyncio.gather(
+            *(self.adapter._handle_webhook(self.request_for(item)) for item in payloads)
+        )
+
+        self.assertTrue(entered.is_set())
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(
+            sorted(json.loads(response.text)["status"] for response in (first, second)),
+            ["accepted", "manager_session_duplicate"],
+        )
+        activation = self.adapter._ledger.get_manager_activation(issue_id)
+        self.assertEqual(activation["state"], "session_started")
+        self.assertEqual(activation["session_id"], self.events[0].source.chat_id)
+
+    async def test_manager_dispatch_rechecks_live_todo_policy_and_delegate(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-drift"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-drift", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegated")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T10:02:00.000Z",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-manager-drift",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-manager-drift",
+                "issue": {"id": issue_id, "identifier": "OPS-204", "title": "Drift"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_policy_denied")
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"], "canceled"
+        )
+
+    async def test_manager_dispatch_failure_leaves_ambiguity_and_degrades_without_replay(self):
+        self.adapter._running = True
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-unknown"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-unknown", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(issue_id, "delegated")
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        calls = 0
+
+        async def lost_acceptance(_event):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("acceptance response lost")
+
+        self.adapter.handle_message = lost_acceptance
+        created = self.make_payload(
+            webhookId="webhook-manager-unknown",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-manager-unknown",
+                "issue": {"id": issue_id, "identifier": "OPS-205", "title": "Unknown"},
+            },
+        )
+
+        failed = await self.adapter._handle_webhook(self.request_for(created))
+        retry = dict(created, webhookId="webhook-manager-unknown-retry")
+        replay = await self.adapter._handle_webhook(self.request_for(retry))
+        health = json.loads((await self.adapter._health(None)).text)
+
+        self.assertEqual(failed.status, 503)
+        self.assertEqual(json.loads(replay.text)["status"], "dispatch_ambiguous")
+        self.assertEqual(calls, 1)
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "dispatch_unknown",
+        )
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["manager_activations"]["dispatch_unknown"], 1)
+
+    async def test_lost_delegate_response_reconciles_from_authoritative_readback(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-delegate-lost-response"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T10:03:00.000Z",
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "backlog-1", "type": "backlog"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+
+        async def committed_then_lost(issue, delegate):
+            self.adapter._linear.delegate_assignments.append((issue, delegate))
+            context["delegate"] = {"id": delegate}
+            raise RuntimeError("response lost")
+
+        self.adapter._linear.assign_issue_delegate = committed_then_lost
+        transition = self.make_data_payload(
+            webhookId="webhook-delegate-lost-response",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(transition))
+
+        self.assertEqual(json.loads(response.text)["status"], "manager_delegated")
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"], "delegated"
+        )
+        self.assertEqual(len(self.adapter._linear.delegate_assignments), 1)
+
+    async def test_delegate_outcome_unknown_is_not_replayed_and_later_readback_reconciles(self):
+        self.adapter._running = True
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-delegate-unknown"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T10:04:00.000Z",
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "backlog-1", "type": "backlog"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        attempts = 0
+
+        async def always_lost(_issue, _delegate):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("response lost")
+
+        self.adapter._linear.assign_issue_delegate = always_lost
+        transition = self.make_data_payload(
+            webhookId="webhook-delegate-unknown-1",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        first = await self.adapter._handle_webhook(self.request_for(transition))
+        retry = dict(transition, webhookId="webhook-delegate-unknown-2")
+        second = await self.adapter._handle_webhook(self.request_for(retry))
+        context["delegate"] = {"id": "agent-derya"}
+        later = dict(transition, webhookId="webhook-delegate-unknown-3")
+        third = await self.adapter._handle_webhook(self.request_for(later))
+        health = json.loads((await self.adapter._health(None)).text)
+
+        self.assertEqual(first.status, 503)
+        self.assertEqual(json.loads(second.text)["status"], "delegation_ambiguous")
+        self.assertEqual(json.loads(third.text)["status"], "manager_delegated")
+        self.assertEqual(attempts, 1)
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"], "delegated"
+        )
+        self.assertEqual(health["manager_activations"]["delegation_unknown"], 0)
+
+    async def test_backlog_session_uses_one_shot_verified_todo_activation(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-planned"
+        created = self.make_payload(
+            agentSession={
+                "id": "session-planned",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-200",
+                    "title": "Planned work",
+                },
+            }
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T08:00:00.000Z",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+
+        waiting = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(waiting.text)["status"], "waiting_for_activation")
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["session_id"],
+            "session-planned",
+        )
+
+        self.adapter._linear.closure_contexts[issue_id].update(
+            {
+                "updated_at": "2026-08-07T08:01:00.000Z",
+                "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            }
+        )
+        activated = self.make_data_payload(
+            webhookId="webhook-planned-activation-1",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T08:01:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+        first = await self.adapter._handle_webhook(self.request_for(activated))
+        self.assertEqual(json.loads(first.text)["status"], "activation_resumed")
+        self.assertEqual(len(self.events), 1)
+        self.assertIn("Adapter-verified lifecycle activation", self.events[0].text)
+
+        semantic_duplicate = dict(activated)
+        semantic_duplicate["webhookId"] = "webhook-planned-activation-2"
+        second = await self.adapter._handle_webhook(
+            self.request_for(semantic_duplicate)
+        )
+        self.assertEqual(json.loads(second.text)["status"], "duplicate")
+        self.assertEqual(len(self.events), 1)
+
+    async def test_backlog_parking_rejects_non_planned_owner(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-wrong-owner"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "state": {"id": "backlog-1", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "assignee": {"id": "user-2"},
+            "delegate": {"id": "agent-derya"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-wrong-owner",
+            agentSession={
+                "id": "session-wrong-owner",
+                "issue": {"id": issue_id, "identifier": "OPS-206", "title": "Owner"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_policy_denied")
+        self.assertEqual(self.adapter._ledger.get_activation_wait(issue_id), None)
+        self.assertEqual(self.events, [])
+
+    async def test_parked_dispatch_rechecks_live_delegate_immediately_before_handle(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-parked-delegate-drift"
+        created = self.make_payload(
+            webhookId="webhook-parked-delegate-drift-created",
+            agentSession={
+                "id": "session-parked-delegate-drift",
+                "issue": {"id": issue_id, "identifier": "OPS-207", "title": "Drift"},
+            },
+        )
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T11:00:00.000Z",
+            "state": {"id": "backlog-1", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "type": "backlog"},
+                {"id": "todo-1", "type": "unstarted"},
+            ],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        await self.adapter._handle_webhook(self.request_for(created))
+        context.update(
+            {
+                "updated_at": "2026-08-07T11:01:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+                "delegate": {"id": "agent-other"},
+            }
+        )
+        activated = self.make_data_payload(
+            webhookId="webhook-parked-delegate-drift-activation",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(activated))
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_rejected")
+        self.assertEqual(self.events, [])
+
+    async def test_parked_dispatch_failure_is_ambiguous_degraded_and_never_replayed(self):
+        self.adapter._running = True
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-parked-unknown"
+        created = self.make_payload(
+            webhookId="webhook-parked-unknown-created",
+            agentSession={
+                "id": "session-parked-unknown",
+                "issue": {"id": issue_id, "identifier": "OPS-208", "title": "Unknown"},
+            },
+        )
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T12:00:00.000Z",
+            "state": {"id": "backlog-1", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "type": "backlog"},
+                {"id": "todo-1", "type": "unstarted"},
+            ],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        await self.adapter._handle_webhook(self.request_for(created))
+        context.update(
+            {
+                "updated_at": "2026-08-07T12:01:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            }
+        )
+        calls = 0
+
+        async def lost_acceptance(_event):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("acceptance response lost")
+
+        self.adapter.handle_message = lost_acceptance
+        activated = self.make_data_payload(
+            webhookId="webhook-parked-unknown-1",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+
+        first = await self.adapter._handle_webhook(self.request_for(activated))
+        retry = dict(activated, webhookId="webhook-parked-unknown-2")
+        second = await self.adapter._handle_webhook(self.request_for(retry))
+        health = json.loads((await self.adapter._health(None)).text)
+
+        self.assertEqual(first.status, 503)
+        self.assertEqual(json.loads(second.text)["status"], "activation_ambiguous")
+        self.assertEqual(calls, 1)
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"],
+            "dispatch_unknown",
+        )
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["activations"]["dispatch_unknown"], 1)
+
+    async def test_issue_lock_barrier_stop_wins_over_parked_activation(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-stop-race"
+        session_id = "session-stop-race"
+        created = self.make_payload(
+            webhookId="webhook-stop-race-created",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-209", "title": "Stop race"},
+            },
+        )
+        self.adapter._ledger.put_activation_wait(
+            session_id, issue_id, "delivery-stop-race", created
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T13:01:00.000Z",
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "backlog-1", "type": "backlog"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        stop = self.make_payload(
+            webhookId="webhook-stop-race-stop",
+            action="prompted",
+            agentActivity={"id": "activity-stop-race", "signal": "stop", "body": "stop"},
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-209", "title": "Stop race"},
+            },
+        )
+        activation = self.make_data_payload(
+            webhookId="webhook-stop-race-activation",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T13:01:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+        barrier = self.adapter._issue_lock(issue_id)
+        await barrier.acquire()
+        stop_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(stop))
+        )
+        await asyncio.sleep(0)
+        activation_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(activation))
+        )
+        await asyncio.sleep(0)
+        barrier.release()
+
+        stop_response, activation_response = await asyncio.gather(
+            stop_task, activation_task
+        )
+
+        self.assertEqual(json.loads(stop_response.text)["status"], "accepted")
+        self.assertEqual(
+            json.loads(activation_response.text)["status"], "activation_rejected"
+        )
+        self.assertEqual([event.text for event in self.events], ["/stop"])
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"], "canceled"
+        )
+
+    async def test_issue_lock_barrier_done_wins_over_parked_activation(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-done-race"
+        self.adapter._ledger.put_activation_wait(
+            "session-done-race",
+            issue_id,
+            "delivery-done-race",
+            self.make_payload(),
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T14:01:00.000Z",
+            "state": {"id": "done-1", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "backlog-1", "type": "backlog"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        done = self.make_data_payload(
+            webhookId="webhook-done-race-done",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T14:01:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+        activation = self.make_data_payload(
+            webhookId="webhook-done-race-activation",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T14:00:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+        barrier = self.adapter._issue_lock(issue_id)
+        await barrier.acquire()
+        done_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(done))
+        )
+        await asyncio.sleep(0)
+        activation_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(activation))
+        )
+        await asyncio.sleep(0)
+        barrier.release()
+
+        _, activation_response = await asyncio.gather(done_task, activation_task)
+
+        self.assertEqual(
+            json.loads(activation_response.text)["status"], "activation_rejected"
+        )
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"], "canceled"
+        )
+
+    async def test_terminal_human_state_cancels_parked_activation_without_dispatch(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-terminal-before-todo"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-07T09:00:00.000Z",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "backlog-1", "type": "backlog"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        created = self.make_payload(
+            agentSession={
+                "id": "session-terminal-before-todo",
+                "issue": {"id": issue_id, "identifier": "OPS-201", "title": "Stop"},
+            }
+        )
+        await self.adapter._handle_webhook(self.request_for(created))
+
+        completed = self.make_data_payload(
+            webhookId="webhook-terminal-before-todo",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-07T09:01:00.000Z",
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "backlog-1"},
+        )
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"], "canceled"
+        )
 
     async def test_created_acknowledgment_uses_installed_app_actor_name(self):
         self.adapter._linear.actor_name = "Doruk"
@@ -1190,7 +2000,7 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response.text)["status"], "awaiting_input")
         self.assertEqual(self.adapter._ledger.outbox_counts()["pending"], 1)
 
-    async def test_blocker_update_resumes_same_session_exactly_once(self):
+    async def test_blocker_update_uses_one_shot_live_resume_claim(self):
         self.adapter._linear.blockers["issue-8"] = [
             {"id": "blocker-7", "identifier": "OPS-7", "title": "Human approval", "state": "Todo"}
         ]
@@ -2503,6 +3313,31 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
         client.graphql = fake_graphql
         context = await client.get_issue_closure_context("issue-1")
         self.assertNotIn("agent_sessions", context)
+
+    async def test_assign_issue_delegate_uses_official_delegate_id_and_confirms_readback(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("issueUpdate", query)
+            self.assertIn("delegateId", query)
+            self.assertEqual(
+                variables, {"id": "issue-1", "delegateId": "agent-derya"}
+            )
+            return {
+                "issueUpdate": {
+                    "success": True,
+                    "issue": {
+                        "id": "issue-1",
+                        "delegate": {"id": "agent-derya"},
+                    },
+                }
+            }
+
+        client.graphql = fake_graphql
+        self.assertEqual(
+            await client.assign_issue_delegate("issue-1", "agent-derya"),
+            "issue-1",
+        )
 
     async def test_issue_start_context_requests_official_started_state_order_inputs(self):
         client = LinearClient("/unused")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 from typing import Any
 
 import aiohttp
@@ -63,6 +64,26 @@ class LinearClient:
         if self._session is not None:
             await self._session.close()
             self._session = None
+
+    async def assign_issue_delegate(self, issue_id: str, delegate_id: str) -> str:
+        """Assign the installed app as delegate after a durable manager intake claim."""
+        data = await self.graphql(
+            """
+mutation LinearManagerActivationDelegate($id: String!, $delegateId: String!) {
+  issueUpdate(id: $id, input: { delegateId: $delegateId }) {
+    success
+    issue { id delegate { id } }
+  }
+}
+""",
+            {"id": issue_id, "delegateId": delegate_id},
+        )
+        result = data.get("issueUpdate") or {}
+        issue = result.get("issue") or {}
+        actual = str(((issue.get("delegate") or {}).get("id") or ""))
+        if result.get("success") is not True or not hmac.compare_digest(actual, delegate_id):
+            raise LinearAPIError("Manager activation delegate assignment was not confirmed")
+        return str(issue.get("id") or issue_id)
 
     async def get_issue_team_id(self, issue_id: str) -> str:
         data = await self.graphql(

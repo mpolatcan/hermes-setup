@@ -182,7 +182,12 @@ def _issue_label(agent_session: dict[str, Any]) -> tuple[str, str, str | None]:
     return identifier, title, str(url) if url else None
 
 
-def build_agent_prompt(payload: dict[str, Any], *, dependency_resume: bool = False) -> str:
+def build_agent_prompt(
+    payload: dict[str, Any],
+    *,
+    dependency_resume: bool = False,
+    activation_resume: bool = False,
+) -> str:
     """Build a minimal, source-labelled prompt from Linear's documented fields."""
     action = str(payload.get("action") or "")
     agent_session = payload.get("agentSession")
@@ -202,6 +207,15 @@ def build_agent_prompt(payload: dict[str, Any], *, dependency_resume: bool = Fal
                 "Adapter-verified current dependency state:",
                 "All blocking issues are complete. Resume the delegated task now.",
                 "Linear promptContext is a frozen creation snapshot and may still show stale blocked-by state; do not use that stale state to wait again.",
+            ]
+        )
+    if activation_resume:
+        lines.extend(
+            [
+                "",
+                "Adapter-verified lifecycle activation:",
+                "The human assignee moved this Planned issue from Backlog to Todo. Begin manager planning and orchestration now.",
+                "This activation revision was durably claimed for one-shot dispatch; do not ask for a second approval.",
             ]
         )
     if url:
@@ -271,6 +285,21 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._status_writeback_enabled = extra.get("issue_status_writeback_enabled") is True
         self._data_change_events_enabled = extra.get("data_change_events_enabled") is True
         self._dependency_wait_enabled = extra.get("dependency_wait_enabled") is True
+        self._planned_activation_enabled = extra.get("planned_activation_enabled") is True
+        allowed_activation_teams = extra.get("activation_allowed_team_ids")
+        if not isinstance(allowed_activation_teams, list):
+            allowed_activation_teams = []
+        self._activation_allowed_team_ids = {
+            str(team_id) for team_id in allowed_activation_teams
+            if isinstance(team_id, str) and team_id
+        }
+        planned_owner_ids = extra.get("planned_owner_ids")
+        if not isinstance(planned_owner_ids, list):
+            planned_owner_ids = []
+        self._planned_owner_ids = {
+            str(user_id) for user_id in planned_owner_ids
+            if isinstance(user_id, str) and user_id
+        }
         self._dependency_poll_seconds = max(5.0, float(extra.get("dependency_poll_seconds") or 60.0))
         self._closure_reconciliation_enabled = extra.get("closure_reconciliation_enabled") is True
         allowed_closure_teams = extra.get("closure_allowed_team_ids")
@@ -326,6 +355,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             "issue_status_writeback_enabled",
             "data_change_events_enabled",
             "dependency_wait_enabled",
+            "planned_activation_enabled",
             "closure_reconciliation_enabled",
         )
         if any(key in extra and type(extra[key]) is not bool for key in boolean_keys):
@@ -334,6 +364,21 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if not (
             isinstance(allowed, list)
             and all(isinstance(team_id, str) and team_id for team_id in allowed)
+        ):
+            return False
+        activation_allowed = extra.get("activation_allowed_team_ids", [])
+        planned_owner_ids = extra.get("planned_owner_ids", [])
+        if not (
+            isinstance(activation_allowed, list)
+            and all(isinstance(team_id, str) and team_id for team_id in activation_allowed)
+            and isinstance(planned_owner_ids, list)
+            and all(isinstance(user_id, str) and user_id for user_id in planned_owner_ids)
+        ):
+            return False
+        if extra.get("planned_activation_enabled") is True and not (
+            extra.get("data_change_events_enabled") is True
+            and activation_allowed
+            and planned_owner_ids
         ):
             return False
         has_secret_source = bool(
@@ -463,10 +508,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         )
         outbox = self._ledger.outbox_counts() if self._ledger is not None else {}
         waiting = self._ledger.waiting_counts() if self._ledger is not None else {}
+        activations = self._ledger.activation_counts() if self._ledger is not None else {}
+        manager_activations = (
+            self._ledger.manager_activation_counts() if self._ledger is not None else {}
+        )
         closures = self._ledger.closure_counts() if self._ledger is not None else {}
         degraded = (
             int(outbox.get("dead", 0))
             or int(waiting.get("failed", 0))
+            or int(activations.get("failed", 0))
+            or int(activations.get("dispatch_unknown", 0))
+            or int(manager_activations.get("failed", 0))
+            or int(manager_activations.get("delegation_unknown", 0))
+            or int(manager_activations.get("dispatch_unknown", 0))
             or int(closures.get("failed", 0))
             or int(closures.get("blocked_dispatch", 0))
             or self._oauth_revoked
@@ -476,16 +530,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.4",
+                "version": "0.8.5",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
                     "dependency_wait": self._dependency_wait_enabled,
+                    "planned_activation": self._planned_activation_enabled,
                     "status_writeback": self._status_writeback_enabled,
                     "closure_reconciliation": self._closure_reconciliation_enabled,
                 },
                 "outbox": outbox,
                 "waiting": waiting,
+                "activations": activations,
+                "manager_activations": manager_activations,
                 "closures": closures,
                 "oauth_revoked": self._oauth_revoked,
             },
@@ -564,10 +621,35 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 return web.json_response({"status": "duplicate"}, status=200)
             claimed = True
             event_actor_id, _ = _actor(payload)
+            manager_activation = (
+                self._ledger.get_manager_activation(issue_id)
+                if action == "created" and issue_id
+                else None
+            )
+            planned_intake_created = bool(
+                manager_activation
+                and manager_activation.get("state") == "delegated"
+            )
+            if (
+                action == "created"
+                and issue_id
+                and event_actor_id
+                and self._linear.actor_id
+                and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+                and manager_activation is not None
+            ):
+                return await self._handle_manager_session_created(
+                    payload,
+                    delivery_key,
+                    webhook_id,
+                    issue_id,
+                    agent_session_id,
+                )
             if (
                 event_actor_id
                 and self._linear.actor_id
                 and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+                and not planned_intake_created
             ):
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "ignored_self"}, status=200)
@@ -620,8 +702,49 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                             return web.json_response(
                                 {"status": "closure_deferred"}, status=503
                             )
+                    if is_stop:
+                        self._ledger.cancel_wait(agent_session_id)
+                        self._ledger.cancel_activation_for_session(agent_session_id)
+                        if self._ledger.get_manager_activation(issue_id):
+                            self._ledger.mark_manager_activation(issue_id, "canceled")
             if is_stop:
-                self._ledger.cancel_wait(agent_session_id)
+                if not issue_id:
+                    self._ledger.cancel_wait(agent_session_id)
+                    self._ledger.cancel_activation_for_session(agent_session_id)
+            if action == "created" and self._planned_activation_enabled and issue_id:
+                async with self._issue_lock(issue_id):
+                    context = await self._linear.get_issue_closure_context(issue_id)
+                    state_type = str((context.get("state") or {}).get("type") or "").casefold()
+                    if state_type == "backlog":
+                        team_id = str((context.get("team") or {}).get("id") or "")
+                        owner_id = str((context.get("assignee") or {}).get("id") or "")
+                        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+                        if not (
+                            team_id in self._activation_allowed_team_ids
+                            and owner_id in self._planned_owner_ids
+                            and self._linear.actor_id
+                            and hmac.compare_digest(delegate_id, self._linear.actor_id)
+                        ):
+                            self._ledger.mark_done(delivery_key)
+                            return web.json_response(
+                                {"status": "activation_policy_denied"}, status=200
+                            )
+                        self._ledger.put_activation_wait(
+                            agent_session_id,
+                            issue_id,
+                            delivery_key,
+                            payload,
+                        )
+                        self._enqueue_activity(
+                            agent_session_id,
+                            "thought",
+                            "Planned work is parked in Backlog. Hermes will begin automatically after the human owner moves it to Todo.",
+                            item_key=f"activation-wait:{delivery_key}",
+                        )
+                        self._ledger.mark_done(delivery_key)
+                        return web.json_response(
+                            {"status": "waiting_for_activation"}, status=200
+                        )
             if action == "created" and self._dependency_wait_enabled and issue_id:
                 blockers = await self._linear.get_open_blockers(issue_id)
                 if blockers:
@@ -653,7 +776,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if not is_stop and self._ledger.has_session_closure(agent_session_id):
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "closure_reconciled"}, status=200)
-            event = self._message_event(payload, delivery_key, webhook_id)
+            event = self._message_event(
+                payload,
+                delivery_key,
+                webhook_id,
+                activation_resume=planned_intake_created,
+            )
             if not is_stop:
                 self._schedule_thought(
                     agent_session_id,
@@ -662,6 +790,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     include_queued=action == "created",
                 )
             await self.handle_message(event)
+            if planned_intake_created and issue_id:
+                self._ledger.mark_manager_activation(
+                    issue_id, "session_started", session_id=agent_session_id
+                )
             self._ledger.mark_done(delivery_key)
             logger.info(
                 "[linear] accepted subscription_id=%s delivery_key=%s action=%s signal=%s agent_session_id=%s",
@@ -695,6 +827,72 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if dispatch_lock_held and dispatch_lock is not None:
                 dispatch_lock.release()
 
+    def _live_activation_policy_allows(self, context: dict[str, Any]) -> bool:
+        state_type = str((context.get("state") or {}).get("type") or "").casefold()
+        team_id = str((context.get("team") or {}).get("id") or "")
+        owner_id = str((context.get("assignee") or {}).get("id") or "")
+        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+        return bool(
+            state_type == "unstarted"
+            and team_id in self._activation_allowed_team_ids
+            and owner_id in self._planned_owner_ids
+            and self._linear is not None
+            and self._linear.actor_id
+            and delegate_id
+            and hmac.compare_digest(delegate_id, self._linear.actor_id)
+        )
+
+    async def _handle_manager_session_created(
+        self,
+        payload: dict[str, Any],
+        delivery_key: str,
+        webhook_id: str,
+        issue_id: str,
+        session_id: str,
+    ) -> web.Response:
+        """CAS and dispatch one native manager session while closure controls are excluded."""
+        assert self._ledger is not None and self._linear is not None
+        async with self._issue_lock(issue_id):
+            activation = self._ledger.get_manager_activation(issue_id)
+            state = str((activation or {}).get("state") or "")
+            if state == "dispatch_unknown":
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "dispatch_ambiguous"}, status=200)
+            if state == "session_started":
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "manager_session_duplicate"}, status=200)
+            if state != "delegated":
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "ignored_self"}, status=200)
+            context = await self._linear.get_issue_closure_context(issue_id)
+            if not self._live_activation_policy_allows(context):
+                self._ledger.mark_manager_activation(issue_id, "canceled")
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "activation_policy_denied"}, status=200)
+            if not self._ledger.claim_manager_session(issue_id, session_id):
+                current = self._ledger.get_manager_activation(issue_id) or {}
+                status = (
+                    "dispatch_ambiguous"
+                    if current.get("state") == "dispatch_unknown"
+                    else "manager_session_duplicate"
+                )
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": status}, status=200)
+            self._ledger.bind_issue_session(issue_id, session_id)
+            async with self._session_lock(session_id):
+                event = self._message_event(
+                    payload, delivery_key, webhook_id, activation_resume=True
+                )
+                self._schedule_thought(
+                    session_id, issue_id, delivery_key, include_queued=True
+                )
+                await self.handle_message(event)
+                self._ledger.mark_manager_activation(
+                    issue_id, "session_started", session_id=session_id
+                )
+                self._ledger.mark_done(delivery_key)
+            return web.json_response({"status": "accepted"}, status=200)
+
     def _message_event(
         self,
         payload: dict[str, Any],
@@ -702,6 +900,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         webhook_id: str,
         *,
         dependency_resume: bool = False,
+        activation_resume: bool = False,
     ) -> MessageEvent:
         action = str(payload.get("action") or "")
         agent_session = payload.get("agentSession")
@@ -715,7 +914,15 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         actor_id, actor_name = _actor(payload)
         identifier, title, _ = _issue_label(agent_session)
         return MessageEvent(
-            text="/stop" if is_stop else build_agent_prompt(payload, dependency_resume=dependency_resume),
+            text=(
+                "/stop"
+                if is_stop
+                else build_agent_prompt(
+                    payload,
+                    dependency_resume=dependency_resume,
+                    activation_resume=activation_resume,
+                )
+            ),
             message_type=MessageType.COMMAND if is_stop else MessageType.TEXT,
             source=self.build_source(
                 chat_id=agent_session_id,
@@ -736,8 +943,182 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 "linear_issue_id": issue_id,
                 "linear_signal": signal,
                 "linear_dependency_resume": dependency_resume,
+                "linear_activation_resume": activation_resume,
             },
         )
+
+    async def _reconcile_planned_activation(
+        self,
+        payload: dict[str, Any],
+        issue_id: str,
+        *,
+        _issue_locked: bool = False,
+    ) -> str | None:
+        """Resume one parked Planned session after authoritative Backlog→Todo."""
+        if (
+            not self._planned_activation_enabled
+            or not self._activation_allowed_team_ids
+            or self._linear is None
+            or self._ledger is None
+        ):
+            return None
+        wait = self._ledger.get_activation_wait(issue_id)
+        if wait is not None and wait.get("state") == "dispatch_unknown":
+            return "activation_ambiguous"
+        if not _issue_locked:
+            async with self._issue_lock(issue_id):
+                return await self._reconcile_planned_activation(
+                    payload, issue_id, _issue_locked=True
+                )
+        previous = payload.get("updatedFrom")
+        data = payload.get("data")
+        if not isinstance(previous, dict) or not isinstance(data, dict):
+            return None
+        previous_state_id = str(previous.get("stateId") or "")
+        event_state = data.get("state")
+        event_state_id = str(
+            data.get("stateId")
+            or (event_state.get("id") if isinstance(event_state, dict) else "")
+            or ""
+        )
+        event_state_type = str(
+            event_state.get("type") if isinstance(event_state, dict) else ""
+        ).casefold()
+        event_updated_at = str(data.get("updatedAt") or "")
+        actor_id, _ = _actor(payload)
+        if not (
+            previous_state_id
+            and event_state_id
+            and event_state_type == "unstarted"
+            and event_updated_at
+            and actor_id
+        ):
+            return None
+        context = await self._linear.get_issue_closure_context(issue_id)
+        state = context.get("state") or {}
+        team_id = str((context.get("team") or {}).get("id") or "")
+        assignee_id = str((context.get("assignee") or {}).get("id") or "")
+        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+        live_updated_at = str(context.get("updated_at") or "")
+        previous_live = next(
+            (
+                item for item in context.get("team_states") or []
+                if hmac.compare_digest(str(item.get("id") or ""), previous_state_id)
+            ),
+            None,
+        )
+        authoritative = bool(
+            team_id in self._activation_allowed_team_ids
+            and assignee_id in self._planned_owner_ids
+            and hmac.compare_digest(actor_id, assignee_id)
+            and self._linear.actor_id
+            and str(state.get("type") or "").casefold() == "unstarted"
+            and hmac.compare_digest(str(state.get("id") or ""), event_state_id)
+            and live_updated_at
+            and hmac.compare_digest(live_updated_at, event_updated_at)
+            and previous_live
+            and str(previous_live.get("type") or "").casefold() == "backlog"
+        )
+        if not authoritative:
+            return "activation_rejected"
+        target_delegate_id = str(self._linear.actor_id or "")
+        material = "\0".join(
+            (issue_id, live_updated_at, event_state_id, actor_id, target_delegate_id, team_id)
+        )
+        activation_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        if wait is None:
+            if delegate_id and not hmac.compare_digest(delegate_id, target_delegate_id):
+                return "activation_rejected"
+            evidence = {
+                "issue_id": issue_id,
+                "event_updated_at": event_updated_at,
+                "previous_state_id": previous_state_id,
+                "current_state_id": event_state_id,
+                "actor_id": actor_id,
+                "assignee_id": assignee_id,
+                "delegate_id": target_delegate_id,
+                "team_id": team_id,
+                "verification_source": "signed_webhook_plus_live_readback",
+            }
+            current = self._ledger.get_manager_activation(issue_id)
+            if (
+                current
+                and current.get("activation_key") == activation_key
+                and delegate_id
+                and hmac.compare_digest(delegate_id, target_delegate_id)
+                and current.get("state") in {
+                    "claimed",
+                    "failed",
+                    "delegation_unknown",
+                }
+            ):
+                self._ledger.mark_manager_activation(issue_id, "delegated")
+                return "manager_delegated"
+            if not self._ledger.claim_manager_activation(
+                issue_id, activation_key, evidence
+            ):
+                current = self._ledger.get_manager_activation(issue_id)
+                if current and current.get("activation_key") == activation_key:
+                    if current.get("state") == "delegation_unknown":
+                        return "delegation_ambiguous"
+                    return "activation_duplicate"
+                return "activation_rejected"
+            if delegate_id and hmac.compare_digest(delegate_id, target_delegate_id):
+                self._ledger.mark_manager_activation(issue_id, "delegated")
+                return "manager_delegated"
+            try:
+                self._ledger.mark_manager_activation(issue_id, "delegation_unknown")
+                await self._linear.assign_issue_delegate(issue_id, target_delegate_id)
+                self._ledger.mark_manager_activation(issue_id, "delegated")
+                return "manager_delegated"
+            except Exception as exc:
+                readback = await self._linear.get_issue_closure_context(issue_id)
+                actual_delegate = str(
+                    (readback.get("delegate") or {}).get("id") or ""
+                )
+                if actual_delegate and hmac.compare_digest(
+                    actual_delegate, target_delegate_id
+                ):
+                    self._ledger.mark_manager_activation(issue_id, "delegated")
+                    return "manager_delegated"
+                self._ledger.mark_manager_activation(
+                    issue_id, "delegation_unknown", error=str(exc)
+                )
+                raise
+        if not (
+            delegate_id and hmac.compare_digest(delegate_id, target_delegate_id)
+        ):
+            return "activation_rejected"
+        if not self._ledger.claim_activation(issue_id, activation_key):
+            current = self._ledger.get_activation_wait(issue_id)
+            if current and current.get("activation_key") == activation_key:
+                return "activation_duplicate"
+            return "activation_rejected"
+        try:
+            session_id = str(wait["session_id"])
+            async with self._session_lock(session_id):
+                if self._ledger.has_session_closure(session_id):
+                    self._ledger.cancel_activation_for_session(session_id)
+                    return "activation_rejected"
+                event = self._message_event(
+                    wait["prompt"],
+                    wait["delivery_key"],
+                    "planned-activation",
+                    activation_resume=True,
+                )
+                self._schedule_thought(
+                    session_id,
+                    issue_id,
+                    wait["delivery_key"],
+                    include_queued=False,
+                    body="Todo activation verified; Hermes claimed one-shot manager planning dispatch.",
+                )
+                await self.handle_message(event)
+                self._ledger.mark_activation_resumed(issue_id)
+            return "activation_resumed"
+        except Exception as exc:
+            self._ledger.fail_activation(issue_id, str(exc))
+            raise
 
     async def _reconcile_human_completion(
         self,
@@ -987,15 +1368,35 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if not isinstance(notification, dict):
                 notification = {}
             entity_id = str(data.get("id") or "")
+            activation_status: str | None = None
             closure_status: str | None = None
             if event_type == "Issue" and action == "update" and entity_id:
-                closure_status = await self._reconcile_human_completion(payload, entity_id)
-                previous = payload.get("updatedFrom")
-                if not isinstance(previous, dict):
-                    previous = {}
-                delegate_changed = any(key in previous for key in ("delegate", "delegateId", "delegateMetadata"))
-                if delegate_changed and not (data.get("delegate") or data.get("delegateId")):
-                    self._ledger.cancel_waits_for_issue(entity_id)
+                async with self._issue_lock(entity_id):
+                    event_state = data.get("state")
+                    event_state_type = str(
+                        event_state.get("type") if isinstance(event_state, dict) else ""
+                    ).casefold()
+                    if event_state_type in {"completed", "canceled"}:
+                        self._ledger.cancel_activation_for_issue(entity_id)
+                        if self._ledger.get_manager_activation(entity_id):
+                            self._ledger.mark_manager_activation(entity_id, "canceled")
+                    activation_status = await self._reconcile_planned_activation(
+                        payload, entity_id, _issue_locked=True
+                    )
+                    closure_status = await self._reconcile_human_completion(
+                        payload, entity_id, _issue_locked=True
+                    )
+                    previous = payload.get("updatedFrom")
+                    if not isinstance(previous, dict):
+                        previous = {}
+                    delegate_changed = any(
+                        key in previous
+                        for key in ("delegate", "delegateId", "delegateMetadata")
+                    )
+                    if delegate_changed and not (
+                        data.get("delegate") or data.get("delegateId")
+                    ):
+                        self._ledger.cancel_waits_for_issue(entity_id)
             if event_type == "AppUserNotification" and action == "issueUnassignedFromYou":
                 notification_issue = notification.get("issue")
                 if not isinstance(notification_issue, dict):
@@ -1023,18 +1424,27 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             for session_id in candidates:
                 if await self._reconcile_wait(session_id):
                     resumed += 1
+            if activation_status in {"activation_ambiguous", "delegation_ambiguous"}:
+                self._ledger.release(delivery_key)
+                claimed = False
+                return web.json_response({"status": activation_status}, status=503)
             self._ledger.mark_done(delivery_key)
             logger.info(
-                "[linear] observed data event type=%s action=%s entity=%s resumed=%d closure=%s subscription=%s",
+                "[linear] observed data event type=%s action=%s entity=%s resumed=%d activation=%s closure=%s subscription=%s",
                 event_type,
                 action,
                 entity_id or "none",
                 resumed,
+                activation_status or "none",
                 closure_status or "none",
                 webhook_id,
             )
             return web.json_response(
-                {"status": closure_status or "observed", "resumed": resumed}, status=200
+                {
+                    "status": activation_status or closure_status or "observed",
+                    "resumed": resumed,
+                },
+                status=200,
             )
         except Exception as exc:
             if claimed:
