@@ -1240,6 +1240,53 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             return "closure_rejected"
         assert previous_live is not None
         if not session_id:
+            try:
+                sessions = await self._linear.get_issue_agent_sessions(issue_id)
+            except LinearAPIError as exc:
+                logger.warning(
+                    "[linear] closure session recovery deferred issue=%s reason=%s",
+                    issue_id,
+                    type(exc).__name__,
+                )
+                sessions = []
+            owned_sessions = [
+                item
+                for item in sessions
+                if self._linear.actor_id
+                and hmac.compare_digest(
+                    str(item.get("app_user_id") or ""), self._linear.actor_id
+                )
+            ]
+            open_sessions = [
+                item
+                for item in owned_sessions
+                if str(item.get("status") or "")
+                in {"pending", "active", "awaitingInput"}
+            ]
+            completed_sessions = [
+                item
+                for item in owned_sessions
+                if str(item.get("status") or "") == "complete"
+            ]
+            candidates = open_sessions or completed_sessions
+            if len(candidates) == 1:
+                session_id = str(candidates[0].get("id") or "")
+            elif candidates:
+                logger.warning(
+                    "[linear] closure session recovery ambiguous issue=%s candidates=%d",
+                    issue_id,
+                    len(candidates),
+                )
+        if session_id and not _session_locked:
+            async with self._session_lock(session_id):
+                return await self._reconcile_human_completion(
+                    payload,
+                    issue_id,
+                    _issue_locked=True,
+                    _session_locked=True,
+                    _proposed_session_id=session_id,
+                )
+        if not session_id:
             self._ledger.stage_pending_closure_event(
                 issue_id,
                 event_updated_ts,
@@ -1673,6 +1720,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 return True
             try:
                 if item.operation == "activity.create":
+                    if not item.id.startswith("activity:closure:"):
+                        await self._validate_activity_target(
+                            item.payload["agent_session_id"]
+                        )
                     await self._linear.create_activity(
                         item.payload["agent_session_id"],
                         item.payload["activity_type"],
@@ -1737,6 +1788,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 self._ledger.mark_outbox_delivered(item.id)
             return True
 
+    async def _validate_activity_target(self, agent_session_id: str) -> None:
+        """Fail closed when a normal activity target changed app-user owner."""
+        if self._linear is None:
+            raise LinearAPIError("Linear client is unavailable", retryable=True)
+        context = await self._linear.get_agent_session_delivery_context(agent_session_id)
+        if not self._linear.actor_id or not hmac.compare_digest(
+            str(context.get("app_user_id") or ""), self._linear.actor_id
+        ):
+            raise LinearAPIError(
+                "Linear Agent Session delivery target is owned by another app user",
+                retryable=False,
+            )
+
     async def send(
         self,
         chat_id: str,
@@ -1754,6 +1818,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 message_id=self._activity_uuid(f"suppressed:closure:{chat_id}"),
             )
         try:
+            await self._validate_activity_target(chat_id)
             activity_type = (
                 "thought"
                 if content.startswith(_LINEAR_HOME_CHANNEL_NOTICE_PREFIX)
@@ -1763,6 +1828,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             await self._drain_outbox_once()
             # Success means durably accepted. The outbox owns transport retries.
             return SendResult(success=True, message_id=activity_id)
+        except LinearAPIError as exc:
+            return SendResult(success=False, error=str(exc), retryable=exc.retryable)
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=False)
 

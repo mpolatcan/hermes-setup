@@ -262,6 +262,31 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
             after = cursor
         raise LinearAPIError("Agent Session pagination exceeded the policy limit")
 
+    async def get_agent_session_delivery_context(self, session_id: str) -> dict[str, Any]:
+        """Read the authoritative app owner for one delivery target."""
+        data = await self.graphql(
+            """
+query LinearAgentSessionDeliveryGuard($id: String!) {
+  agentSession(id: $id) {
+    id
+    appUser { id }
+  }
+}
+""",
+            {"id": session_id},
+        )
+        session = data.get("agentSession")
+        if not isinstance(session, dict) or str(session.get("id") or "") != session_id:
+            raise LinearAPIError("Agent Session delivery target could not be resolved")
+        app_user = session.get("appUser")
+        app_user_id = app_user.get("id") if isinstance(app_user, dict) else None
+        if not isinstance(app_user_id, str) or not app_user_id:
+            raise LinearAPIError("Agent Session delivery context was incomplete")
+        return {
+            "id": session_id,
+            "app_user_id": app_user_id,
+        }
+
     async def get_issue_closure_context(self, issue_id: str) -> dict[str, Any]:
         """Read authoritative fields required to accept a human terminal transition."""
         query = """
@@ -321,7 +346,7 @@ query LinearNativeIssueClosure($id: String!) {
                 retry_after_raw = response.headers.get("Retry-After")
                 payload = await response.json(content_type=None) if status == 200 else {}
         except asyncio.TimeoutError as exc:
-            raise LinearAPIError("Linear GraphQL request timed out", retryable=False) from exc
+            raise LinearAPIError("Linear GraphQL request timed out", retryable=True) from exc
         except aiohttp.ClientError as exc:
             raise LinearAPIError("Linear GraphQL connection failed", retryable=True) from exc
         if status == 401 and refresh_on_unauthorized:

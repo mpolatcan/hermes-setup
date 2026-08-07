@@ -66,6 +66,8 @@ class FakeLinear:
         self.blockers: dict[str, list[dict[str, str]]] = {}
         self.closure_contexts: dict[str, dict] = {}
         self.delegate_assignments: list[tuple[str, str]] = []
+        self.issue_agent_sessions: dict[str, list[dict[str, str]]] = {}
+        self.delivery_contexts: dict[str, dict] = {}
 
     async def assign_issue_delegate(self, issue_id, delegate_id):
         self.delegate_assignments.append((issue_id, delegate_id))
@@ -93,6 +95,18 @@ class FakeLinear:
 
     async def get_issue_closure_context(self, issue_id):
         return dict(self.closure_contexts.get(issue_id, {}))
+
+    async def get_issue_agent_sessions(self, issue_id):
+        return [dict(item) for item in self.issue_agent_sessions.get(issue_id, [])]
+
+    async def get_agent_session_delivery_context(self, session_id):
+        return dict(self.delivery_contexts.get(session_id, {
+            "id": session_id,
+            "status": "active",
+            "app_user_id": self.actor_id,
+            "issue_id": f"issue-for-{session_id}",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }))
 
 
 class PluginRegistrationTests(unittest.TestCase):
@@ -171,6 +185,7 @@ class PluginRegistrationTests(unittest.TestCase):
                 "platform": "linear",
                 "chat_id": "session-1",
                 "message_id": "activity-1",
+                "note": "Sent to linear target (chat_id: session-1)",
             },
         )
         fake_adapter.connect_outbound_only.assert_awaited_once_with()
@@ -207,6 +222,41 @@ class PluginRegistrationTests(unittest.TestCase):
 
         self.assertEqual(result.get("success"), True)
         self.assertEqual(result.get("message_id"), "activity-2")
+
+    def test_standalone_sender_preserves_retryable_error_result(self):
+        class FakeContext:
+            def __init__(self):
+                self.platform_kwargs = None
+
+            def register_platform(self, **kwargs):
+                self.platform_kwargs = kwargs
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+        sender = cast(Any, context.platform_kwargs["standalone_sender_fn"])
+        fake_adapter = mock.Mock()
+        fake_adapter.connect_outbound_only = mock.AsyncMock(return_value=True)
+        fake_adapter.send = mock.AsyncMock(
+            return_value=adapter_mod.SendResult(
+                success=False,
+                error="Linear GraphQL request timed out",
+                retryable=True,
+            )
+        )
+        fake_adapter.disconnect = mock.AsyncMock()
+
+        with mock.patch.object(
+            adapter_mod.LinearPlatformAdapter,
+            "from_config",
+            return_value=fake_adapter,
+        ):
+            result = asyncio.run(sender(object(), "session-3", "body"))
+
+        self.assertEqual(
+            result,
+            {"error": "Linear GraphQL request timed out", "retryable": True},
+        )
 
 
 class LedgerTests(unittest.TestCase):
@@ -2220,6 +2270,163 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             ["thought", "response"],
         )
 
+    async def test_human_done_recovers_unique_authoritative_session_binding(self):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        issue_id = "issue-preexisting-session"
+        session_id = "session-preexisting"
+        revision = "2026-08-07T01:02:03.456Z"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "identifier": "OPS-104",
+            "title": "Preexisting session closure",
+            "updated_at": revision,
+            "completed_at": revision,
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._linear.issue_agent_sessions[issue_id] = [{
+            "id": session_id,
+            "status": "complete",
+            "started_at": "2026-08-06T23:00:00.000Z",
+            "ended_at": "2026-08-07T00:30:00.000Z",
+            "app_user_id": "agent-derya",
+        }]
+        completed = self.make_data_payload(
+            webhookId="webhook-preexisting-session-done",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": revision,
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        async with self.adapter._session_lock(session_id):
+            closure_task = asyncio.create_task(
+                self.adapter._handle_webhook(self.request_for(completed))
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(
+                closure_task.done(),
+                "recovered closure must acquire the discovered session lock",
+            )
+
+        response = await closure_task
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.adapter._ledger.get_issue_session(issue_id), session_id)
+        self.assertEqual(self.adapter._ledger.pending_closure_count(), 0)
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 1)
+        self.assertEqual(self.events, [])
+
+    def configure_unbound_human_done(self, issue_id: str, revision: str):
+        self.adapter._closure_reconciliation_enabled = True
+        self.adapter._closure_allowed_team_ids = {"team-ops"}
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "identifier": "OPS-106",
+            "title": "Recover authoritative closure session",
+            "updated_at": revision,
+            "completed_at": revision,
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+                {"id": "done-1", "name": "Done", "type": "completed"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        return self.make_data_payload(
+            webhookId=f"webhook-{issue_id}",
+            actor={"id": "user-1", "name": "Mutlu"},
+            data={
+                "id": issue_id,
+                "updatedAt": revision,
+                "state": {"id": "done-1", "type": "completed"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+    async def test_human_done_prefers_unique_open_session_over_complete_sessions(self):
+        issue_id = "issue-open-preferred"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:00:00.000Z"
+        )
+        self.adapter._linear.issue_agent_sessions[issue_id] = [
+            {"id": "complete-1", "status": "complete", "app_user_id": "agent-derya"},
+            {"id": "active-1", "status": "active", "app_user_id": "agent-derya"},
+            {"id": "complete-2", "status": "complete", "app_user_id": "agent-derya"},
+        ]
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "closure_queued")
+        self.assertEqual(self.adapter._ledger.get_issue_session(issue_id), "active-1")
+
+    async def test_human_done_does_not_guess_between_ambiguous_owned_sessions(self):
+        issue_id = "issue-ambiguous-sessions"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:01:00.000Z"
+        )
+        self.adapter._linear.issue_agent_sessions[issue_id] = [
+            {"id": "active-1", "status": "active", "app_user_id": "agent-derya"},
+            {"id": "pending-2", "status": "pending", "app_user_id": "agent-derya"},
+        ]
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
+        self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+        self.assertEqual(self.adapter._ledger.closure_counts()["pending"], 0)
+
+    async def test_human_done_ignores_foreign_session_candidates(self):
+        issue_id = "issue-foreign-session"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:02:00.000Z"
+        )
+        self.adapter._linear.issue_agent_sessions[issue_id] = [
+            {"id": "foreign-1", "status": "active", "app_user_id": "agent-other"}
+        ]
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
+        self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+
+    async def test_human_done_fences_when_session_list_read_fails(self):
+        issue_id = "issue-session-read-failure"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:03:00.000Z"
+        )
+        self.adapter._linear.get_issue_agent_sessions = mock.AsyncMock(
+            side_effect=LinearAPIError("temporary policy read failure", retryable=True)
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
+        self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+
+    async def test_human_done_fences_when_issue_has_no_sessions(self):
+        issue_id = "issue-without-sessions"
+        completed = self.configure_unbound_human_done(
+            issue_id, "2026-08-07T02:04:00.000Z"
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(completed))
+
+        self.assertEqual(json.loads(response.text)["status"], "terminal_fenced")
+        self.assertIsNone(self.adapter._ledger.get_issue_session(issue_id))
+
     async def test_concurrent_done_before_session_creation_fences_dispatch(self):
         class BlockingClosureReadLinear(FakeLinear):
             def __init__(self):
@@ -3010,6 +3217,100 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.adapter._linear.calls[-1], ("session-1", "response", body))
 
+    async def test_operational_inbox_on_terminal_issue_remains_a_valid_transport_anchor(self):
+        self.adapter._linear.delivery_contexts["session-terminal-inbox"] = {
+            "id": "session-terminal-inbox",
+            "status": "active",
+            "app_user_id": "agent-derya",
+            "issue_id": "issue-terminal-inbox",
+            "state": {"id": "done-1", "name": "Done", "type": "completed"},
+        }
+
+        result = await self.adapter.send("session-terminal-inbox", "cron result")
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [("session-terminal-inbox", "response", "cron result")],
+        )
+
+    async def test_operational_delivery_rejects_session_owned_by_other_app(self):
+        self.adapter._linear.delivery_contexts["session-other-app"] = {
+            "id": "session-other-app",
+            "status": "active",
+            "app_user_id": "agent-other",
+            "issue_id": "issue-other-app",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }
+
+        result = await self.adapter.send("session-other-app", "misrouted")
+
+        self.assertFalse(result.success)
+        self.assertIn("another app user", str(result.error))
+        self.assertEqual(self.adapter._linear.calls, [])
+
+    async def test_real_preflight_transport_failures_remain_retryable(self):
+        class FakeOAuthStore:
+            async def access_token(self, **_kwargs):
+                return "redacted-test-token"
+
+        class FailingRequest:
+            def __init__(self, error):
+                self.error = error
+
+            async def __aenter__(self):
+                raise self.error
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FailingSession:
+            def __init__(self, error):
+                self.error = error
+
+            def post(self, *_args, **_kwargs):
+                return FailingRequest(self.error)
+
+        client = LinearClient(oauth_store=FakeOAuthStore())
+        client.actor_id = "agent-derya"
+        client._session = cast(Any, FailingSession(asyncio.TimeoutError()))
+        self.adapter._linear = client
+
+        result = await self.adapter.send("session-timeout", "cron result")
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.retryable)
+        self.assertIn("timed out", str(result.error))
+
+        self.adapter._outbox_base_delay = 0
+        item_id = "activity:queued-preflight"
+        self.adapter._ledger.enqueue_outbox(
+            item_id,
+            "session-queued",
+            "activity.create",
+            {
+                "activity_id": "activity-queued",
+                "agent_session_id": "session-queued",
+                "activity_type": "response",
+                "body": "queued cron result",
+            },
+        )
+        await self.adapter._drain_outbox_once()
+
+        item = self.adapter._ledger.get_outbox_item(item_id)
+        self.assertEqual(item["state"], "pending")
+        self.assertIn("timed out", item["last_error"])
+
+        client._session = cast(
+            Any,
+            FailingSession(client_mod.aiohttp.ClientConnectionError("connection reset")),
+        )
+        await self.adapter._drain_outbox_once()
+
+        item = self.adapter._ledger.get_outbox_item(item_id)
+        self.assertEqual(item["state"], "pending")
+        self.assertIn("connection failed", item["last_error"])
+
     def test_linear_declares_noneditable_to_disable_streaming_previews(self):
         self.assertFalse(
             getattr(self.adapter, "SUPPORTS_MESSAGE_EDITING", True),
@@ -3202,6 +3503,47 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "app_user_id": "actor-1",
         }])
 
+    async def test_agent_session_delivery_context_is_authoritative_and_minimal(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("agentSession(id: $id)", query)
+            self.assertNotIn("issue {", query)
+            self.assertNotIn("state {", query)
+            self.assertEqual(variables, {"id": "session-1"})
+            return {"agentSession": {
+                "id": "session-1",
+                "status": "active",
+                "appUser": {"id": "actor-1"},
+                "issue": {
+                    "id": "issue-1",
+                    "state": {"id": "done-1", "name": "Done", "type": "completed"},
+                },
+            }}
+
+        client.graphql = fake_graphql
+
+        self.assertEqual(
+            await client.get_agent_session_delivery_context("session-1"),
+            {
+                "id": "session-1",
+                "app_user_id": "actor-1",
+            },
+        )
+
+    async def test_agent_session_delivery_context_rejects_incomplete_readback(self):
+        client = LinearClient("/unused")
+        client.graphql = mock.AsyncMock(return_value={
+            "agentSession": {
+                "id": "session-1",
+                "status": "active",
+                "appUser": None,
+            }
+        })
+
+        with self.assertRaisesRegex(LinearAPIError, "incomplete"):
+            await client.get_agent_session_delivery_context("session-1")
+
     async def test_issue_agent_sessions_paginates_until_open_session_is_visible(self):
         client = LinearClient("/unused")
         calls = []
@@ -3230,9 +3572,9 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             }}}
 
         client.graphql = fake_graphql
-        sessions = await client.get_issue_agent_sessions("OPS-1")
+        sessions = await client.get_issue_agent_sessions("issue-1")
         self.assertEqual([item["id"] for item in sessions], ["complete-1", "active-2"])
-        self.assertEqual(calls, [{"id": "OPS-1", "after": None}, {"id": "OPS-1", "after": "cursor-1"}])
+        self.assertEqual(calls, [{"id": "issue-1", "after": None}, {"id": "issue-1", "after": "cursor-1"}])
 
     async def test_issue_agent_sessions_rejects_incomplete_policy_data(self):
         client = LinearClient("/unused")
@@ -3267,6 +3609,20 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 client.graphql = fake_graphql
                 with self.assertRaises(LinearAPIError):
                     await client.get_issue_agent_sessions("OPS-1")
+
+    async def test_issue_agent_sessions_accepts_identifier_resolving_to_uuid(self):
+        client = LinearClient("/unused")
+        client.graphql = mock.AsyncMock(return_value={
+            "issue": {
+                "id": "issue-other",
+                "agentSessions": {
+                    "nodes": [],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                },
+            }
+        })
+
+        self.assertEqual(await client.get_issue_agent_sessions("OPS-1"), [])
 
     async def test_create_activity_places_ephemeral_on_top_level_input(self):
         client = LinearClient("/unused")

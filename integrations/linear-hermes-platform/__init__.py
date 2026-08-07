@@ -65,12 +65,16 @@ async def _standalone_send(
             return {"error": "Linear outbound-only adapter failed to connect"}
         result = await adapter.send(str(chat_id), str(message or ""))
         if not result.success:
-            return {"error": result.error or "Linear send failed"}
+            return {
+                "error": result.error or "Linear send failed",
+                "retryable": result.retryable,
+            }
         return {
             "success": True,
             "platform": "linear",
             "chat_id": str(chat_id),
             "message_id": result.message_id,
+            "note": f"Sent to linear target (chat_id: {chat_id})",
         }
     except Exception:
         return {"error": "Linear standalone send failed"}
