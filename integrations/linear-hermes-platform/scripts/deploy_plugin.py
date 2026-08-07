@@ -39,6 +39,18 @@ ALLOWLIST = (
     "plugin.yaml",
 )
 REVIEWED_MANIFESTS: dict[str, dict[str, str]] = {
+    "9d96f4295496982967143fc063b78146fc73348b": {
+        "__init__.py": "0117a75173b9909b92137601e9725717c3d058c90b7551c710c94752207792a7",
+        "adapter.py": "7d2e06dd4b21546b4094f70a1b13914ecb6ef8378892ae543cfdbc6d069a9bc5",
+        "ledger.py": "2bc25766cb61152e2c302a4a87b7ece075cc495e9331d9aa0d8ae1f8859df306",
+        "linear_client.py": "24a48bc832abfbf14221fe9caaa00edb242dc7b8dae6b39cb2443beff3e8fbd8",
+        "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+        "mcp_client.py": "e212bed43f86846bc9e55f70425622dda4f903421e5ea529e75845f8be23ac25",
+        "outbound_policy.py": "565fde4e6e0c2dc1ccb215641d1a821b60c6be7faa779232bdc3c8fe2d6d4a50",
+        "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+        "linear_tools.py": "22ad70c1eef8c6bd5b062daf9ba7bf9fda29ded75280ae9ce1a549278ad7f3af",
+        "plugin.yaml": "80938d5975ef9e08d1a271a223db657c5037adbc7dd7f3c1a932bb2c0fe2f5f6",
+    },
     "48f9c3a553d7a933b967632ca6d54a2d224b6495": {
         "__init__.py": "0117a75173b9909b92137601e9725717c3d058c90b7551c710c94752207792a7",
         "adapter.py": "764f372830cd3a6865675cda4b77da897ac58fd31274a67145ad98f2171496c1",
