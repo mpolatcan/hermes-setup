@@ -120,6 +120,18 @@ reprove_quiescence() {
   wait_for_quiescence
 }
 
+verify_service_preflight() {
+  preflight_launch_output=""
+  if preflight_launch_output="$(launchctl print "$SERVICE" 2>&1)"; then
+    return 0
+  else
+    preflight_launch_rc=$?
+  fi
+  expected_launch_output="$(printf 'Bad request.\nCould not find service "%s" in domain for user gui: %s' "$LABEL" "$EXPECTED_UID")"
+  [ "$preflight_launch_rc" -eq 113 ] \
+    && [ "$preflight_launch_output" = "$expected_launch_output" ]
+}
+
 stop_service_strict() {
   if launchctl print "$SERVICE" >/dev/null 2>&1; then
     launchctl bootout "$SERVICE"
@@ -214,7 +226,7 @@ require_regular_owned_file "$PLIST"
 [ "$(plutil -extract ProgramArguments.2 raw -o - "$PLIST")" = "$PROFILE" ]
 [ "$(plutil -extract WorkingDirectory raw -o - "$PLIST")" = "$PROFILE_HOME" ]
 [ "$(plutil -extract EnvironmentVariables.HERMES_HOME raw -o - "$PLIST")" = "$PROFILE_HOME" ]
-launchctl print "$SERVICE" >/dev/null
+verify_service_preflight
 command -v sqlite3 >/dev/null
 command -v launchctl >/dev/null
 command -v lsof >/dev/null

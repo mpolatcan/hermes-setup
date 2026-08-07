@@ -445,6 +445,39 @@ class BackupPolicyContractTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertTrue(result.stdout.rstrip().endswith(expected), result.stdout)
 
+    def test_marketing_recovery_preflight_accepts_loaded_or_canonical_absent_only(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        cases = (
+            ('loaded', 'ok'),
+            ('canonical-absent', 'ok'),
+            ('wrong-message', 'fail'),
+            ('ambiguous', 'fail'),
+        )
+        for mode, expected in cases:
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; MODE="$2"; '
+                            'launchctl(){ if [ "$MODE" = loaded ]; then return 0; fi; '
+                            'if [ "$MODE" = ambiguous ]; then return 2; fi; '
+                            'if [ "$MODE" = wrong-message ]; then printf wrong >&2; return 113; fi; '
+                            'printf \'Bad request.\\nCould not find service "%s" in domain for user gui: %s\\n\' "$LABEL" "$EXPECTED_UID" >&2; return 113; }; '
+                            'if verify_service_preflight; then printf ok; else printf fail; fi'
+                        ),
+                        'bash',
+                        str(helper),
+                        mode,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, expected)
+
     def test_marketing_recovery_rejects_service_reappearance_before_swap(self):
         helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
         with tempfile.TemporaryDirectory() as tmp:
