@@ -176,6 +176,14 @@ patches/hermes-agent/0004-fix-send-preserve-opaque-uuid-delivery-targets.patch
 
 Run the lightweight send target parser tests and the complete send-message tool and CLI send suites before candidate promotion. A source-only acceptance must prove the exact UUID reaches the registered standalone sender; production acceptance additionally requires an approved non-stale Agent Session target and authoritative activity read-back.
 
+Periodic gateway heartbeats are transient UI, but append-only control-plane adapters map every `send()` to a terminal activity. A three-minute Linear canary proved the generic heartbeat fallback could therefore complete an active AgentSession with `Working — …` before the real final response. The owned core patch capability-gates heartbeat edit/send calls on `SUPPORTS_MESSAGE_EDITING` and preserves prior message IDs after failed/partial sends:
+
+```text
+patches/hermes-agent/0005-fix-gateway-suppress-heartbeats-on-noneditable-platforms.patch
+```
+
+Before promotion, run `tests/gateway/test_long_running_notifications.py`, Ruff, compile checks, and an independent diff review. Production acceptance requires a fresh human-triggered AgentSession that lasts beyond the configured heartbeat interval, remains active without a heartbeat `response`, then completes with exactly one real terminal `response`; pending/in-flight/dead outbox counts must remain zero.
+
 After each Hermes Agent upgrade, classify all owned patches before promotion:
 
 ```bash

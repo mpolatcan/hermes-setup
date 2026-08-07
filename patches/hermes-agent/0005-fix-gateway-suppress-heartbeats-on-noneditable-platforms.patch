@@ -1,0 +1,189 @@
+From 54fe1e351560d43d0d1f410d339ec6871c28f4ae Mon Sep 17 00:00:00 2001
+From: Mutlu Polatcan <mutlupolatcan@gmail.com>
+Date: Fri, 7 Aug 2026 11:41:52 +0300
+Subject: [PATCH] [verified] fix(gateway): suppress heartbeats on noneditable
+ platforms
+
+---
+ gateway/run.py                                | 80 ++++++++++++++-----
+ .../test_long_running_notifications.py        | 70 ++++++++++++++++
+ 2 files changed, 128 insertions(+), 22 deletions(-)
+ create mode 100644 tests/gateway/test_long_running_notifications.py
+
+diff --git a/gateway/run.py b/gateway/run.py
+index aac6a19..7aa0805 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -323,6 +323,47 @@ def _non_conversational_metadata(
+     return merged
+ 
+ 
++async def _send_long_running_notification(
++    adapter: Any,
++    *,
++    chat_id: str,
++    text: str,
++    heartbeat_message_id: Optional[str],
++    metadata: Optional[Dict[str, Any]],
++) -> tuple[Optional[str], bool]:
++    """Send or edit a transient heartbeat only on editable surfaces.
++
++    Append-only adapters map every send to a terminal activity.  Sending a
++    periodic heartbeat there would prematurely complete the remote session,
++    so capability-gate the entire transient delivery path.
++    """
++    if not getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True):
++        return heartbeat_message_id, False
++
++    result = None
++    if heartbeat_message_id:
++        try:
++            result = await adapter.edit_message(
++                chat_id,
++                heartbeat_message_id,
++                text,
++            )
++        except Exception as exc:
++            logger.debug("Heartbeat edit failed: %s", exc)
++            result = None
++
++    created_new = False
++    if not (result and getattr(result, "success", False)):
++        result = await adapter.send(chat_id, text, metadata=metadata)
++        created_new = bool(result and getattr(result, "success", False))
++
++    succeeded = bool(result and getattr(result, "success", False))
++    message_id = getattr(result, "message_id", None) if succeeded else None
++    if message_id:
++        return str(message_id), created_new
++    return heartbeat_message_id, created_new
++
++
+ def _is_transient_network_error(exc: BaseException) -> bool:
+     """Return True for transient network errors safe to log + swallow.
+ 
+@@ -22751,29 +22792,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                     else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                 )
+                 try:
+-                    _notify_res = None
+-                    if _heartbeat_msg_id:
+-                        try:
+-                            _notify_res = await _notify_adapter.edit_message(
+-                                source.chat_id,
+-                                _heartbeat_msg_id,
+-                                _heartbeat_text,
+-                            )
+-                        except Exception as _ee:
+-                            logger.debug("Heartbeat edit failed: %s", _ee)
+-                            _notify_res = None
+-                    if not (_notify_res and getattr(_notify_res, "success", False)):
+-                        _notify_res = await _notify_adapter.send(
+-                            source.chat_id,
+-                            _heartbeat_text,
+-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
++                    _heartbeat_msg_id, _created_new_heartbeat = (
++                        await _send_long_running_notification(
++                            _notify_adapter,
++                            chat_id=source.chat_id,
++                            text=_heartbeat_text,
++                            heartbeat_message_id=_heartbeat_msg_id,
++                            metadata=_non_conversational_metadata(
++                                _status_thread_metadata,
++                                platform=source.platform,
++                            ),
+                         )
+-                        if getattr(_notify_res, "success", False) and getattr(
+-                            _notify_res, "message_id", None
+-                        ):
+-                            _heartbeat_msg_id = str(_notify_res.message_id)
+-                            if _cleanup_progress:
+-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
++                    )
++                    if (
++                        _created_new_heartbeat
++                        and _heartbeat_msg_id
++                        and _cleanup_progress
++                    ):
++                        _cleanup_msg_ids.append(_heartbeat_msg_id)
+                 except Exception as _ne:
+                     logger.debug("Long-running notification error: %s", _ne)
+ 
+diff --git a/tests/gateway/test_long_running_notifications.py b/tests/gateway/test_long_running_notifications.py
+new file mode 100644
+index 0000000..28a5fc4
+--- /dev/null
++++ b/tests/gateway/test_long_running_notifications.py
+@@ -0,0 +1,70 @@
++"""Regression coverage for transient long-running gateway notifications."""
++
++from __future__ import annotations
++
++import asyncio
++
++from gateway.run import _send_long_running_notification
++
++
++class _Result:
++    def __init__(self, *, success: bool, message_id: str | None = None):
++        self.success = success
++        self.message_id = message_id
++
++
++class _NonEditableAdapter:
++    SUPPORTS_MESSAGE_EDITING = False
++
++    def __init__(self) -> None:
++        self.edit_calls = 0
++        self.send_calls = 0
++
++    async def edit_message(self, *args, **kwargs):
++        self.edit_calls += 1
++        return _Result(success=True, message_id="edited")
++
++    async def send(self, *args, **kwargs):
++        self.send_calls += 1
++        return _Result(success=True, message_id="sent")
++
++
++class _FailedSendAdapter:
++    SUPPORTS_MESSAGE_EDITING = True
++
++    async def send(self, *args, **kwargs):
++        return _Result(success=False, message_id="partial-send")
++
++
++def test_long_running_heartbeat_is_suppressed_on_noneditable_adapter() -> None:
++    adapter = _NonEditableAdapter()
++
++    message_id, delivered = asyncio.run(
++        _send_long_running_notification(
++            adapter,
++            chat_id="session-uuid",
++            text="working",
++            heartbeat_message_id=None,
++            metadata={"non_conversational": True},
++        )
++    )
++
++    assert message_id is None
++    assert delivered is False
++    assert adapter.edit_calls == 0
++    assert adapter.send_calls == 0
++
++
++def test_failed_heartbeat_send_does_not_adopt_partial_message_id() -> None:
++    message_id, delivered = asyncio.run(
++        _send_long_running_notification(
++            _FailedSendAdapter(),
++            chat_id="session-uuid",
++            text="working",
++            heartbeat_message_id=None,
++            metadata=None,
++        )
++    )
++
++    assert message_id is None
++    assert delivered is False
+-- 
+2.50.1 (Apple Git-155)
