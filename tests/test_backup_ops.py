@@ -178,13 +178,21 @@ class BackupPolicyContractTests(unittest.TestCase):
         required = (
             'EXPECTED_UID="501"',
             'EXPECTED_SESSIONS="26"',
-            'EXPECTED_MESSAGES="321"',
+            'EXPECTED_MESSAGES="324"',
+            'EXPECTED_DUPLICATE_MESSAGE_ID="387"',
+            'EXPECTED_DUPLICATE_OLDER_ROLE="user"',
+            'EXPECTED_DUPLICATE_OLDER_CONTENT_LENGTH="662"',
+            'EXPECTED_DUPLICATE_LATER_ROLE="assistant"',
+            'EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH="39"',
+            'EXPECTED_RECOVERED_MAX_MESSAGE_ID="420"',
+            'EXPECTED_REKEYED_MESSAGE_ID="421"',
             'stop_service_strict',
             'no_live_handles',
             'raw.sha256',
             "'.recover --ignore-freelist'",
             "VALUES('integrity-check', 1)",
             'FTS_COUNTS',
+            '$BASE_MESSAGES|$BASE_MESSAGES|$BASE_MESSAGES|0|0',
             'CORRUPT_LIVE',
             'rollback',
             'refusing bootstrap without quiescence proof',
@@ -196,6 +204,179 @@ class BackupPolicyContractTests(unittest.TestCase):
             ['/bin/bash', '-n', str(REPO_ROOT / 'scripts/recover-marketing-state-approved.sh')],
             check=True,
         )
+
+    def test_marketing_recovery_rekeys_later_duplicate_message_without_loss(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        columns = (
+            'id INTEGER, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, '
+            'tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, '
+            'token_count INTEGER, finish_reason TEXT, reasoning TEXT, reasoning_content TEXT, '
+            'reasoning_details TEXT, codex_reasoning_items TEXT, codex_message_items TEXT, '
+            'platform_message_id TEXT, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, '
+            'compacted INTEGER NOT NULL DEFAULT 0, effect_disposition TEXT, api_content TEXT, '
+            'display_kind TEXT, display_metadata TEXT'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'source.db'
+            recovered = root / 'recovered.db'
+            source_conn = sqlite3.connect(source)
+            source_conn.execute(f'CREATE TABLE messages ({columns})')
+            source_conn.executemany(
+                'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
+                (
+                    (387, '20260712_223038_7a939f39', 'user', 'u' * 662, 1785990555.0),
+                    (387, '20260712_223038_7a939f39', 'assistant', 'a' * 39, 1785996761.8354),
+                    (420, 's1', 'assistant', 'other', 1786000000.0),
+                ),
+            )
+            source_conn.commit()
+            source_conn.close()
+            recovered_conn = sqlite3.connect(recovered)
+            recovered_columns = columns.replace('id INTEGER,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1)
+            recovered_conn.execute(f'CREATE TABLE messages ({recovered_columns})')
+            recovered_conn.executemany(
+                'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
+                (
+                    (387, '20260712_223038_7a939f39', 'assistant', 'a' * 39, 1785996761.8354),
+                    (420, 's1', 'assistant', 'other', 1786000000.0),
+                ),
+            )
+            recovered_conn.commit()
+            recovered_conn.close()
+            result = subprocess.run(
+                [
+                    '/bin/bash',
+                    '-c',
+                    (
+                        'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                        'WORK_DB="$2"; RECOVERED_DB="$3"; salvage_duplicate_message_collision'
+                    ),
+                    'bash',
+                    str(helper),
+                    str(source),
+                    str(recovered),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            conn = sqlite3.connect(recovered)
+            rows = conn.execute(
+                'SELECT id,role,length(content),timestamp FROM messages ORDER BY id'
+            ).fetchall()
+            sequence = conn.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name='messages'"
+            ).fetchone()[0]
+            conn.close()
+            self.assertEqual(
+                rows,
+                [
+                    (387, 'user', 662, 1785990555.0),
+                    (420, 'assistant', 5, 1786000000.0),
+                    (421, 'assistant', 39, 1785996761.8354),
+                ],
+            )
+            self.assertEqual(sequence, 421)
+
+    def test_marketing_recovery_rejects_unexpected_duplicate_message_fingerprint(self):
+        helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'
+        columns = (
+            'id INTEGER, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, '
+            'tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, '
+            'token_count INTEGER, finish_reason TEXT, reasoning TEXT, reasoning_content TEXT, '
+            'reasoning_details TEXT, codex_reasoning_items TEXT, codex_message_items TEXT, '
+            'platform_message_id TEXT, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, '
+            'compacted INTEGER NOT NULL DEFAULT 0, effect_disposition TEXT, api_content TEXT, '
+            'display_kind TEXT, display_metadata TEXT'
+        )
+        for mode in (
+            'wrong-role',
+            'wrong-length',
+            'tied-timestamp',
+            'extra-row',
+            'inbound-reference',
+            'null-flag',
+            'high-sequence',
+            'unexpected-max',
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / 'source.db'
+                recovered = root / 'recovered.db'
+                older_role = 'assistant' if mode == 'wrong-role' else 'user'
+                older_content = 'u' * (661 if mode == 'wrong-length' else 662)
+                later_timestamp = 1785990555.0 if mode == 'tied-timestamp' else 1785996761.8354
+                source_rows = [
+                    (387, '20260712_223038_7a939f39', older_role, older_content, 1785990555.0),
+                    (387, '20260712_223038_7a939f39', 'assistant', 'a' * 39, later_timestamp),
+                    (420, 's1', 'assistant', 'other', 1786000000.0),
+                ]
+                if mode == 'extra-row':
+                    source_rows.insert(
+                        2,
+                        (387, '20260712_223038_7a939f39', 'assistant', 'extra', 1785998000.0),
+                    )
+                if mode == 'unexpected-max':
+                    source_rows.append((421, 's2', 'assistant', 'newer', 1786001000.0))
+                source_conn = sqlite3.connect(source)
+                source_conn.execute(f'CREATE TABLE messages ({columns})')
+                source_conn.executemany(
+                    'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
+                    source_rows,
+                )
+                if mode == 'null-flag':
+                    source_conn.execute(
+                        'UPDATE messages SET observed=NULL WHERE rowid=(SELECT min(rowid) FROM messages)'
+                    )
+                if mode == 'inbound-reference':
+                    source_conn.execute(
+                        'CREATE TABLE message_refs(message_id INTEGER REFERENCES messages(id))'
+                    )
+                source_conn.commit()
+                source_conn.close()
+                recovered_conn = sqlite3.connect(recovered)
+                recovered_columns = columns.replace(
+                    'id INTEGER,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1
+                )
+                recovered_conn.execute(f'CREATE TABLE messages ({recovered_columns})')
+                initial_rows = (
+                    (387, '20260712_223038_7a939f39', 'assistant', 'a' * 39, later_timestamp),
+                    (420, 's1', 'assistant', 'other', 1786000000.0),
+                )
+                if mode == 'unexpected-max':
+                    initial_rows += ((421, 's2', 'assistant', 'newer', 1786001000.0),)
+                recovered_conn.executemany(
+                    'INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(?,?,?,?,?)',
+                    initial_rows,
+                )
+                if mode == 'high-sequence':
+                    recovered_conn.execute(
+                        "UPDATE sqlite_sequence SET seq=999 WHERE name='messages'"
+                    )
+                recovered_conn.commit()
+                recovered_conn.close()
+                before = recovered.read_bytes()
+                result = subprocess.run(
+                    [
+                        '/bin/bash',
+                        '-c',
+                        (
+                            'export HERMES_RECOVERY_SOURCE_ONLY=1; source "$1"; '
+                            'WORK_DB="$2"; RECOVERED_DB="$3"; salvage_duplicate_message_collision'
+                        ),
+                        'bash',
+                        str(helper),
+                        str(source),
+                        str(recovered),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0, mode)
+                self.assertEqual(recovered.read_bytes(), before, mode)
 
     def test_marketing_recovery_detects_open_db_without_sidecars(self):
         helper = REPO_ROOT / 'scripts/recover-marketing-state-approved.sh'

@@ -6,8 +6,18 @@ umask 077
 PROFILE="marketing"
 EXPECTED_UID="501"
 EXPECTED_SESSIONS="26"
-EXPECTED_MESSAGES="321"
+EXPECTED_MESSAGES="324"
 EXPECTED_ORPHANS="0"
+EXPECTED_DUPLICATE_MESSAGE_ID="387"
+EXPECTED_DUPLICATE_SESSION_ID="20260712_223038_7a939f39"
+EXPECTED_DUPLICATE_OLDER_ROLE="user"
+EXPECTED_DUPLICATE_OLDER_TIMESTAMP="1785990555"
+EXPECTED_DUPLICATE_OLDER_CONTENT_LENGTH="662"
+EXPECTED_DUPLICATE_LATER_ROLE="assistant"
+EXPECTED_DUPLICATE_LATER_TIMESTAMP="1785996761.8354"
+EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH="39"
+EXPECTED_RECOVERED_MAX_MESSAGE_ID="420"
+EXPECTED_REKEYED_MESSAGE_ID="421"
 PROFILE_HOME="/Users/mutlupolatcan/.hermes/profiles/$PROFILE"
 LIVE_DB="$PROFILE_HOME/state.db"
 PLIST="/Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.gateway-marketing.plist"
@@ -137,6 +147,106 @@ verify_service_preflight() {
   expected_launch_output="$(printf 'Bad request.\nCould not find service "%s" in domain for user gui: %s' "$LABEL" "$EXPECTED_UID")"
   [ "$preflight_launch_rc" -eq 113 ] \
     && [ "$preflight_launch_output" = "$expected_launch_output" ]
+}
+
+salvage_duplicate_message_collision() {
+  local duplicate_summary reference_count physical_count recovered_count expected_recovered_count
+  local collision_fingerprint expected_fingerprint
+  local timestamp_summary collision_rows collision_distinct_timestamps collision_min_timestamp collision_max_timestamp
+  local recovered_max calculated_new_id new_id post_summary sequence_before sequence_after work_db_sql
+
+  duplicate_summary="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
+    "SELECT count(*),min(physical_id),max(physical_id),min(copies),max(copies)
+       FROM (
+         SELECT id+0 AS physical_id,count(*) AS copies
+           FROM messages NOT INDEXED
+          GROUP BY id+0
+         HAVING count(*)>1
+       );")"
+  [ "$duplicate_summary" = "1|$EXPECTED_DUPLICATE_MESSAGE_ID|$EXPECTED_DUPLICATE_MESSAGE_ID|2|2" ]
+
+  reference_count="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT count(*)
+       FROM sqlite_schema AS s, pragma_foreign_key_list(s.name) AS fk
+      WHERE s.type='table' AND lower(fk.\"table\")='messages';")"
+  [ "$reference_count" = "0" ]
+
+  collision_fingerprint="$(sqlite3 -batch -noheader "$WORK_DB" \
+    "SELECT group_concat(piece,';')
+       FROM (
+         SELECT printf('%s|%s|%.17g|%d|%s|%s|%s',
+                       session_id,role,timestamp,length(content),
+                       quote(observed),quote(active),quote(compacted)) AS piece
+           FROM messages NOT INDEXED
+          WHERE id+0=$EXPECTED_DUPLICATE_MESSAGE_ID
+          ORDER BY timestamp
+       );")"
+  expected_fingerprint="$EXPECTED_DUPLICATE_SESSION_ID|$EXPECTED_DUPLICATE_OLDER_ROLE|$EXPECTED_DUPLICATE_OLDER_TIMESTAMP|$EXPECTED_DUPLICATE_OLDER_CONTENT_LENGTH|0|1|0;$EXPECTED_DUPLICATE_SESSION_ID|$EXPECTED_DUPLICATE_LATER_ROLE|$EXPECTED_DUPLICATE_LATER_TIMESTAMP|$EXPECTED_DUPLICATE_LATER_CONTENT_LENGTH|0|1|0"
+  [ "$collision_fingerprint" = "$expected_fingerprint" ]
+
+  timestamp_summary="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
+    "SELECT count(*),count(DISTINCT timestamp),min(timestamp),max(timestamp)
+       FROM messages NOT INDEXED
+      WHERE id+0=$EXPECTED_DUPLICATE_MESSAGE_ID;")"
+  IFS='|' read -r collision_rows collision_distinct_timestamps collision_min_timestamp collision_max_timestamp <<EOF
+$timestamp_summary
+EOF
+  [ "$collision_rows" = "2" ]
+  [ "$collision_distinct_timestamps" = "2" ]
+
+  physical_count="$(sqlite3 -batch -noheader "$WORK_DB" 'SELECT count(*) FROM messages NOT INDEXED;')"
+  recovered_count="$(sqlite3 -batch -noheader "$RECOVERED_DB" 'SELECT count(*) FROM messages NOT INDEXED;')"
+  [[ "$physical_count" =~ ^[0-9]+$ ]]
+  [[ "$recovered_count" =~ ^[0-9]+$ ]]
+  expected_recovered_count=$((physical_count - 1))
+  [ "$recovered_count" -eq "$expected_recovered_count" ]
+
+  recovered_max="$(sqlite3 -batch -noheader "$RECOVERED_DB" 'SELECT max(id) FROM messages NOT INDEXED;')"
+  [[ "$recovered_max" =~ ^[0-9]+$ ]]
+  [ "$recovered_max" = "$EXPECTED_RECOVERED_MAX_MESSAGE_ID" ]
+  sequence_before="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT seq FROM sqlite_sequence WHERE name='messages';")"
+  [ "$sequence_before" = "$recovered_max" ]
+  calculated_new_id=$((recovered_max + 1))
+  [ "$calculated_new_id" = "$EXPECTED_REKEYED_MESSAGE_ID" ]
+  new_id="$EXPECTED_REKEYED_MESSAGE_ID"
+  work_db_sql=${WORK_DB//\'/\'\'}
+
+  sqlite3 -bail "$RECOVERED_DB" <<SQL
+ATTACH '$work_db_sql' AS source_db;
+BEGIN IMMEDIATE;
+DELETE FROM main.messages WHERE id=$EXPECTED_DUPLICATE_MESSAGE_ID;
+INSERT INTO main.messages (
+  id,session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+)
+SELECT
+  CASE WHEN collision_rank=1 THEN $EXPECTED_DUPLICATE_MESSAGE_ID ELSE $new_id END,
+  session_id,role,content,tool_call_id,tool_calls,tool_name,timestamp,
+  token_count,finish_reason,reasoning,reasoning_content,reasoning_details,
+  codex_reasoning_items,codex_message_items,platform_message_id,observed,
+  active,compacted,effect_disposition,api_content,display_kind,display_metadata
+FROM (
+  SELECT *,row_number() OVER (ORDER BY timestamp) AS collision_rank
+    FROM source_db.messages NOT INDEXED
+   WHERE id+0=$EXPECTED_DUPLICATE_MESSAGE_ID
+)
+ORDER BY timestamp;
+COMMIT;
+SQL
+
+  post_summary="$(sqlite3 -batch -noheader -separator '|' "$RECOVERED_DB" \
+    "SELECT
+       (SELECT count(*) FROM messages NOT INDEXED),
+       (SELECT timestamp FROM messages NOT INDEXED WHERE id=$EXPECTED_DUPLICATE_MESSAGE_ID),
+       (SELECT timestamp FROM messages NOT INDEXED WHERE id=$new_id);")"
+  [ "$post_summary" = "$physical_count|$collision_min_timestamp|$collision_max_timestamp" ]
+  sequence_after="$(sqlite3 -batch -noheader "$RECOVERED_DB" \
+    "SELECT seq FROM sqlite_sequence WHERE name='messages';")"
+  [ "$sequence_after" = "$new_id" ]
+  log "salvaged duplicate message id=$EXPECTED_DUPLICATE_MESSAGE_ID rekeyed_later_id=$new_id"
 }
 
 stop_service_strict() {
@@ -289,6 +399,9 @@ BASE_COUNTS="$(sqlite3 -batch -noheader -separator '|' "$WORK_DB" \
 IFS='|' read -r BASE_SESSIONS BASE_MESSAGES BASE_ORPHANS <<EOF
 $BASE_COUNTS
 EOF
+[[ "$BASE_SESSIONS" =~ ^[0-9]+$ ]]
+[[ "$BASE_MESSAGES" =~ ^[0-9]+$ ]]
+[[ "$BASE_ORPHANS" =~ ^[0-9]+$ ]]
 [ "$BASE_SESSIONS" = "$EXPECTED_SESSIONS" ]
 [ "$BASE_MESSAGES" = "$EXPECTED_MESSAGES" ]
 [ "$BASE_ORPHANS" = "$EXPECTED_ORPHANS" ]
@@ -298,6 +411,7 @@ log "recovering from working copy into isolated database"
 sqlite3 "$WORK_DB" '.recover --ignore-freelist' > "$RECOVER_SQL"
 chmod 600 "$RECOVER_SQL"
 sqlite3 -bail "$RECOVERED_DB" < "$RECOVER_SQL"
+salvage_duplicate_message_collision
 sqlite3 -bail "$RECOVERED_DB" \
   "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
    INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild');
@@ -322,7 +436,7 @@ FTS_COUNTS="$(sqlite3 -batch -noheader -separator '|' "$RECOVERED_DB" \
        WHERE f.rowid IS NULL OR f.content != COALESCE(m.content,'') || ' ' || COALESCE(m.tool_name,'') || ' ' || COALESCE(m.tool_calls,'')),
      (SELECT count(*) FROM messages AS m NOT INDEXED LEFT JOIN messages_fts_trigram AS f ON f.rowid=m.id
        WHERE f.rowid IS NULL OR f.content != COALESCE(m.content,'') || ' ' || COALESCE(m.tool_name,'') || ' ' || COALESCE(m.tool_calls,''));")"
-[ "$FTS_COUNTS" = "$EXPECTED_MESSAGES|$EXPECTED_MESSAGES|$EXPECTED_MESSAGES|0|0" ]
+[ "$FTS_COUNTS" = "$BASE_MESSAGES|$BASE_MESSAGES|$BASE_MESSAGES|0|0" ]
 log "isolated acceptance quick_check=ok counts=$RECOVERED_COUNTS fts=$FTS_COUNTS"
 
 reprove_quiescence
@@ -346,7 +460,7 @@ POST_COUNTS="$(sqlite3 -batch -noheader -separator '|' "$LIVE_DB" \
 [ "$POST_COUNTS" = "$RECOVERED_COUNTS" ]
 POST_FTS="$(sqlite3 -batch -noheader -separator '|' "$LIVE_DB" \
   "SELECT (SELECT count(*) FROM messages_fts),(SELECT count(*) FROM messages_fts_trigram);")"
-[ "$POST_FTS" = "$EXPECTED_MESSAGES|$EXPECTED_MESSAGES" ]
+[ "$POST_FTS" = "$BASE_MESSAGES|$BASE_MESSAGES" ]
 
 log "starting marketing gateway"
 start_service
