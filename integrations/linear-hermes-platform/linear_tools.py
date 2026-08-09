@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
+import html
 import json
 import os
+import re
 import stat
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+from markdown_it import MarkdownIt
 
 try:
     from .linear_client import LinearClient
@@ -35,7 +41,10 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     from outbound_policy import OutboundPolicy, extract_linear_profile_url
 
 WRAPPER_FIELDS = frozenset(
-    {"operation_key", "target_team_id", "lifecycle_action", "comment_purpose"}
+    {
+        "operation_key", "target_team_id", "lifecycle_action", "comment_purpose",
+        "expected_updated_at",
+    }
 )
 TOOL_MAP = {
     "linear_get_issue": ("get_issue", False),
@@ -48,7 +57,7 @@ VENDOR_MUTATION_TOOLS = frozenset(
 )
 LIFECYCLE_NOOP_LEDGER_PREFIX = "lifecycle-noop:"
 LIFECYCLE_NOOP_STATUSES = frozenset(
-    {"already_started", "already_completed", "already_canceled"}
+    {"already_started", "already_completed", "already_canceled", "already_enriched"}
 )
 
 
@@ -109,7 +118,11 @@ SAVE_ISSUE_SCHEMA = {
             "description": {"type": "string"},
             "lifecycle_action": {
                 "type": "string",
-                "enum": ["start", "complete_child", "cancel_child"],
+                "enum": ["start", "complete_child", "cancel_child", "enrich_plan"],
+            },
+            "expected_updated_at": {
+                "type": "string",
+                "description": "Exact updatedAt revision read before enrich_plan",
             },
             "priority": {"type": "number"},
             "assignee": {"type": "string"},
@@ -286,19 +299,46 @@ def _evaluate_child_terminal_context(
     target_team_id: str,
     actor_id: str,
     open_actor_session: bool,
+    delegated_completion_error: str | None = None,
 ) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
     target_type = "completed" if action == "complete_child" else "canceled"
     if str((context.get("team") or {}).get("id") or "") != target_team_id:
         return None, {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
     if str((context.get("creator") or {}).get("id") or "") != actor_id:
         return None, {"error": "linear_policy_denied", "reason": "child_creator_mismatch"}
-    if str((context.get("delegate") or {}).get("id") or "") != actor_id:
-        return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+    delegate_id = str((context.get("delegate") or {}).get("id") or "")
+    delegated_completion = delegate_id != actor_id
+    if delegated_completion:
+        if action != "complete_child":
+            return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+        if delegated_completion_error:
+            return None, {
+                "error": "linear_policy_denied",
+                "reason": delegated_completion_error,
+            }
     parent = context.get("parent") or {}
     if not str(parent.get("id") or ""):
         return None, {"error": "linear_policy_denied", "reason": "child_parent_required"}
-    parent_assignee_id = str((parent.get("assignee") or {}).get("id") or "")
-    if not parent_assignee_id or parent_assignee_id == actor_id:
+    if delegated_completion:
+        child_project_id = str((context.get("project") or {}).get("id") or "")
+        parent_project_id = str((parent.get("project") or {}).get("id") or "")
+        if not child_project_id or not parent_project_id:
+            return None, {
+                "error": "linear_policy_denied",
+                "reason": "delegated_child_project_required",
+            }
+        if child_project_id != parent_project_id:
+            return None, {
+                "error": "linear_policy_denied",
+                "reason": "child_project_mismatch",
+            }
+    parent_assignee = parent.get("assignee") or {}
+    parent_assignee_id = str(parent_assignee.get("id") or "")
+    if (
+        not parent_assignee_id
+        or parent_assignee_id == actor_id
+        or parent_assignee.get("app") is not False
+    ):
         return None, {"error": "linear_policy_denied", "reason": "human_parent_required"}
     parent_state_type = str((parent.get("state") or {}).get("type") or "").casefold()
     if parent_state_type not in {"backlog", "unstarted", "started"}:
@@ -350,21 +390,289 @@ async def _resolve_child_terminal_transition(
     action: str,
     target_team_id: str,
     actor_id: str,
+    manager_completion_allowed: bool,
     graphql_client: LinearClient,
 ) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
     context = await graphql_client.get_issue_child_terminal_context(issue_id)
     sessions = await graphql_client.get_issue_agent_sessions(issue_id)
+    delegate_id = str((context.get("delegate") or {}).get("id") or "")
     open_actor_session = any(
         str(session.get("app_user_id") or "") == actor_id
         and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
         for session in sessions
     )
+    delegated_completion_error: str | None = None
+    if delegate_id != actor_id:
+        delegate_sessions = [
+            session
+            for session in sessions
+            if str(session.get("app_user_id") or "") == delegate_id
+        ]
+        if not manager_completion_allowed:
+            delegated_completion_error = "manager_completion_not_allowed"
+        elif any(
+            str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+            for session in sessions
+        ):
+            delegated_completion_error = "child_delegate_session_still_open"
+        elif not delegate_sessions:
+            delegated_completion_error = "delegate_session_required"
+        elif len(delegate_sessions) != 1:
+            delegated_completion_error = "delegate_session_ambiguous"
+        elif str(delegate_sessions[0].get("status") or "") != "complete":
+            delegated_completion_error = "delegate_session_not_complete"
+        else:
+            try:
+                response_count = await graphql_client.get_agent_session_terminal_response_count(
+                    str(delegate_sessions[0].get("id") or "")
+                )
+            except Exception:
+                delegated_completion_error = "delegate_response_evidence_unavailable"
+            else:
+                if response_count < 1:
+                    delegated_completion_error = "delegate_terminal_response_required"
     return _evaluate_child_terminal_context(
         context,
         action=action,
         target_team_id=target_team_id,
         actor_id=actor_id,
         open_actor_session=open_actor_session,
+        delegated_completion_error=delegated_completion_error,
+    )
+
+
+PLAN_REQUIRED_HEADINGS = (
+    "## Amaç",
+    "## Kapsam",
+    "## Kapsam dışı",
+    "## Uygulama planı",
+    "## Bağımlılıklar ve alt işler",
+    "## Kabul kriterleri",
+    "## Doğrulama ve teslim kanıtı",
+    "## Riskler ve geri dönüş",
+)
+
+
+_COMMONMARK = MarkdownIt("commonmark")
+
+
+def _inline_visible_text(token: Any) -> str:
+    children = getattr(token, "children", None)
+    if not children:
+        raw = html.unescape(str(getattr(token, "content", "") or ""))
+        return "".join(
+            character
+            for character in unicodedata.normalize("NFKC", raw)
+            if unicodedata.category(character) != "Cf"
+        )
+    parts: list[str] = []
+    for child in children:
+        if child.type in {"text", "code_inline"}:
+            parts.append(html.unescape(str(child.content or "")))
+        elif child.type in {"softbreak", "hardbreak"}:
+            parts.append(" ")
+        elif child.type == "image":
+            parts.append(html.unescape(str(child.content or "")))
+    raw = "".join(parts)
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKC", raw)
+        if unicodedata.category(character) != "Cf"
+    )
+
+
+def _commonmark_h2_lines(description: str) -> list[str]:
+    tokens = _COMMONMARK.parse(description)
+    headings: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h2":
+            continue
+        content = ""
+        if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+            content = _inline_visible_text(tokens[index + 1]).strip()
+        headings.append(f"## {content}" if content else "##")
+    return headings
+
+
+def _section_substantive(heading: str, content: str) -> bool:
+    tokens = _COMMONMARK.parse(content)
+    semantic_text = " ".join(
+        _inline_visible_text(token) for token in tokens if token.type == "inline"
+    )
+    words = re.findall(r"[^\W_]+", semantic_text.lower(), flags=re.UNICODE)
+    if (
+        len(words) < 8
+        or len(set(words)) < 5
+        or len(set(words)) / len(words) < 0.55
+        or sum(len(word) for word in words) < 40
+    ):
+        return False
+    marker_groups = {
+        "## Kapsam": (("issue", "iş", "kapsam", "faz", "child", "araştır"),),
+        "## Kapsam dışı": (("dışı", "hariç", "onaysız", "yapılmay", "kapsamaz"),),
+        "## Uygulama planı": (("test", "oku", "kur", "uygula", "yürüt", "adım"),),
+        "## Bağımlılıklar ve alt işler": (("bağıml", "block", "child", "alt iş", "delegate"),),
+        "## Kabul kriterleri": (("kabul", "teslim", "kanıt", "read-back", "canary", "doğrula"),),
+        "## Doğrulama ve teslim kanıtı": (
+            ("test", "canary", "doğrula"),
+            ("kanıt", "read-back", "manifest", "çıktı"),
+        ),
+        "## Riskler ve geri dönüş": (
+            ("risk", "drift", "fail-closed"),
+            ("rollback", "geri dönüş", "geri alın"),
+        ),
+    }
+    lowered = semantic_text.lower()
+    groups = marker_groups.get(heading, ())
+    if any(not any(marker in lowered for marker in group) for group in groups):
+        return False
+    list_items = sum(1 for token in tokens if token.type == "list_item_open")
+    if heading in {"## Uygulama planı", "## Kabul kriterleri"} and list_items < 2:
+        return False
+    normalized_items: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.type != "list_item_open":
+            continue
+        item_parts: list[str] = []
+        depth = 1
+        for nested in tokens[index + 1:]:
+            if nested.type == "list_item_open":
+                depth += 1
+            elif nested.type == "list_item_close":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif depth == 1 and nested.type == "inline":
+                item_parts.append(_inline_visible_text(nested))
+        normalized = " ".join(
+            re.findall(r"[^\W_]+", " ".join(item_parts).lower(), flags=re.UNICODE)
+        )
+        if normalized:
+            normalized_items.append(normalized)
+    if len(normalized_items) != len(set(normalized_items)):
+        return False
+    return True
+
+
+def _parse_plan_sections(description: str) -> dict[str, str] | None:
+    if len(description.strip()) < 500:
+        return None
+    document_tokens = _COMMONMARK.parse(description)
+    if any(
+        token.type == "html_block"
+        or any(child.type == "html_inline" for child in (token.children or []))
+        for token in document_tokens
+    ):
+        return None
+    lines = description.splitlines()
+    if not lines or lines[0] != PLAN_REQUIRED_HEADINGS[0]:
+        return None
+    h2_lines = _commonmark_h2_lines(description)
+    if h2_lines != list(PLAN_REQUIRED_HEADINGS):
+        return None
+    positions: list[int] = []
+    for heading in PLAN_REQUIRED_HEADINGS:
+        matches = [index for index, line in enumerate(lines) if line == heading]
+        if len(matches) != 1:
+            return None
+        positions.append(matches[0])
+    sections: dict[str, str] = {}
+    for index, position in enumerate(positions):
+        end = positions[index + 1] if index + 1 < len(positions) else len(lines)
+        section = "\n".join(lines[position + 1:end]).strip()
+        heading = PLAN_REQUIRED_HEADINGS[index]
+        if not _section_substantive(heading, section):
+            return None
+        sections[heading] = section
+    word_counts: list[Counter[str]] = []
+    for section in sections.values():
+        semantic_text = " ".join(
+            _inline_visible_text(token)
+            for token in _COMMONMARK.parse(section)
+            if token.type == "inline"
+        )
+        word_counts.append(Counter(re.findall(r"[^\W_]+", semantic_text.lower(), flags=re.UNICODE)))
+    for index, left in enumerate(word_counts):
+        for right in word_counts[index + 1:]:
+            shared_count = sum((left & right).values())
+            smaller = min(sum(left.values()), sum(right.values()))
+            if smaller and shared_count / smaller >= 0.70:
+                return None
+    return sections
+
+
+def _evaluate_plan_context(
+    context: dict[str, Any],
+    *,
+    target_team_id: str,
+    actor_id: str,
+    expected_updated_at: str,
+    description: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    sections = _parse_plan_sections(description)
+    if sections is None:
+        return None, {"error": "linear_policy_denied", "reason": "plan_template_invalid"}
+    if str((context.get("team") or {}).get("id") or "") != target_team_id:
+        return None, {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
+    if str((context.get("delegate") or {}).get("id") or "") != actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+    assignee = context.get("assignee") or {}
+    if not str(assignee.get("id") or "") or assignee.get("app") is not False:
+        return None, {"error": "linear_policy_denied", "reason": "human_owner_required"}
+    state_type = str((context.get("state") or {}).get("type") or "").casefold()
+    if state_type not in {"backlog", "unstarted", "started"}:
+        return None, {"error": "linear_policy_denied", "reason": "plan_state_not_active"}
+    live_updated_at = str(context.get("updatedAt") or "")
+    source_title = str(context.get("title") or "")
+    source_description = str(context.get("description") or "")
+    purpose_section = sections["## Amaç"]
+    if source_title and source_title not in purpose_section:
+        return None, {"error": "linear_policy_denied", "reason": "source_title_not_preserved"}
+    if source_description == description:
+        if not live_updated_at or live_updated_at != expected_updated_at:
+            return None, {"error": "linear_policy_denied", "reason": "plan_revision_mismatch"}
+        return None, {
+            "status": "already_enriched",
+            "result_id": str(context.get("id") or ""),
+        }
+    if not live_updated_at or live_updated_at != expected_updated_at:
+        return None, {"error": "linear_policy_denied", "reason": "plan_revision_mismatch"}
+    if len(source_description) > 500 or _commonmark_h2_lines(source_description):
+        return None, {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"}
+    if source_description and source_description not in purpose_section:
+        return None, {"error": "linear_policy_denied", "reason": "source_brief_not_preserved"}
+    return {
+        "team_id": target_team_id,
+        "delegate_id": actor_id,
+        "assignee_id": str(assignee.get("id") or ""),
+        "state_id": str((context.get("state") or {}).get("id") or ""),
+        "state_type": state_type,
+        "title": str(context.get("title") or ""),
+        "updated_at": live_updated_at,
+    }, None
+
+
+def _plan_readback_matches(
+    context: dict[str, Any],
+    *,
+    snapshot: dict[str, str],
+    expected_updated_at: str,
+    description: str,
+) -> bool:
+    assignee = context.get("assignee") or {}
+    state = context.get("state") or {}
+    updated_at = str(context.get("updatedAt") or "")
+    return bool(
+        str((context.get("team") or {}).get("id") or "") == snapshot["team_id"]
+        and str((context.get("delegate") or {}).get("id") or "") == snapshot["delegate_id"]
+        and str(assignee.get("id") or "") == snapshot["assignee_id"]
+        and assignee.get("app") is False
+        and str(state.get("id") or "") == snapshot["state_id"]
+        and str(state.get("type") or "").casefold() == snapshot["state_type"]
+        and str(context.get("title") or "") == snapshot["title"]
+        and str(context.get("description") or "") == description
+        and updated_at
+        and updated_at != expected_updated_at
     )
 
 
@@ -441,6 +749,7 @@ async def execute_with_clients(
 
     lifecycle_action = str(arguments.get("lifecycle_action") or "")
     lifecycle_transition: dict[str, str] | None = None
+    plan_snapshot: dict[str, str] | None = None
     lifecycle_noop_result: dict[str, Any] | None = None
     if lifecycle_action == "start":
         lifecycle_transition, lifecycle_result = await _resolve_start_transition(
@@ -460,6 +769,7 @@ async def execute_with_clients(
             action=lifecycle_action,
             target_team_id=str(arguments.get("target_team_id") or ""),
             actor_id=graph_actor,
+            manager_completion_allowed=profile_id == "general",
             graphql_client=graphql_client,
         )
         if lifecycle_result is not None:
@@ -467,16 +777,81 @@ async def execute_with_clients(
                 lifecycle_noop_result = lifecycle_result
             else:
                 return lifecycle_result
+    elif lifecycle_action == "enrich_plan":
+        if ledger is None:
+            return {"error": "linear_idempotency_rejected", "reason": "ledger_not_configured"}
+        plan_ledger_payload = {
+            "id": str(arguments.get("id") or ""),
+            "description": str(arguments.get("description") or ""),
+            "lifecycle_action": "enrich_plan",
+            "expected_updated_at": str(arguments.get("expected_updated_at") or ""),
+        }
+        try:
+            existing = await asyncio.to_thread(
+                ledger.lookup,
+                operation_key=str(arguments.get("operation_key") or ""),
+                tool_name=vendor_tool,
+                payload=plan_ledger_payload,
+                profile_id=profile_id,
+                actor_id=graph_actor,
+                team_id=str(arguments.get("target_team_id") or ""),
+            )
+        except OutboundLedgerError as exc:
+            return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+        if existing is not None:
+            if existing.status == "pending":
+                try:
+                    existing = await asyncio.to_thread(
+                        ledger.reserve,
+                        operation_key=str(arguments.get("operation_key") or ""),
+                        tool_name=vendor_tool,
+                        payload=plan_ledger_payload,
+                        profile_id=profile_id,
+                        actor_id=graph_actor,
+                        team_id=str(arguments.get("target_team_id") or ""),
+                    )
+                except OutboundLedgerError as exc:
+                    return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+            lifecycle_noop_replay = _decode_lifecycle_noop_result(existing.result_id)
+            if lifecycle_noop_replay is not None:
+                noop_status, noop_result_id = lifecycle_noop_replay
+                return {
+                    "status": noop_status,
+                    "replayed": True,
+                    "result_id": noop_result_id,
+                }
+            return {
+                "status": existing.status,
+                "replayed": True,
+                "result_id": existing.result_id,
+                **({"error_code": existing.error_code} if existing.error_code else {}),
+            }
+        plan_snapshot, plan_result = _evaluate_plan_context(
+            await graphql_client.get_issue_plan_context(str(arguments.get("id") or "")),
+            target_team_id=str(arguments.get("target_team_id") or ""),
+            actor_id=graph_actor,
+            expected_updated_at=str(arguments.get("expected_updated_at") or ""),
+            description=str(arguments.get("description") or ""),
+        )
+        if plan_result is not None:
+            if str(plan_result.get("status") or "") in LIFECYCLE_NOOP_STATUSES:
+                lifecycle_noop_result = plan_result
+            else:
+                return plan_result
 
     forwarded = {key: value for key, value in arguments.items() if key not in WRAPPER_FIELDS}
     if lifecycle_transition is not None:
         forwarded["state"] = lifecycle_transition["target_state_id"]
-    elif lifecycle_noop_result is not None:
+    elif lifecycle_noop_result is not None and lifecycle_action != "enrich_plan":
         forwarded["state"] = str(lifecycle_noop_result.get("result_id") or "")
     ledger_payload = dict(forwarded)
-    if lifecycle_action in {"start", "complete_child", "cancel_child"}:
+    if lifecycle_action in {"start", "complete_child", "cancel_child", "enrich_plan"}:
         ledger_payload.pop("state", None)
         ledger_payload["lifecycle_action"] = lifecycle_action
+        if lifecycle_action == "enrich_plan":
+            ledger_payload["expected_updated_at"] = str(
+                arguments.get("expected_updated_at") or ""
+            )
     if not mutation:
         return await mcp_client.call_tool(vendor_tool, forwarded)
     if ledger is None:
@@ -560,9 +935,34 @@ async def execute_with_clients(
                     action=lifecycle_action,
                     target_team_id=team_id,
                     actor_id=graph_actor,
+                    manager_completion_allowed=profile_id == "general",
                     graphql_client=graphql_client,
                 )
             confirmation_matches = confirmation_result is None and confirmed == lifecycle_transition
+        except Exception:
+            confirmation_matches = False
+        if not confirmation_matches:
+            await asyncio.to_thread(
+                ledger.mark_failed,
+                operation_key,
+                error_code="lifecycle_pre_dispatch_changed",
+            )
+            return {
+                "error": "linear_policy_denied",
+                "reason": "lifecycle_pre_dispatch_changed",
+            }
+    elif plan_snapshot is not None:
+        try:
+            confirmed, confirmation_result = _evaluate_plan_context(
+                await graphql_client.get_issue_plan_context(
+                    str(arguments.get("id") or "")
+                ),
+                target_team_id=team_id,
+                actor_id=graph_actor,
+                expected_updated_at=str(arguments.get("expected_updated_at") or ""),
+                description=str(arguments.get("description") or ""),
+            )
+            confirmation_matches = confirmation_result is None and confirmed == plan_snapshot
         except Exception:
             confirmation_matches = False
         if not confirmation_matches:
@@ -645,6 +1045,7 @@ async def execute_with_clients(
                     action=lifecycle_action,
                     target_team_id=team_id,
                     actor_id=graph_actor,
+                    manager_completion_allowed=profile_id == "general",
                     graphql_client=graphql_client,
                 )
                 expected_status = (
@@ -658,6 +1059,28 @@ async def execute_with_clients(
                     and terminal_result.get("result_id")
                     == lifecycle_transition["target_state_id"]
                 )
+        except Exception:
+            accepted = False
+        if not accepted:
+            await asyncio.to_thread(
+                ledger.mark_unknown,
+                operation_key,
+                error_code="lifecycle_readback_mismatch",
+            )
+            return {
+                "error": "linear_mutation_outcome_unknown",
+                "reason": "lifecycle_readback_mismatch",
+            }
+    elif plan_snapshot is not None:
+        try:
+            accepted = _plan_readback_matches(
+                await graphql_client.get_issue_plan_context(
+                    str(arguments.get("id") or "")
+                ),
+                snapshot=plan_snapshot,
+                expected_updated_at=str(arguments.get("expected_updated_at") or ""),
+                description=str(arguments.get("description") or ""),
+            )
         except Exception:
             accepted = False
         if not accepted:

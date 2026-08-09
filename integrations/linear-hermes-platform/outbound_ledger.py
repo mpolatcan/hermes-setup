@@ -536,6 +536,50 @@ class OutboundLedger:
             finally:
                 db.close()
 
+    def lookup(
+        self,
+        *,
+        operation_key: str,
+        tool_name: str,
+        payload: dict[str, Any],
+        profile_id: str,
+        actor_id: str,
+        team_id: str,
+    ) -> OperationReservation | None:
+        """Return an existing exact operation without creating or mutating a row."""
+        if not operation_key or len(operation_key) > 200:
+            raise OutboundLedgerError("operation_key is missing or too long")
+        operation_id = self._operation_hash(operation_key)
+        payload_hash = self._payload_hash(payload)
+        with self._exclusive_file_lock():
+            db = self._load_database()
+            try:
+                row = db.execute(
+                    """
+                    SELECT payload_hash, tool_name, profile_id, actor_id, team_id,
+                           status, result_id, error_code
+                    FROM linear_mcp_operations WHERE operation_key = ?
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                identity = row[:5]
+                expected = (payload_hash, tool_name, profile_id, actor_id, team_id)
+                if identity != expected:
+                    raise OutboundLedgerError(
+                        "operation_key already exists with a different payload or identity"
+                    )
+                status_value, result_id, error_code = row[5:]
+                return OperationReservation(
+                    False,
+                    str(status_value),
+                    result_id,
+                    error_code,
+                )
+            finally:
+                db.close()
+
     def mark_success(self, operation_key: str, *, result_id: str | None = None) -> None:
         if not isinstance(result_id, str) or not result_id:
             raise OutboundLedgerError("result_id is required for successful operations")

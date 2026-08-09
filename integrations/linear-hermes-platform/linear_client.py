@@ -18,6 +18,7 @@ AGENT_SESSION_STATUSES = frozenset(
     {"pending", "active", "complete", "awaitingInput", "error", "stale"}
 )
 MAX_AGENT_SESSION_PAGES = 100
+MAX_AGENT_ACTIVITY_PAGES = 100
 MAX_USER_PAGES = 100
 MAX_CHILD_RELATION_PAGES = 100
 
@@ -143,6 +144,30 @@ query LinearPolicyMentionUsers($after: String) {
             after = cursor
         raise LinearAPIError("Mention user pagination exceeded the policy limit")
 
+    async def get_issue_plan_context(self, issue_id: str) -> dict[str, Any]:
+        """Read the exact revision and live ownership inputs for plan enrichment."""
+        data = await self.graphql(
+            """
+query IssuePlanContext($id: String!) {
+  issue(id: $id) {
+    id
+    title
+    updatedAt
+    description
+    team { id }
+    state { id type }
+    assignee { id app }
+    delegate { id }
+  }
+}
+""",
+            {"id": issue_id},
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise LinearAPIError("Linear issue plan context was unavailable")
+        return issue
+
     async def get_issue_start_context(self, issue_id: str) -> dict[str, Any]:
         """Read the official Linear inputs for a delegated non-terminal start."""
         data = await self.graphql(
@@ -184,10 +209,12 @@ query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: Stri
     state { id name type }
     creator { id }
     delegate { id }
+    project { id }
     parent {
       id
       state { id name type }
-      assignee { id }
+      assignee { id app }
+      project { id }
     }
     team {
       id
@@ -228,6 +255,7 @@ query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: Stri
                 "state": page_issue.get("state"),
                 "creator": page_issue.get("creator"),
                 "delegate": page_issue.get("delegate"),
+                "project": page_issue.get("project"),
                 "parent": page_issue.get("parent"),
                 "team_id": page_team.get("id") if isinstance(page_team, dict) else None,
             }
@@ -296,7 +324,8 @@ query LinearCreatorChildTerminalStates($id: String!, $after: String) {
     state { id name type }
     creator { id }
     delegate { id }
-    parent { id state { id name type } assignee { id } }
+    project { id }
+    parent { id state { id name type } assignee { id app } project { id } }
     team {
       id
       states(first: 50, after: $after, filter: { type: { in: ["completed", "canceled"] } }) {
@@ -331,6 +360,7 @@ query LinearCreatorChildTerminalStates($id: String!, $after: String) {
                 "state": state_issue.get("state"),
                 "creator": state_issue.get("creator"),
                 "delegate": state_issue.get("delegate"),
+                "project": state_issue.get("project"),
                 "parent": state_issue.get("parent"),
                 "team_id": state_team.get("id") if isinstance(state_team, dict) else None,
             }
@@ -390,6 +420,7 @@ query LinearCreatorChildTerminalStates($id: String!, $after: String) {
             "state": dict(issue.get("state") or {}),
             "creator": dict(issue.get("creator") or {}),
             "delegate": dict(issue.get("delegate") or {}),
+            "project": dict(issue.get("project") or {}),
             "parent": dict(issue.get("parent") or {}),
             "team": {"id": str(team.get("id") or "")},
             "terminal_states": list(states),
@@ -425,6 +456,7 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
 }
 """
         sessions: list[dict[str, str]] = []
+        resolved_issue_id = ""
         after: str | None = None
         seen_cursors: set[str] = set()
         for _page in range(MAX_AGENT_SESSION_PAGES):
@@ -436,6 +468,11 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
                 or not issue.get("id")
             ):
                 raise LinearAPIError("Issue Agent Sessions could not be resolved for policy")
+            page_issue_id = str(issue.get("id") or "")
+            if not resolved_issue_id:
+                resolved_issue_id = page_issue_id
+            elif page_issue_id != resolved_issue_id:
+                raise LinearAPIError("Issue Agent Session authorization context changed during pagination")
             connection = issue.get("agentSessions")
             if not isinstance(connection, dict):
                 raise LinearAPIError("Agent Session connection was incomplete for policy")
@@ -452,6 +489,7 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
                 app_user_id = app_user.get("id") if isinstance(app_user, dict) else None
                 started_at = raw.get("startedAt")
                 ended_at = raw.get("endedAt")
+
                 if (
                     not isinstance(session_id, str)
                     or not session_id
@@ -463,6 +501,7 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
                     or (ended_at is not None and not isinstance(ended_at, str))
                 ):
                     raise LinearAPIError("Agent Session node was incomplete for policy")
+
                 sessions.append({
                     "id": session_id,
                     "status": status,
@@ -483,6 +522,69 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
             seen_cursors.add(cursor)
             after = cursor
         raise LinearAPIError("Agent Session pagination exceeded the policy limit")
+
+    async def get_agent_session_terminal_response_count(self, session_id: str) -> int:
+        """Count non-empty terminal responses for one authoritative Agent Session."""
+        query = """
+query LinearPolicyAgentSessionResponses($id: String!, $after: String) {
+  agentSession(id: $id) {
+    id
+    activities(first: 50, after: $after) {
+      nodes {
+        content {
+          __typename
+          ... on AgentActivityResponseContent { body }
+          ... on AgentActivityThoughtContent { body }
+          ... on AgentActivityElicitationContent { body }
+          ... on AgentActivityErrorContent { body }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+        count = 0
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_AGENT_ACTIVITY_PAGES):
+            data = await self.graphql(query, {"id": session_id, "after": after})
+            session = data.get("agentSession")
+            if (
+                not isinstance(session, dict)
+                or str(session.get("id") or "") != session_id
+            ):
+                raise LinearAPIError("Agent Session response evidence could not be resolved")
+            connection = session.get("activities")
+            if not isinstance(connection, dict):
+                raise LinearAPIError("Agent Session response evidence was incomplete")
+            nodes = connection.get("nodes")
+            page_info = connection.get("pageInfo")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise LinearAPIError("Agent Session response evidence was incomplete")
+            for activity in nodes:
+                if not isinstance(activity, dict):
+                    raise LinearAPIError("Agent Session activity was malformed for policy")
+                content = activity.get("content")
+                if not isinstance(content, dict):
+                    raise LinearAPIError("Agent Session activity content was malformed for policy")
+                if content.get("__typename") == "AgentActivityResponseContent":
+                    body = content.get("body")
+                    if isinstance(body, str) and body.strip():
+                        count += 1
+            has_next = page_info.get("hasNextPage")
+            cursor = page_info.get("endCursor")
+            if not isinstance(has_next, bool) or (
+                cursor is not None and not isinstance(cursor, str)
+            ):
+                raise LinearAPIError("Agent Session activity pagination was incomplete")
+            if not has_next:
+                return count
+            if not cursor or cursor in seen_cursors:
+                raise LinearAPIError("Agent Session activity pagination did not advance")
+            seen_cursors.add(cursor)
+            after = cursor
+        raise LinearAPIError("Agent Session activity pagination exceeded the policy limit")
 
     async def get_agent_session_delivery_context(self, session_id: str) -> dict[str, Any]:
         """Read the authoritative app owner for one delivery target."""

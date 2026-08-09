@@ -1340,6 +1340,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(accepted.text)["status"], "accepted")
         self.assertEqual(len(self.events), 1)
         self.assertIn("Adapter-verified lifecycle activation", self.events[0].text)
+        self.assertIn("lifecycle_action=enrich_plan", self.events[0].text)
+        self.assertIn("Before substantive execution", self.events[0].text)
         self.assertEqual(
             self.adapter._ledger.get_manager_activation(issue_id)["state"],
             "session_started",
@@ -1767,6 +1769,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(first.text)["status"], "activation_resumed")
         self.assertEqual(len(self.events), 1)
         self.assertIn("Adapter-verified lifecycle activation", self.events[0].text)
+        self.assertIn("lifecycle_action=enrich_plan", self.events[0].text)
+        self.assertIn("Before substantive execution", self.events[0].text)
 
         semantic_duplicate = dict(activated)
         semantic_duplicate["webhookId"] = "webhook-planned-activation-2"

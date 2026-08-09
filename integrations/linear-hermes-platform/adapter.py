@@ -215,6 +215,10 @@ def build_agent_prompt(
                 "",
                 "Adapter-verified lifecycle activation:",
                 "The human assignee moved this Planned issue from Backlog to Todo. Begin manager planning and orchestration now.",
+                "Before substantive execution, read the live issue, then use linear_save_issue with lifecycle_action=enrich_plan and expected_updated_at equal to that exact live updatedAt revision.",
+                "Expand the same Linear description with these exact headings: ## Amaç, ## Kapsam, ## Kapsam dışı, ## Uygulama planı, ## Bağımlılıklar ve alt işler, ## Kabul kriterleri, ## Doğrulama ve teslim kanıtı, ## Riskler ve geri dönüş.",
+                "Keep the issue title unchanged, and preserve both that title and any original description verbatim inside the expanded plan; do not reinterpret away the source brief.",
+                "Create real child/delegate and blocked/blocking structures after the plan write-back; do not ask the human to rewrite a sparse brief.",
                 "This activation revision was durably claimed for one-shot dispatch; do not ask for a second approval.",
             ]
         )
@@ -344,6 +348,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     def check_requirements() -> bool:
         try:
             import aiohttp  # noqa: F401
+            import markdown_it  # noqa: F401
             return True
         except ImportError:
             return False

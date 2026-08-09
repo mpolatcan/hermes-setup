@@ -46,6 +46,39 @@ class OutboundLedgerTests(unittest.TestCase):
             team_id="ops-1",
         )
 
+    def test_lookup_is_read_only_and_identity_bound(self):
+        payload = {"issueId": "OPS-1", "body": "private body"}
+        missing = self.ledger.lookup(
+            operation_key="lookup-1",
+            tool_name="save_comment",
+            payload=payload,
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.assertIsNone(missing)
+        self.reserve("lookup-1", payload=payload)
+        self.ledger.mark_success("lookup-1", result_id="comment-1")
+        found = self.ledger.lookup(
+            operation_key="lookup-1",
+            tool_name="save_comment",
+            payload=payload,
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        assert found is not None
+        self.assertEqual((found.dispatch, found.status, found.result_id), (False, "success", "comment-1"))
+        with self.assertRaisesRegex(OutboundLedgerError, "different payload"):
+            self.ledger.lookup(
+                operation_key="lookup-1",
+                tool_name="save_comment",
+                payload={"issueId": "OPS-1", "body": "different"},
+                profile_id="general",
+                actor_id="actor-1",
+                team_id="ops-1",
+            )
+
     def test_first_reservation_dispatches_and_same_replay_does_not(self):
         first = self.reserve()
         second = self.reserve()

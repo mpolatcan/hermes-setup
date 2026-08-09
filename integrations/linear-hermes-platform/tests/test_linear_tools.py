@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import threading
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,7 +14,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from linear_tools import execute_with_clients, register_outbound_tools  # noqa: E402
+from linear_tools import _parse_plan_sections, execute_with_clients, register_outbound_tools  # noqa: E402
 from mcp_client import LinearMCPToolError  # noqa: E402
 from oauth_store import LinearAPIError  # noqa: E402
 from outbound_ledger import OperationReservation, OutboundLedger  # noqa: E402
@@ -115,9 +116,10 @@ class RegistrationTests(unittest.TestCase):
             issue_properties["lifecycle_action"],
             {
                 "type": "string",
-                "enum": ["start", "complete_child", "cancel_child"],
+                "enum": ["start", "complete_child", "cancel_child", "enrich_plan"],
             },
         )
+        self.assertEqual(issue_properties["expected_updated_at"]["type"], "string")
         self.assertNotIn("approval_reference", issue_properties)
         self.assertNotIn(
             "approval_reference",
@@ -364,6 +366,7 @@ class FakeGraphQL:
         issue_teams=None,
         start_contexts=None,
         child_terminal_contexts=None,
+        plan_contexts=None,
         agent_sessions=None,
         agent_session_reads=None,
         mention_users=None,
@@ -372,8 +375,10 @@ class FakeGraphQL:
         self.issue_teams = issue_teams or {}
         self.start_contexts = list(start_contexts or [])
         self.child_terminal_contexts = list(child_terminal_contexts or [])
+        self.plan_contexts = list(plan_contexts or [])
         self.agent_sessions = list(agent_sessions or [])
         self.agent_session_reads = list(agent_session_reads or [])
+        self.last_agent_sessions = list(self.agent_sessions)
         self.mention_users = dict(mention_users or {})
 
     async def get_issue_team_id(self, issue_id):
@@ -384,8 +389,17 @@ class FakeGraphQL:
 
     async def get_issue_agent_sessions(self, _issue_id):
         if self.agent_session_reads:
-            return list(self.agent_session_reads.pop(0))
-        return list(self.agent_sessions)
+            result = list(self.agent_session_reads.pop(0))
+        else:
+            result = list(self.agent_sessions)
+        self.last_agent_sessions = result
+        return result
+
+    async def get_agent_session_terminal_response_count(self, session_id):
+        for session in self.last_agent_sessions:
+            if str(session.get("id") or "") == session_id:
+                return int(session.get("terminal_response_count") or 0)
+        raise LinearAPIError("response evidence unavailable")
 
     async def get_user_by_url(self, url):
         return self.mention_users.get(url)
@@ -403,6 +417,13 @@ class FakeGraphQL:
         if len(self.child_terminal_contexts) == 1:
             return self.child_terminal_contexts[0]
         return self.child_terminal_contexts.pop(0)
+
+    async def get_issue_plan_context(self, _issue_id):
+        if not self.plan_contexts:
+            raise AssertionError("unexpected plan context read")
+        if len(self.plan_contexts) == 1:
+            return self.plan_contexts[0]
+        return self.plan_contexts.pop(0)
 
 
 class FakeMCP:
@@ -446,16 +467,31 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.tempdir.cleanup()
 
     @staticmethod
+    def plan_context(*, updated_at="2026-08-09T18:00:00.000Z", description="Short brief"):
+        return {
+            "id": "issue-1",
+            "title": "Short brief",
+            "updatedAt": updated_at,
+            "description": description,
+            "team": {"id": "ops-1"},
+            "state": {"id": "todo-1", "type": "unstarted"},
+            "assignee": {"id": "human-1", "app": False},
+            "delegate": {"id": "actor-1"},
+        }
+
+    @staticmethod
     def child_terminal_context() -> dict:
         return {
             "team": {"id": "ops-1"},
             "state": {"id": "progress-1", "type": "started"},
             "creator": {"id": "actor-1"},
             "delegate": {"id": "actor-1"},
+            "project": {"id": "project-1"},
             "parent": {
                 "id": "parent-1",
                 "state": {"id": "parent-progress", "type": "started"},
-                "assignee": {"id": "human-1"},
+                "assignee": {"id": "human-1", "app": False},
+                "project": {"id": "project-1"},
             },
             "terminal_states": [
                 {"id": "done-1", "type": "completed", "position": 40},
@@ -468,13 +504,16 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self,
         *,
         context: dict,
+        profile_id: str = "general",
         action: str = "complete_child",
         operation_key: str,
         agent_sessions: list[dict] | None = None,
+        agent_session_reads: list[list[dict]] | None = None,
+        after_context: dict | None = None,
     ) -> tuple[dict, FakeMCP]:
         mcp = FakeMCP()
         result = await execute_with_clients(
-            profile_id="general",
+            profile_id=profile_id,
             vendor_tool="save_issue",
             arguments={
                 "id": "OPS-106",
@@ -486,12 +525,425 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             policy=self.policy,
             ledger=self.ledger,
             graphql_client=FakeGraphQL(
-                child_terminal_contexts=[context],
+                child_terminal_contexts=(
+                    [context, context, after_context]
+                    if after_context is not None
+                    else [context]
+                ),
                 agent_sessions=agent_sessions,
+                agent_session_reads=agent_session_reads,
             ),
             mcp_client=mcp,
         )
         return result, mcp
+
+    @staticmethod
+    def plan_description() -> str:
+        return """## Amaç
+Kısa brief'i doğrulanabilir bir şirket sonucuna dönüştürmek ve task sahibinin yürütme planını görünür kılmak. Kaynak brief: Short brief
+
+## Kapsam
+Issue bağlamını araştırmak, işi fazlara ayırmak, gerekli uzman child'ları ve gerçek bağımlılıkları Linear'da kurmak.
+
+## Kapsam dışı
+Onaysız credential kapsamı değişikliği, harcama, yayın ve geri döndürülemez production işlemleri kapsam dışıdır.
+
+## Uygulama planı
+1. Canlı bağlamı ve mevcut artefaktları oku.
+2. Child/dependency modelini kur.
+3. İşi test-first yürüt ve kanıtları issue'ya bağla.
+
+## Bağımlılıklar ve alt işler
+Şimdilik açık blocker yok. Araştırma bağımsız teslim gerektirirse child issue açılıp doğru uzmana delegate edilecek.
+
+## Kabul kriterleri
+- [ ] Plan issue description'ında authoritative read-back ile görünür.
+- [ ] Teslim test ve canlı canary kanıtı taşır.
+
+## Doğrulama ve teslim kanıtı
+Test çıktıları, vendor read-back, commit/manifest ve gerekiyorsa kanonik Notion bağlantısı Linear issue üzerinde bulunur.
+
+## Riskler ve geri dönüş
+Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur; deployment atomik rollback ile geri alınır."""
+
+    async def run_plan_action(
+        self,
+        *,
+        operation_key: str,
+        contexts: list[dict],
+        description: str | None = None,
+    ) -> tuple[dict, FakeMCP]:
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-105",
+                "target_team_id": "ops-1",
+                "operation_key": operation_key,
+                "lifecycle_action": "enrich_plan",
+                "expected_updated_at": "2026-08-09T18:00:00.000Z",
+                "description": description or self.plan_description(),
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(plan_contexts=contexts),
+            mcp_client=mcp,
+        )
+        return result, mcp
+
+    async def test_enrich_plan_updates_same_issue_with_conflict_guard(self):
+        before = self.plan_context()
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=self.plan_description(),
+        )
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-positive",
+            contexts=[before, before, after],
+        )
+        self.assertEqual(result["status"], "success")
+        save_calls = [call for call in mcp.calls if call[0] == "save_issue"]
+        self.assertEqual(
+            save_calls,
+            [("save_issue", {"id": "OPS-105", "description": self.plan_description()}, True)],
+        )
+        replay, replay_mcp = await self.run_plan_action(
+            operation_key="enrich-plan-positive",
+            contexts=[after],
+        )
+        self.assertEqual(replay["status"], "success")
+        self.assertTrue(replay["replayed"])
+        self.assertEqual([call[0] for call in replay_mcp.calls], ["get_user"])
+
+    async def test_enrich_plan_post_dispatch_drift_reports_unknown(self):
+        before = self.plan_context()
+        for drift in ("description", "owner", "state"):
+            with self.subTest(drift=drift):
+                after = self.plan_context(
+                    updated_at="2026-08-09T18:01:00.000Z",
+                    description=self.plan_description(),
+                )
+                if drift == "description":
+                    after["description"] = "Concurrent human edit"
+                elif drift == "owner":
+                    after["assignee"] = {"id": "other-agent", "app": True}
+                else:
+                    after["state"] = {"id": "done-1", "type": "completed"}
+                result, mcp = await self.run_plan_action(
+                    operation_key=f"enrich-plan-post-{drift}",
+                    contexts=[before, before, after],
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "error": "linear_mutation_outcome_unknown",
+                        "reason": "lifecycle_readback_mismatch",
+                    },
+                )
+                self.assertEqual(
+                    len([call for call in mcp.calls if call[0] == "save_issue"]),
+                    1,
+                )
+
+    async def test_enrich_plan_rejects_stale_human_revision_before_dispatch(self):
+        before = self.plan_context()
+        drift = self.plan_context(updated_at="2026-08-09T18:00:30.000Z")
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-stale",
+            contexts=[before, drift],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "lifecycle_pre_dispatch_changed"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_enrich_plan_requires_sparse_preserved_source_and_structured_sections(self):
+        detailed_source = "Existing detailed human plan " * 25
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-nonsparse",
+            contexts=[self.plan_context(description=detailed_source)],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"},
+        )
+
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-drops-brief",
+            contexts=[self.plan_context(description="Original human brief")],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "source_brief_not_preserved"},
+        )
+
+        title_only = self.plan_context(description="")
+        title_only["title"] = "Title-only human intent"
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-drops-title",
+            contexts=[title_only],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "source_title_not_preserved"},
+        )
+
+        duplicate_heading = self.plan_description().replace(
+            "## Kapsam\n",
+            "## Amaç\nDuplicate purpose section with substantive filler.\n\n## Kapsam\n",
+            1,
+        )
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-duplicate-heading",
+            contexts=[self.plan_context()],
+            description=duplicate_heading,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_template_invalid"},
+        )
+
+        extra_heading = self.plan_description() + (
+            "\n\n## Extra\nThis additional heading must invalidate the exact section contract."
+        )
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-extra-heading",
+            contexts=[self.plan_context()],
+            description=extra_heading,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_template_invalid"},
+        )
+
+        for suffix, operation_key in (
+            ("\n\n##\tTab-separated extra heading", "enrich-plan-tab-h2"),
+            ("\n\n##\nBare extra heading", "enrich-plan-bare-h2"),
+            ("\n\nExtra setext heading\n---", "enrich-plan-setext-h2"),
+            (
+                "\n\n```bad`info\n## Extra real H2\n```",
+                "enrich-plan-invalid-backtick-fence",
+            ),
+            ("\n\n> ## Nested blockquote H2", "enrich-plan-nested-quote-h2"),
+            ("\n\n> Nested setext H2\n> ---", "enrich-plan-nested-setext-h2"),
+            ("\n\n- ## Nested list H2", "enrich-plan-nested-list-h2"),
+            ("\n\n## Closing ATX H2 ##", "enrich-plan-closing-atx-h2"),
+        ):
+            result, _mcp = await self.run_plan_action(
+                operation_key=operation_key,
+                contexts=[self.plan_context()],
+                description=self.plan_description() + suffix,
+            )
+            self.assertEqual(
+                result,
+                {"error": "linear_policy_denied", "reason": "plan_template_invalid"},
+            )
+
+        punctuation_section = self.plan_description().replace(
+            "Şimdilik açık blocker yok. Araştırma bağımsız teslim gerektirirse child issue açılıp doğru uzmana delegate edilecek.",
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        )
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-punctuation-section",
+            contexts=[self.plan_context()],
+            description=punctuation_section,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_template_invalid"},
+        )
+
+        fenced_example = self.plan_description().replace(
+            "Test çıktıları, vendor read-back, commit/manifest ve gerekiyorsa kanonik Notion bağlantısı Linear issue üzerinde bulunur.",
+            "Test çıktıları ve vendor read-back kanıtı bulunur.\n\n```markdown\n## This is code, not a heading\n```",
+        )
+        self.assertIsNotNone(_parse_plan_sections(fenced_example))
+
+        generic_filler = "\n\n".join(
+            f"{heading}\nplaceholder placeholder placeholder placeholder placeholder placeholder placeholder placeholder"
+            for heading in (
+                "## Amaç",
+                "## Kapsam",
+                "## Kapsam dışı",
+                "## Uygulama planı",
+                "## Bağımlılıklar ve alt işler",
+                "## Kabul kriterleri",
+                "## Doğrulama ve teslim kanıtı",
+                "## Riskler ve geri dönüş",
+            )
+        )
+        self.assertIsNone(_parse_plan_sections(generic_filler))
+
+        common = "Generic reusable planning prose repeats context without concrete section-specific operational detail or evidence"
+        stuffed_sections = {
+            "## Amaç": f"{common} Short brief issue objective outcome source intent preserved visibly",
+            "## Kapsam": f"{common} issue scope work phase research",
+            "## Kapsam dışı": f"{common} excluded outside onaysız hariç",
+            "## Uygulama planı": f"1. {common} test step.\n2. {common} apply step.",
+            "## Bağımlılıklar ve alt işler": f"{common} child dependency blocker delegate",
+            "## Kabul kriterleri": f"- [ ] {common} kabul evidence.\n- [ ] {common} teslim proof.",
+            "## Doğrulama ve teslim kanıtı": f"{common} test canary evidence read-back manifest",
+            "## Riskler ve geri dönüş": f"{common} risk drift rollback geri dönüş",
+        }
+        keyword_stuffed = "\n\n".join(
+            f"{heading}\n{stuffed_sections[heading]}" for heading in stuffed_sections
+        )
+        self.assertIsNone(_parse_plan_sections(keyword_stuffed))
+
+        repeated = "generic reusable planning prose repeats " * 4
+        repeated_stuffed = "\n\n".join((
+            f"## Amaç\n{repeated} objective purpose Short brief preserved source intent",
+            f"## Kapsam\n{repeated} issue scope research phase artifact",
+            f"## Kapsam dışı\n{repeated} hariç onaysız boundary excluded action",
+            f"## Uygulama planı\n1. {repeated} test apply action alpha beta\n2. {repeated} test apply action gamma delta",
+            f"## Bağımlılıklar ve alt işler\n{repeated} child blocker delegate dependency evidence",
+            f"## Kabul kriterleri\n- [ ] {repeated} kabul teslim evidence alpha\n- [ ] {repeated} kabul teslim evidence beta",
+            f"## Doğrulama ve teslim kanıtı\n{repeated} test canary kanıt manifest read-back",
+            f"## Riskler ve geri dönüş\n{repeated} risk drift rollback geri dönüş safeguard",
+        ))
+        self.assertIsNone(_parse_plan_sections(repeated_stuffed))
+
+        duplicate_plan_items = self.plan_description().replace(
+            "2. Child/dependency modelini kur.",
+            "2. Canlı bağlamı ve mevcut artefaktları oku.",
+        )
+        self.assertIsNone(_parse_plan_sections(duplicate_plan_items))
+
+        for duplicate_variant in (
+            "[Canlı bağlamı ve mevcut artefaktları oku.](https://example.invalid)",
+            "Canlı bağlamı ve mevcut artefaktları&#32;oku.",
+            "*Canlı bağlamı ve mevcut artefaktları oku.*",
+            "<span>Canlı bağlamı ve mevcut artefaktları oku.</span>",
+            "<div>Canlı bağlamı ve mevcut artefaktları oku.</div>",
+            "<p>Canlı bağlamı ve mevcut artefaktları oku.</p>",
+            "<table><tr><td>Canlı bağlamı ve mevcut artefaktları oku.</td></tr></table>",
+            unicodedata.normalize("NFD", "Canlı bağlamı ve mevcut artefaktları oku."),
+            "Canlı bağlamı ve mevcut artefaktları o\u200dku.",
+        ):
+            rendered_duplicate = self.plan_description().replace(
+                "2. Child/dependency modelini kur.",
+                f"2. {duplicate_variant}",
+            )
+            self.assertIsNone(_parse_plan_sections(rendered_duplicate))
+
+        closing_required = self.plan_description().replace(
+            "## Kapsam\n",
+            "## Kapsam ##\n",
+            1,
+        )
+        self.assertIsNone(_parse_plan_sections(closing_required))
+
+        for replacement in (" ## Kapsam", "## Kapsam "):
+            whitespace_heading = self.plan_description().replace(
+                "## Kapsam\n",
+                f"{replacement}\n",
+                1,
+            )
+            self.assertIsNone(_parse_plan_sections(whitespace_heading))
+
+        fenced_pseudo_lists = self.plan_description().replace(
+            "1. Canlı bağlamı ve mevcut artefaktları oku.\n2. Child/dependency modelini kur.\n3. İşi test-first yürüt ve kanıtları issue'ya bağla.",
+            "Uygulama bağlamı somut artefaktlar üzerinden ayrıntılı şekilde ele alınır.\n```text\n1. pseudo item\n2. pseudo item\n```",
+        )
+        self.assertIsNone(_parse_plan_sections(fenced_pseudo_lists))
+
+        fenced_marker = self.plan_description().replace(
+            "1. Canlı bağlamı ve mevcut artefaktları oku.\n2. Child/dependency modelini kur.\n3. İşi test-first yürüt ve kanıtları issue'ya bağla.",
+            "1. Canlı bağlam ve mevcut artefaktlar ayrıntılı biçimde incelenir.\n2. Sonuçlar kontrollü aşamalarla teslim edilir.\n```text\ntest oku kur uygula yürüt adım\n```",
+        )
+        self.assertIsNone(_parse_plan_sections(fenced_marker))
+
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-verbatim-whitespace",
+            contexts=[self.plan_context(description="Short brief ")],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "source_brief_not_preserved"},
+        )
+
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-stale-identical-fresh-key",
+            contexts=[self.plan_context(
+                updated_at="2026-08-09T18:01:00.000Z",
+                description=self.plan_description(),
+            )],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_revision_mismatch"},
+        )
+
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-nested-source",
+            contexts=[self.plan_context(description="> ## Existing detailed plan")],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"},
+        )
+
+    async def test_enrich_plan_stale_pending_replay_becomes_unknown(self):
+        operation_key = "enrich-plan-stale-pending"
+        description = self.plan_description()
+        self.ledger.pending_timeout_seconds = -1
+        self.ledger.reserve(
+            operation_key=operation_key,
+            tool_name="save_issue",
+            payload={
+                "id": "OPS-105",
+                "description": description,
+                "lifecycle_action": "enrich_plan",
+                "expected_updated_at": "2026-08-09T18:00:00.000Z",
+            },
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+
+        result, mcp = await self.run_plan_action(
+            operation_key=operation_key,
+            contexts=[],
+            description=description,
+        )
+        self.assertEqual(
+            result,
+            {
+                "status": "outcome_unknown",
+                "replayed": True,
+                "result_id": None,
+                "error_code": "stale_pending",
+            },
+        )
+        self.assertFalse(any(call[0] == "save_issue" for call in mcp.calls))
+
+    async def test_enrich_plan_requires_detailed_template(self):
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-short",
+            contexts=[self.plan_context()],
+            description="## Amaç\nToo short",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "plan_template_invalid"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_enrich_plan_requires_human_owned_agent_delegated_issue(self):
+        context = self.plan_context()
+        context["assignee"] = {"id": "other-agent", "app": True}
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-app-owner",
+            contexts=[context],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "human_owner_required"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
     async def test_policy_denial_never_dispatches_vendor_mutation(self):
         mcp = FakeMCP()
@@ -779,7 +1231,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             "parent": {
                 "id": "parent-1",
                 "state": {"id": "progress-parent", "type": "started"},
-                "assignee": {"id": "human-1"},
+                "assignee": {"id": "human-1", "app": False},
             },
             "terminal_states": [
                 {"id": "done-1", "type": "completed", "position": 40},
@@ -825,7 +1277,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             "parent": {
                 "id": "parent-1",
                 "state": {"id": "parent-progress", "type": "started"},
-                "assignee": {"id": "human-1"},
+                "assignee": {"id": "human-1", "app": False},
             },
             "terminal_states": [{"id": "done-1", "type": "completed", "position": 40}],
             "open_blockers": [],
@@ -852,18 +1304,237 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
-    async def test_complete_child_denies_delegate_mismatch(self):
+    async def test_complete_child_accepts_creator_managed_specialist_delivery(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        sessions = [
+            {
+                "id": "specialist-session-1",
+                "status": "complete",
+                "app_user_id": "specialist-1",
+                "terminal_response_count": 1,
+            }
+        ]
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="child-specialist-complete",
+            agent_sessions=sessions,
+            after_context={
+                **context,
+                "state": {"id": "done-1", "type": "completed"},
+            },
+        )
+        self.assertEqual(result.get("status"), "success", result)
+        self.assertEqual(
+            len([call for call in mcp.calls if call[0] == "save_issue"]),
+            1,
+        )
+
+    async def test_specialist_completion_authority_is_general_manager_only(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            profile_id="researcher",
+            operation_key="specialist-manager-profile-denied",
+            agent_sessions=[{
+                "id": "specialist-session-1",
+                "status": "complete",
+                "app_user_id": "specialist-1",
+                "terminal_response_count": 1,
+            }],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "manager_completion_not_allowed"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_delegate_mismatch_without_specialist_delivery(self):
         context = self.child_terminal_context()
         context["delegate"] = {"id": "other-agent"}
         result, mcp = await self.run_child_terminal_action(
             context=context,
-            operation_key="op-complete-delegate-mismatch",
+            operation_key="child-delegate-mismatch",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "delegate_session_required"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_child_outside_parent_project(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        context["project"] = {"id": "other-project"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="child-project-mismatch",
+            agent_sessions=[{
+                "id": "specialist-session-1",
+                "status": "complete",
+                "app_user_id": "specialist-1",
+                "terminal_response_count": 1,
+            }],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "child_project_mismatch"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_invalid_specialist_session_evidence(self):
+        cases = (
+            ("required", [], "delegate_session_required"),
+            (
+                "response",
+                [{
+                    "id": "specialist-session-1",
+                    "status": "complete",
+                    "app_user_id": "specialist-1",
+                    "terminal_response_count": 0,
+                }],
+                "delegate_terminal_response_required",
+            ),
+            (
+                "ambiguous",
+                [
+                    {
+                        "id": "specialist-session-1",
+                        "status": "complete",
+                        "app_user_id": "specialist-1",
+                        "terminal_response_count": 1,
+                    },
+                    {
+                        "id": "specialist-session-2",
+                        "status": "complete",
+                        "app_user_id": "specialist-1",
+                        "terminal_response_count": 1,
+                    },
+                ],
+                "delegate_session_ambiguous",
+            ),
+            (
+                "open",
+                [{
+                    "id": "specialist-session-1",
+                    "status": "active",
+                    "app_user_id": "specialist-1",
+                    "terminal_response_count": 0,
+                }],
+                "child_delegate_session_still_open",
+            ),
+            (
+                "error",
+                [{
+                    "id": "specialist-session-1",
+                    "status": "error",
+                    "app_user_id": "specialist-1",
+                    "terminal_response_count": 0,
+                }],
+                "delegate_session_not_complete",
+            ),
+        )
+        for name, sessions, reason in cases:
+            with self.subTest(name=name):
+                context = self.child_terminal_context()
+                context["delegate"] = {"id": "specialist-1"}
+                result, mcp = await self.run_child_terminal_action(
+                    context=context,
+                    operation_key=f"specialist-evidence-{name}",
+                    agent_sessions=sessions,
+                )
+                self.assertEqual(
+                    result,
+                    {"error": "linear_policy_denied", "reason": reason},
+                )
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_cancel_child_never_uses_specialist_completion_authority(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            action="cancel_child",
+            operation_key="specialist-cancel-denied",
+            agent_sessions=[{
+                "id": "specialist-session-1",
+                "status": "complete",
+                "app_user_id": "specialist-1",
+                "terminal_response_count": 1,
+            }],
         )
         self.assertEqual(
             result,
             {"error": "linear_policy_denied", "reason": "delegate_mismatch"},
         )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_specialist_session_drift_before_dispatch_fails_closed(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        complete_session = [{
+            "id": "specialist-session-1",
+            "status": "complete",
+            "app_user_id": "specialist-1",
+            "terminal_response_count": 1,
+        }]
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="specialist-session-drift",
+            agent_session_reads=[complete_session, []],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "lifecycle_pre_dispatch_changed"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_specialist_context_drift_after_dispatch_reports_unknown(self):
+        complete_session = [{
+            "id": "specialist-session-1",
+            "status": "complete",
+            "app_user_id": "specialist-1",
+            "terminal_response_count": 1,
+        }]
+        for drift in ("parent_assignee", "project", "session"):
+            with self.subTest(drift=drift):
+                context = self.child_terminal_context()
+                context["delegate"] = {"id": "specialist-1"}
+                after = json.loads(json.dumps(context))
+                after["state"] = {"id": "done-1", "type": "completed"}
+                session_reads = None
+                if drift == "parent_assignee":
+                    after["parent"]["assignee"] = {
+                        "id": "specialist-1",
+                        "app": True,
+                    }
+                elif drift == "project":
+                    after["project"] = {"id": "other-project"}
+                else:
+                    session_reads = [
+                        complete_session,
+                        complete_session,
+                        [],
+                    ]
+                result, mcp = await self.run_child_terminal_action(
+                    context=context,
+                    operation_key=f"specialist-post-dispatch-{drift}",
+                    agent_sessions=complete_session,
+                    agent_session_reads=session_reads,
+                    after_context=after,
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "error": "linear_mutation_outcome_unknown",
+                        "reason": "lifecycle_readback_mismatch",
+                    },
+                )
+                self.assertEqual(
+                    len([call for call in mcp.calls if call[0] == "save_issue"]),
+                    1,
+                )
 
     async def test_complete_child_denies_issue_without_parent(self):
         context = self.child_terminal_context()
@@ -886,6 +1557,42 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 result, mcp = await self.run_child_terminal_action(
                     context=context,
                     operation_key=f"op-complete-human-parent-{assignee_id or 'missing'}",
+                )
+                self.assertEqual(
+                    result,
+                    {"error": "linear_policy_denied", "reason": "human_parent_required"},
+                )
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_specialist_completion_rejects_app_user_parent_assignee(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "specialist-1"}
+        context["parent"]["assignee"] = {"id": "specialist-1", "app": True}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="specialist-parent-assignee-app",
+            agent_sessions=[{
+                "id": "specialist-session-1",
+                "status": "complete",
+                "app_user_id": "specialist-1",
+                "terminal_response_count": 1,
+            }],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "human_parent_required"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_self_delegated_child_rejects_app_user_parent_for_all_terminal_actions(self):
+        for action in ("complete_child", "cancel_child"):
+            with self.subTest(action=action):
+                context = self.child_terminal_context()
+                context["parent"]["assignee"] = {"id": "other-app", "app": True}
+                result, mcp = await self.run_child_terminal_action(
+                    context=context,
+                    action=action,
+                    operation_key=f"self-parent-app-{action}",
                 )
                 self.assertEqual(
                     result,
