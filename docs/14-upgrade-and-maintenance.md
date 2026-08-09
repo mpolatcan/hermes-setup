@@ -168,13 +168,13 @@ patches/hermes-agent/0003-fix-gateway-externally-managed-launchd-definitions.pat
 
 Only a native plist boolean `HermesManagedExternally=true` together with an exact `Label == get_launchd_label()` match opts out. Valid XML and binary plist encodings are supported by macOS and preserve the same typed contract. Missing/wrong labels, missing/false/string-valued markers, typed-malformed XML, and invalid binary/non-plist bytes remain on the strict comparison/repair path without crashing status/install/start. With a valid marker, normal status/install/start paths report the definition as externally managed and do not rewrite it; an explicit forced install remains the operator-controlled escape hatch. Before adding the marker to a live plist, preserve its SHA-256 and rollback copy, verify the wrapper's fail-closed credential bootstrap, and use a separate plist/reload/restart approval gate.
 
-Hermes' shared send target parser recognizes platform-specific numeric and structured IDs but otherwise treats a target as a friendly channel name. Linear Agent Session UUIDs therefore fell through to directory/home resolution. The owned core patch adds a canonical UUID explicit-target class and its RED regression without special-casing the Linear plugin:
+Hermes' shared send target parser recognizes platform-specific numeric and structured IDs but otherwise treats a target as a friendly channel name. Linear Agent Session UUIDs therefore fell through to directory/home resolution. The owned core patch adds a narrowly scoped Linear UUID target class, rejects malformed and cross-platform UUID-shaped aliases, and prevents cron from re-resolving already-explicit targets:
 
 ```text
 patches/hermes-agent/0004-fix-send-preserve-opaque-uuid-delivery-targets.patch
 ```
 
-Run the lightweight send target parser tests and the complete send-message tool and CLI send suites before candidate promotion. A source-only acceptance must prove the exact UUID reaches the registered standalone sender; production acceptance additionally requires an approved non-stale Agent Session target and authoritative activity read-back.
+Run the lightweight send target parser tests, cron delivery-target tests, and the complete send-message tool and CLI send suites before candidate promotion. A source-only acceptance must prove the exact UUID reaches the registered standalone sender without directory or home fallback; production acceptance additionally requires an approved non-stale Agent Session target and authoritative activity read-back.
 
 Periodic gateway heartbeats are transient UI, but append-only control-plane adapters map every `send()` to a terminal activity. A three-minute Linear canary proved the generic heartbeat fallback could therefore complete an active AgentSession with `Working — …` before the real final response. The owned core patch capability-gates heartbeat edit/send calls on `SUPPORTS_MESSAGE_EDITING` and preserves prior message IDs after failed/partial sends:
 

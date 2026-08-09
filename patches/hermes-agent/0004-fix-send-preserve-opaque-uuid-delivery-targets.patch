@@ -1,15 +1,86 @@
-From d7557386de1bae18561d2a5b5bf4e5ad519f686e Mon Sep 17 00:00:00 2001
+From 0c652fe57eafdf64bee9ab462d46bfda11a58981 Mon Sep 17 00:00:00 2001
 From: Mutlu Polatcan <mutlupolatcan@gmail.com>
-Date: Fri, 7 Aug 2026 07:46:45 +0300
-Subject: [PATCH] fix(send): preserve opaque UUID delivery targets
+Date: Sun, 9 Aug 2026 19:23:16 +0300
+Subject: [PATCH] [verified] fix(send): preserve Linear AgentSession targets
 
 ---
- tests/tools/test_send_message_target_parse.py | 76 ++++++++++++++++++-
- tools/send_message_tool.py                    |  8 ++
- 2 files changed, 83 insertions(+), 1 deletion(-)
+ cron/scheduler.py                             |  31 +++---
+ tests/cron/test_scheduler.py                  |  16 +++
+ tests/tools/test_send_message_target_parse.py | 100 +++++++++++++++++-
+ tools/send_message_tool.py                    |  13 +++
+ 4 files changed, 145 insertions(+), 15 deletions(-)
 
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+index b6b89010..5d9cde8f 100644
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -1320,20 +1320,23 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
+         else:
+             chat_id, thread_id = rest, None
+ 
+-        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
+-        try:
+-            from gateway.channel_directory import resolve_channel_name
+-            resolved = resolve_channel_name(platform_key, chat_id)
+-            if resolved:
+-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+-                if resolved_is_explicit:
+-                    chat_id = parsed_chat_id
+-                    if parsed_thread_id is not None:
+-                        thread_id = parsed_thread_id
+-                else:
+-                    chat_id = resolved
+-        except Exception:
+-            pass
++        # Resolve only human-friendly labels. Explicit platform-native targets
++        # (including Linear AgentSession UUIDs) must never be remapped through
++        # a mutable directory entry.
++        if not is_explicit:
++            try:
++                from gateway.channel_directory import resolve_channel_name
++                resolved = resolve_channel_name(platform_key, str(chat_id))
++                if resolved:
++                    parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
++                    if resolved_is_explicit:
++                        chat_id = parsed_chat_id
++                        if parsed_thread_id is not None:
++                            thread_id = parsed_thread_id
++                    else:
++                        chat_id = resolved
++            except Exception:
++                pass
+ 
+         if (
+             thread_id is None
+diff --git a/tests/cron/test_scheduler.py b/tests/cron/test_scheduler.py
+index 357614a2..6db11c2f 100644
+--- a/tests/cron/test_scheduler.py
++++ b/tests/cron/test_scheduler.py
+@@ -167,6 +167,22 @@ class TestResolveDeliveryTarget:
+             "thread_id": "17",
+         }
+ 
++    def test_explicit_linear_session_uuid_bypasses_channel_directory(self):
++        session_id = "2f31d7a4-995c-4df4-a196-0123456789ab"
++        job = {"deliver": f"linear:{session_id}"}
++        with patch(
++            "gateway.channel_directory.resolve_channel_name",
++            side_effect=AssertionError("explicit UUID must not use directory resolution"),
++        ) as resolve_mock:
++            result = _resolve_delivery_target(job)
++
++        resolve_mock.assert_not_called()
++        assert result == {
++            "platform": "linear",
++            "chat_id": session_id,
++            "thread_id": None,
++        }
++
+ 
+     def test_human_friendly_label_resolved_via_channel_directory(self):
+         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
 diff --git a/tests/tools/test_send_message_target_parse.py b/tests/tools/test_send_message_target_parse.py
-index 6b12265..2f23bc8 100644
+index 761eabb2..03496704 100644
 --- a/tests/tools/test_send_message_target_parse.py
 +++ b/tests/tools/test_send_message_target_parse.py
 @@ -7,9 +7,10 @@ skips wholesale when optional Telegram dependencies are not installed.
@@ -24,7 +95,7 @@ index 6b12265..2f23bc8 100644
  from tools.send_message_tool import _parse_target_ref, send_message_tool
  
  
-@@ -29,6 +30,16 @@ def test_e164_target_still_requires_phone_platform() -> None:
+@@ -29,6 +30,34 @@ def test_e164_target_still_requires_phone_platform() -> None:
      assert _parse_target_ref("matrix", "+15551234567")[2] is False
  
  
@@ -38,10 +109,28 @@ index 6b12265..2f23bc8 100644
 +    assert _parse_target_ref("linear", session_id) == (session_id, None, True)
 +
 +
- def test_whatsapp_group_jid_target_is_explicit() -> None:
-     chat_id, thread_id, is_explicit = _parse_target_ref(
-         "whatsapp", "120363408391911677@g.us"
-@@ -90,3 +101,66 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
++def test_uuid_target_validation_is_narrow_and_platform_scoped() -> None:
++    invalid_linear_targets = (
++        "123e4567-e89b-02d3-8123-426614174000",
++        "123e4567-e89b-92d3-8123-426614174000",
++        "123e4567-e89b-12d3-7123-426614174000",
++        "123e4567-e89b-12d3-c123-426614174000",
++        "123e4567e89b12d38123426614174000",
++        "123e4567-e89b-12d3-8123-42661417400g",
++    )
++    assert all(
++        _parse_target_ref("linear", target) == (None, None, False)
++        for target in invalid_linear_targets
++    )
++    assert _parse_target_ref(
++        "mattermost", "123e4567-e89b-12d3-8123-426614174000"
++    ) == (None, None, False)
++
++
+ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
+     whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"api_url": "http://bridge"})
+     config = SimpleNamespace(
+@@ -64,3 +93,72 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
          force_document=False,
      )
  
@@ -64,6 +153,8 @@ index 6b12265..2f23bc8 100644
 +    )
 +    previous_entry = platform_registry._entries.get("linear")
 +    previous_deferred = platform_registry._deferred.get("linear")
++    previous_platform = Platform._value2member_map_.get("linear")
++    previous_member = Platform._member_map_.get("LINEAR")
 +    platform_registry.register(entry)
 +    platforms = Mock()
 +    platforms.get.return_value = linear_cfg
@@ -95,6 +186,10 @@ index 6b12265..2f23bc8 100644
 +            platform_registry.register(previous_entry)
 +        elif previous_deferred is not None:
 +            platform_registry.register_deferred("linear", previous_deferred)
++        if previous_platform is None:
++            Platform._value2member_map_.pop("linear", None)
++        if previous_member is None:
++            Platform._member_map_.pop("LINEAR", None)
 +
 +    assert result["success"] is True
 +    assert "note" not in result
@@ -109,15 +204,17 @@ index 6b12265..2f23bc8 100644
 +    )
 +
 diff --git a/tools/send_message_tool.py b/tools/send_message_tool.py
-index 277f071..6a243d4 100644
+index 2853c627..edba802e 100644
 --- a/tools/send_message_tool.py
 +++ b/tools/send_message_tool.py
-@@ -56,6 +56,12 @@ _WHATSAPP_JID_RE = re.compile(
+@@ -56,6 +56,14 @@ _WHATSAPP_JID_RE = re.compile(
  # an explicit target for the email platform, not fall through to channel-name
  # resolution which has no way to resolve a raw address.
  _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
-+# Canonical UUIDs are opaque platform-native identifiers, not friendly channel
-+# names. Plugin platforms such as Linear use them for direct delivery targets.
++# Linear AgentSession IDs are canonical UUIDs, not friendly channel names.
++# Keep this allowlist narrow: UUID-shaped aliases on unrelated platforms must
++# continue through directory resolution rather than becoming raw recipients.
++_UUID_TARGET_PLATFORMS = frozenset({"linear"})
 +_UUID_TARGET_RE = re.compile(
 +    r"^\s*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-"
 +    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\s*$"
@@ -125,11 +222,14 @@ index 277f071..6a243d4 100644
  # Most platforms read their home channel from "<PLATFORM>_HOME_CHANNEL", but a
  # few diverge. Email reads EMAIL_HOME_ADDRESS (see gateway/config.py), so the
  # generic "<PLATFORM>_HOME_CHANNEL" hint would point users at a variable that is
-@@ -603,6 +609,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
-             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
-             # expect E.164 format for direct recipients.
+@@ -609,6 +617,11 @@ def _parse_target_ref(platform_name: str, target_ref: str):
+         # them off the channel directory (mirrors the react handler).
+         if _PHOTON_DM_GUID_RE.fullmatch(target_ref.strip()):
              return target_ref.strip(), None, True
-+    if _UUID_TARGET_RE.fullmatch(target_ref):
++    if (
++        platform_name in _UUID_TARGET_PLATFORMS
++        and _UUID_TARGET_RE.fullmatch(target_ref)
++    ):
 +        return target_ref.strip(), None, True
      if target_ref.lstrip("-").isdigit():
          return target_ref, None, True
