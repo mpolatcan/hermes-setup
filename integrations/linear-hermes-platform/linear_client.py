@@ -19,6 +19,7 @@ AGENT_SESSION_STATUSES = frozenset(
 )
 MAX_AGENT_SESSION_PAGES = 100
 MAX_USER_PAGES = 100
+MAX_CHILD_RELATION_PAGES = 100
 
 
 class LinearClient:
@@ -172,6 +173,227 @@ query LinearAgentIssueStart($id: String!) {
             "delegate": dict(issue.get("delegate") or {}),
             "team": {"id": str(team.get("id") or "")},
             "started_states": list(((team.get("states") or {}).get("nodes")) or []),
+        }
+
+    async def get_issue_child_terminal_context(self, issue_id: str) -> dict[str, Any]:
+        """Read immutable ownership and live guards for creator-owned child terminal actions."""
+        query = """
+query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: String) {
+  issue(id: $id) {
+    id
+    state { id name type }
+    creator { id }
+    delegate { id }
+    parent {
+      id
+      state { id name type }
+      assignee { id }
+    }
+    team {
+      id
+      states(first: 50, after: $stateAfter, filter: { type: { in: ["completed", "canceled"] } }) {
+        nodes { id name type position }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    inverseRelations(first: 100, after: $after) {
+      nodes {
+        type
+        issue { id identifier title state { id name type } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+        issue: dict[str, Any] | None = None
+        authorization_context: dict[str, Any] | None = None
+        relations: list[dict[str, Any]] = []
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_CHILD_RELATION_PAGES):
+            data = await self.graphql(
+                query,
+                {"id": issue_id, "after": after, "stateAfter": None},
+            )
+            page_issue = data.get("issue")
+            if (
+                not isinstance(page_issue, dict)
+                or not isinstance(page_issue.get("id"), str)
+                or not page_issue.get("id")
+            ):
+                raise LinearAPIError("Creator-owned child terminal context could not be resolved")
+            page_team = page_issue.get("team")
+            page_authorization_context = {
+                "state": page_issue.get("state"),
+                "creator": page_issue.get("creator"),
+                "delegate": page_issue.get("delegate"),
+                "parent": page_issue.get("parent"),
+                "team_id": page_team.get("id") if isinstance(page_team, dict) else None,
+            }
+            if issue is None:
+                issue = page_issue
+                authorization_context = page_authorization_context
+            elif page_issue.get("id") != issue.get("id"):
+                raise LinearAPIError("Creator-owned child identity changed during pagination")
+            elif page_authorization_context != authorization_context:
+                raise LinearAPIError(
+                    "Creator-owned child authorization context changed during pagination"
+                )
+            connection = page_issue.get("inverseRelations")
+            if not isinstance(connection, dict):
+                raise LinearAPIError("Creator-owned child terminal context was incomplete")
+            nodes = connection.get("nodes")
+            page_info = connection.get("pageInfo")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise LinearAPIError("Creator-owned child terminal context was incomplete")
+            for relation in nodes:
+                if not isinstance(relation, dict):
+                    raise LinearAPIError("Creator-owned child relation was malformed")
+                relations.append(relation)
+            has_next = page_info.get("hasNextPage")
+            cursor = page_info.get("endCursor")
+            if not isinstance(has_next, bool) or (
+                cursor is not None and not isinstance(cursor, str)
+            ):
+                raise LinearAPIError("Creator-owned child relation pagination was malformed")
+            if not has_next:
+                break
+            if not cursor or cursor in seen_cursors:
+                raise LinearAPIError("Creator-owned child relation pagination cursor was invalid")
+            seen_cursors.add(cursor)
+            after = cursor
+        else:
+            raise LinearAPIError("Creator-owned child relation pagination exceeded safety limit")
+
+        assert issue is not None
+        team = issue.get("team")
+        if not isinstance(team, dict) or not isinstance(team.get("id"), str) or not team.get("id"):
+            raise LinearAPIError("Creator-owned child team context was incomplete")
+        state_connection = team.get("states")
+        if not isinstance(state_connection, dict):
+            raise LinearAPIError("Creator-owned child terminal-state context was incomplete")
+        first_state_nodes = state_connection.get("nodes")
+        state_page_info = state_connection.get("pageInfo")
+        if not isinstance(first_state_nodes, list) or not isinstance(state_page_info, dict):
+            raise LinearAPIError("Creator-owned child terminal-state context was incomplete")
+        states: list[dict[str, Any]] = []
+        for state in first_state_nodes:
+            if not isinstance(state, dict):
+                raise LinearAPIError("Creator-owned child terminal state was malformed")
+            states.append(state)
+        state_has_next = state_page_info.get("hasNextPage")
+        state_cursor = state_page_info.get("endCursor")
+        if not isinstance(state_has_next, bool) or (
+            state_cursor is not None and not isinstance(state_cursor, str)
+        ):
+            raise LinearAPIError("Creator-owned child terminal-state pagination was malformed")
+
+        state_query = """
+query LinearCreatorChildTerminalStates($id: String!, $after: String) {
+  issue(id: $id) {
+    id
+    state { id name type }
+    creator { id }
+    delegate { id }
+    parent { id state { id name type } assignee { id } }
+    team {
+      id
+      states(first: 50, after: $after, filter: { type: { in: ["completed", "canceled"] } }) {
+        nodes { id name type position }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
+        seen_state_cursors: set[str] = set()
+        for _page in range(1, MAX_CHILD_RELATION_PAGES):
+            if not state_has_next:
+                break
+            if not state_cursor or state_cursor in seen_state_cursors:
+                raise LinearAPIError(
+                    "Creator-owned child terminal-state pagination cursor was invalid"
+                )
+            seen_state_cursors.add(state_cursor)
+            state_data = await self.graphql(
+                state_query,
+                {"id": issue_id, "after": state_cursor},
+            )
+            state_issue = state_data.get("issue")
+            if (
+                not isinstance(state_issue, dict)
+                or state_issue.get("id") != issue.get("id")
+            ):
+                raise LinearAPIError("Creator-owned child identity changed during pagination")
+            state_team = state_issue.get("team")
+            state_authorization_context = {
+                "state": state_issue.get("state"),
+                "creator": state_issue.get("creator"),
+                "delegate": state_issue.get("delegate"),
+                "parent": state_issue.get("parent"),
+                "team_id": state_team.get("id") if isinstance(state_team, dict) else None,
+            }
+            if state_authorization_context != authorization_context:
+                raise LinearAPIError(
+                    "Creator-owned child authorization context changed during pagination"
+                )
+            state_connection = (
+                state_team.get("states") if isinstance(state_team, dict) else None
+            )
+            if not isinstance(state_connection, dict):
+                raise LinearAPIError("Creator-owned child terminal-state context was incomplete")
+            state_nodes = state_connection.get("nodes")
+            state_page_info = state_connection.get("pageInfo")
+            if not isinstance(state_nodes, list) or not isinstance(state_page_info, dict):
+                raise LinearAPIError("Creator-owned child terminal-state context was incomplete")
+            for state in state_nodes:
+                if not isinstance(state, dict):
+                    raise LinearAPIError("Creator-owned child terminal state was malformed")
+                states.append(state)
+            state_has_next = state_page_info.get("hasNextPage")
+            state_cursor = state_page_info.get("endCursor")
+            if not isinstance(state_has_next, bool) or (
+                state_cursor is not None and not isinstance(state_cursor, str)
+            ):
+                raise LinearAPIError(
+                    "Creator-owned child terminal-state pagination was malformed"
+                )
+        else:
+            if state_has_next:
+                raise LinearAPIError(
+                    "Creator-owned child terminal-state pagination exceeded safety limit"
+                )
+        blockers: list[dict[str, str]] = []
+        for relation in relations:
+            if str(relation.get("type") or "").casefold() != "blocks":
+                continue
+            blocker = relation.get("issue")
+            if not isinstance(blocker, dict):
+                raise LinearAPIError("Creator-owned child blocker was malformed")
+            blocker_state = blocker.get("state")
+            if not isinstance(blocker_state, dict):
+                raise LinearAPIError("Creator-owned child blocker state was malformed")
+            if str(blocker_state.get("type") or "").casefold() in {"completed", "canceled"}:
+                continue
+            blocker_id = blocker.get("id")
+            if not isinstance(blocker_id, str) or not blocker_id:
+                raise LinearAPIError("Creator-owned child blocker identity was incomplete")
+            blockers.append({
+                "id": blocker_id,
+                "identifier": str(blocker.get("identifier") or blocker_id),
+                "title": str(blocker.get("title") or ""),
+                "state": str(blocker_state.get("name") or ""),
+            })
+        return {
+            "id": str(issue.get("id") or ""),
+            "state": dict(issue.get("state") or {}),
+            "creator": dict(issue.get("creator") or {}),
+            "delegate": dict(issue.get("delegate") or {}),
+            "parent": dict(issue.get("parent") or {}),
+            "team": {"id": str(team.get("id") or "")},
+            "terminal_states": list(states),
+            "open_blockers": blockers,
         }
 
     async def get_comment_team_id(self, comment_id: str) -> str:

@@ -113,7 +113,10 @@ class RegistrationTests(unittest.TestCase):
         self.assertNotIn("state", issue_properties)
         self.assertEqual(
             issue_properties["lifecycle_action"],
-            {"type": "string", "enum": ["start"]},
+            {
+                "type": "string",
+                "enum": ["start", "complete_child", "cancel_child"],
+            },
         )
         self.assertNotIn("approval_reference", issue_properties)
         self.assertNotIn(
@@ -360,6 +363,7 @@ class FakeGraphQL:
         issue_team="ops-1",
         issue_teams=None,
         start_contexts=None,
+        child_terminal_contexts=None,
         agent_sessions=None,
         agent_session_reads=None,
         mention_users=None,
@@ -367,6 +371,7 @@ class FakeGraphQL:
         self.issue_team = issue_team
         self.issue_teams = issue_teams or {}
         self.start_contexts = list(start_contexts or [])
+        self.child_terminal_contexts = list(child_terminal_contexts or [])
         self.agent_sessions = list(agent_sessions or [])
         self.agent_session_reads = list(agent_session_reads or [])
         self.mention_users = dict(mention_users or {})
@@ -391,6 +396,13 @@ class FakeGraphQL:
         if len(self.start_contexts) == 1:
             return self.start_contexts[0]
         return self.start_contexts.pop(0)
+
+    async def get_issue_child_terminal_context(self, _issue_id):
+        if not self.child_terminal_contexts:
+            raise AssertionError("unexpected child terminal context read")
+        if len(self.child_terminal_contexts) == 1:
+            return self.child_terminal_contexts[0]
+        return self.child_terminal_contexts.pop(0)
 
 
 class FakeMCP:
@@ -432,6 +444,54 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.ledger.close()
         self.tempdir.cleanup()
+
+    @staticmethod
+    def child_terminal_context() -> dict:
+        return {
+            "team": {"id": "ops-1"},
+            "state": {"id": "progress-1", "type": "started"},
+            "creator": {"id": "actor-1"},
+            "delegate": {"id": "actor-1"},
+            "parent": {
+                "id": "parent-1",
+                "state": {"id": "parent-progress", "type": "started"},
+                "assignee": {"id": "human-1"},
+            },
+            "terminal_states": [
+                {"id": "done-1", "type": "completed", "position": 40},
+                {"id": "canceled-1", "type": "canceled", "position": 50},
+            ],
+            "open_blockers": [],
+        }
+
+    async def run_child_terminal_action(
+        self,
+        *,
+        context: dict,
+        action: str = "complete_child",
+        operation_key: str,
+        agent_sessions: list[dict] | None = None,
+    ) -> tuple[dict, FakeMCP]:
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": operation_key,
+                "lifecycle_action": action,
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(
+                child_terminal_contexts=[context],
+                agent_sessions=agent_sessions,
+            ),
+            mcp_client=mcp,
+        )
+        return result, mcp
 
     async def test_policy_denial_never_dispatches_vendor_mutation(self):
         mcp = FakeMCP()
@@ -710,6 +770,330 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
+    async def test_complete_child_requires_creator_owned_child_and_reads_back(self):
+        before = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "progress-1", "type": "started"},
+            "creator": {"id": "actor-1"},
+            "delegate": {"id": "actor-1"},
+            "parent": {
+                "id": "parent-1",
+                "state": {"id": "progress-parent", "type": "started"},
+                "assignee": {"id": "human-1"},
+            },
+            "terminal_states": [
+                {"id": "done-1", "type": "completed", "position": 40},
+                {"id": "canceled-1", "type": "canceled", "position": 50},
+            ],
+            "open_blockers": [],
+        }
+        after = {**before, "state": {"id": "done-1", "type": "completed"}}
+        graph = FakeGraphQL(
+            child_terminal_contexts=[before, before, after],
+            agent_sessions=[{
+                "id": "session-1", "status": "complete", "app_user_id": "actor-1",
+            }],
+        )
+        mcp = FakeMCP()
+
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": "op-complete-child",
+                "lifecycle_action": "complete_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+
+        self.assertEqual(result["status"], "success")
+        calls = [call for call in mcp.calls if call[0] == "save_issue"]
+        self.assertEqual(calls, [("save_issue", {"id": "OPS-106", "state": "done-1"}, True)])
+
+    async def test_complete_child_denies_non_creator_before_reservation(self):
+        context = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "progress-1", "type": "started"},
+            "creator": {"id": "other-agent"},
+            "delegate": {"id": "actor-1"},
+            "parent": {
+                "id": "parent-1",
+                "state": {"id": "parent-progress", "type": "started"},
+                "assignee": {"id": "human-1"},
+            },
+            "terminal_states": [{"id": "done-1", "type": "completed", "position": 40}],
+            "open_blockers": [],
+        }
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": "op-complete-non-creator",
+                "lifecycle_action": "complete_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(child_terminal_contexts=[context]),
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "child_creator_mismatch"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_delegate_mismatch(self):
+        context = self.child_terminal_context()
+        context["delegate"] = {"id": "other-agent"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-delegate-mismatch",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "delegate_mismatch"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_issue_without_parent(self):
+        context = self.child_terminal_context()
+        context["parent"] = {}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-parent-required",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "child_parent_required"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_requires_distinct_human_parent_assignee(self):
+        for assignee_id in ("", "actor-1"):
+            with self.subTest(assignee_id=assignee_id):
+                context = self.child_terminal_context()
+                context["parent"]["assignee"] = {"id": assignee_id}
+                result, mcp = await self.run_child_terminal_action(
+                    context=context,
+                    operation_key=f"op-complete-human-parent-{assignee_id or 'missing'}",
+                )
+                self.assertEqual(
+                    result,
+                    {"error": "linear_policy_denied", "reason": "human_parent_required"},
+                )
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_terminal_parent(self):
+        context = self.child_terminal_context()
+        context["parent"]["state"] = {"id": "parent-done", "type": "completed"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-parent-terminal",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "parent_terminal"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_open_creator_session(self):
+        context = self.child_terminal_context()
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-open-session",
+            agent_sessions=[{
+                "id": "session-1",
+                "status": "active",
+                "app_user_id": "actor-1",
+            }],
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "child_session_still_open"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_open_blocker(self):
+        context = self.child_terminal_context()
+        context["open_blockers"] = [{"id": "blocker-1"}]
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-open-blocker",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "child_has_open_blockers"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_cancel_child_selects_canceled_state_and_allows_open_blocker(self):
+        before = self.child_terminal_context()
+        before["open_blockers"] = [{"id": "blocker-1"}]
+        after = {**before, "state": {"id": "canceled-1", "type": "canceled"}}
+        graph = FakeGraphQL(child_terminal_contexts=[before, before, after])
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-114",
+                "target_team_id": "ops-1",
+                "operation_key": "op-cancel-child",
+                "lifecycle_action": "cancel_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+        self.assertEqual(result["status"], "success")
+        calls = [call for call in mcp.calls if call[0] == "save_issue"]
+        self.assertEqual(
+            calls,
+            [("save_issue", {"id": "OPS-114", "state": "canceled-1"}, True)],
+        )
+
+    async def test_complete_child_is_idempotent_when_already_completed(self):
+        context = self.child_terminal_context()
+        context["state"] = {"id": "done-1", "type": "completed"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-already-done",
+        )
+        self.assertEqual(result, {"status": "already_completed", "result_id": "done-1"})
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_denies_incomplete_parent_state(self):
+        context = self.child_terminal_context()
+        context["parent"]["state"] = {"id": "parent-progress"}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-parent-state-incomplete",
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "parent_state_unavailable"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_terminal_noop_is_durably_idempotent_after_reopen(self):
+        completed = self.child_terminal_context()
+        completed["state"] = {"id": "done-custom", "type": "completed"}
+        first, first_mcp = await self.run_child_terminal_action(
+            context=completed,
+            operation_key="op-complete-noop-reopen",
+        )
+        reopened = self.child_terminal_context()
+        second, second_mcp = await self.run_child_terminal_action(
+            context=reopened,
+            operation_key="op-complete-noop-reopen",
+        )
+        self.assertEqual(first, {"status": "already_completed", "result_id": "done-custom"})
+        self.assertEqual(
+            second,
+            {"status": "already_completed", "replayed": True, "result_id": "done-custom"},
+        )
+        self.assertEqual([call[0] for call in first_mcp.calls], ["get_user"])
+        self.assertEqual([call[0] for call in second_mcp.calls], ["get_user"])
+
+    async def test_complete_child_fails_closed_when_delegate_drifts_before_dispatch(self):
+        before = self.child_terminal_context()
+        drifted = self.child_terminal_context()
+        drifted["delegate"] = {"id": "other-agent"}
+        graph = FakeGraphQL(child_terminal_contexts=[before, drifted])
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": "op-complete-drift",
+                "lifecycle_action": "complete_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "lifecycle_pre_dispatch_changed"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_rechecks_sessions_after_final_context_read(self):
+        before = self.child_terminal_context()
+
+        class SessionOpeningGraph(FakeGraphQL):
+            async def get_issue_child_terminal_context(inner_self, issue_id):
+                context = await super().get_issue_child_terminal_context(issue_id)
+                inner_self.context_reads = getattr(inner_self, "context_reads", 0) + 1
+                if inner_self.context_reads == 2:
+                    inner_self.agent_sessions = [
+                        {"app_user_id": "actor-1", "status": "active"}
+                    ]
+                return context
+
+        graph = SessionOpeningGraph(child_terminal_contexts=[before, before])
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": "op-complete-session-race",
+                "lifecycle_action": "complete_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "lifecycle_pre_dispatch_changed"},
+        )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_reports_unknown_when_terminal_readback_misses(self):
+        before = self.child_terminal_context()
+        graph = FakeGraphQL(child_terminal_contexts=[before, before, before])
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-106",
+                "target_team_id": "ops-1",
+                "operation_key": "op-complete-readback-miss",
+                "lifecycle_action": "complete_child",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graph,
+            mcp_client=mcp,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_mutation_outcome_unknown", "reason": "lifecycle_readback_mismatch"},
+        )
+
     async def test_semantic_start_uses_lowest_position_started_state_and_reads_back(self):
         before = {
             "team": {"id": "ops-1"},
@@ -776,7 +1160,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         replay = self.ledger.reserve(
             operation_key="op-readback-mismatch",
             tool_name="save_issue",
-            payload={"id": "OPS-1", "state": "progress-1"},
+            payload={"id": "OPS-1", "lifecycle_action": "start"},
             profile_id="general",
             actor_id="actor-1",
             team_id="ops-1",
@@ -832,7 +1216,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             arguments={
                 "id": "OPS-1",
                 "target_team_id": "ops-1",
-                "operation_key": "op-already-started",
+                "operation_key": "op-started",
                 "lifecycle_action": "start",
             },
             mutation=True,
@@ -843,6 +1227,43 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, {"status": "already_started", "result_id": "progress-1"})
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_semantic_start_replays_legacy_state_hashed_ledger_entry(self):
+        reservation = self.ledger.reserve(
+            operation_key="op-start-legacy",
+            tool_name="save_issue",
+            payload={"id": "OPS-1", "state": "progress-1"},
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.assertTrue(reservation.dispatch)
+        self.ledger.mark_success("op-start-legacy", result_id="OPS-1")
+        context = {
+            "team": {"id": "ops-1"},
+            "state": {"id": "progress-1", "type": "started"},
+            "delegate": {"id": "actor-1"},
+            "started_states": [],
+        }
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "operation_key": "op-start-legacy",
+                "lifecycle_action": "start",
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=FakeGraphQL(start_contexts=[context]),
+            mcp_client=FakeMCP(),
+        )
+        self.assertEqual(
+            result,
+            {"status": "success", "replayed": True, "result_id": "OPS-1"},
+        )
 
     async def test_semantic_start_denials_never_dispatch_vendor_mutation(self):
         cases = (

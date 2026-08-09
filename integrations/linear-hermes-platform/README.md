@@ -88,11 +88,15 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 | `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
 
-## Semantic lifecycle start
+## Semantic lifecycle actions
 
-The model-facing issue tool never accepts a raw workflow `state`. It exposes only `lifecycle_action=start`, and that action cannot be bundled with any other issue mutation. The wrapper resolves the team's lowest-position `started` state from live Linear data. It dispatches the exact state ID through the official MCP only when the issue is `backlog` or `unstarted`, the source state ID is present, the authoritative team is allowlisted, and the live delegate equals the profile app-user. Already-started is an idempotent no-op; terminal and custom states are never overwritten.
+The model-facing issue tool never accepts a raw workflow `state`. It exposes three mutually exclusive semantic actions: `start`, `complete_child`, and `cancel_child`; none can be bundled with another issue mutation.
 
-Linear currently exposes no conditional issue mutation for these predicates. The wrapper re-reads team, delegate, source state, and target state after ledger reservation and immediately before dispatch, then verifies team, delegate, exact target state ID, and `started` type after dispatch. A pre-dispatch change produces a durable failed operation with no vendor mutation. A post-dispatch mismatch produces `outcome_unknown` and is never automatically retried. The narrow non-atomic call boundary is accepted only for this vendor-recommended non-terminal start; it does not authorize `complete` or raw state writes.
+`start` resolves the team's lowest-position `started` state from live Linear data. It dispatches the exact state ID through the official MCP only when the issue is `backlog` or `unstarted`, the source state ID is present, the authoritative team is allowlisted, and the live delegate equals the profile app-user. Already-started is an idempotent no-op; terminal and custom states are never overwritten.
+
+`complete_child` and `cancel_child` are restricted to creator-owned delegated technical children. The immutable creator and live delegate must both equal the profile app-user; the issue must have a non-terminal parent assigned to a distinct human; and the creator must have no open Agent Session on the child. Completion additionally requires no open blocker. Cancellation may proceed with blockers because superseded or failed work can legitimately be canceled. The wrapper resolves the team's lowest-position state of the requested terminal type and never exposes raw state IDs to the model. Already-completed/already-canceled is an idempotent no-op, while an opposite terminal state is preserved.
+
+Linear currently exposes no conditional issue mutation for these predicates. The wrapper re-reads all mutable authorization inputs after ledger reservation and immediately before dispatch, then verifies immutable creator ownership, team, delegate, parent ownership/state, Agent Sessions, blockers, and the exact terminal state after dispatch. A pre-dispatch change produces a durable failed operation with no vendor mutation. A post-dispatch mismatch produces `outcome_unknown` and is never automatically retried. The remaining narrow call boundary is accepted only for vendor-recommended `start` and immutable-creator-owned child terminal actions; it never authorizes human-parent terminal transitions or raw state writes.
 
 ## Credential architecture
 
@@ -391,7 +395,7 @@ cd /Users/mutlupolatcan/.hermes/source/hermes-setup
   -s integrations/linear-hermes-platform/tests -v
 ```
 
-Expected source result for this revision: `349/349 OK`. `/health` exposes the active inbound `data_event_types` allowlist, activation ambiguity counts, and closure counts so a rollout can verify the accepted event contract and drain state without inspecting source files.
+Expected source result for this revision: `370/370 OK`. `/health` exposes the active inbound `data_event_types` allowlist, activation ambiguity counts, and closure counts so a rollout can verify the accepted event contract and drain state without inspecting source files.
 
 Coverage includes invalid signatures, replay attempts, organization mismatch, semantic dedup, legacy-ledger compatibility, populated v4→v5 migration, OAuth token refresh and rotation, two-consumer refresh locking, atomic shared-store persistence, GraphQL/MCP 401 rotation, MCP contract drift, ambiguous mutation non-retry and authoritative readback, actor/team/content-policy denial, operation-key replay, payload-content minimization, profile mutation capability registration, model-facing state-transition denial, typed `agentActivity.content.body`, delegation, concurrent manager-session CAS, dispatch ambiguity fencing, owner/delegate drift, activation-versus-Stop/Done barriers, follow-up prompts, Stop hard-cancel, persistent outbox restart recovery, ordered retries, client-generated activity IDs, success-state preservation for Mutlu's final acceptance, durable waiting recovery, one-shot live claims, blocker filtering, context-only data events, self-event suppression, human closure actor/team/delegate denial, closure duplicate suppression, closure restart recovery, delegate-removal cancellation, dead-letter re-drive, schema versioning, and human-owned status preservation.
 

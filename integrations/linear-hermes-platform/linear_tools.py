@@ -46,6 +46,25 @@ TOOL_MAP = {
 VENDOR_MUTATION_TOOLS = frozenset(
     vendor_tool for vendor_tool, is_mutation in TOOL_MAP.values() if is_mutation
 )
+LIFECYCLE_NOOP_LEDGER_PREFIX = "lifecycle-noop:"
+LIFECYCLE_NOOP_STATUSES = frozenset(
+    {"already_started", "already_completed", "already_canceled"}
+)
+
+
+def _encode_lifecycle_noop_result(status: str, result_id: str) -> str:
+    return f"{LIFECYCLE_NOOP_LEDGER_PREFIX}{status}:{result_id}"
+
+
+def _decode_lifecycle_noop_result(value: str | None) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not value.startswith(LIFECYCLE_NOOP_LEDGER_PREFIX):
+        return None
+    payload = value[len(LIFECYCLE_NOOP_LEDGER_PREFIX):]
+    status, separator, result_id = payload.partition(":")
+    if not separator or status not in LIFECYCLE_NOOP_STATUSES or not result_id:
+        return None
+    return status, result_id
+
 
 READ_ISSUE_SCHEMA = {
     "name": "linear_get_issue",
@@ -88,7 +107,10 @@ SAVE_ISSUE_SCHEMA = {
             "title": {"type": "string"},
             "team": {"type": "string"},
             "description": {"type": "string"},
-            "lifecycle_action": {"type": "string", "enum": ["start"]},
+            "lifecycle_action": {
+                "type": "string",
+                "enum": ["start", "complete_child", "cancel_child"],
+            },
             "priority": {"type": "number"},
             "assignee": {"type": "string"},
             "delegate": {"type": "string"},
@@ -257,6 +279,95 @@ async def _resolve_start_transition(
     )
 
 
+def _evaluate_child_terminal_context(
+    context: dict[str, Any],
+    *,
+    action: str,
+    target_team_id: str,
+    actor_id: str,
+    open_actor_session: bool,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    target_type = "completed" if action == "complete_child" else "canceled"
+    if str((context.get("team") or {}).get("id") or "") != target_team_id:
+        return None, {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
+    if str((context.get("creator") or {}).get("id") or "") != actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "child_creator_mismatch"}
+    if str((context.get("delegate") or {}).get("id") or "") != actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+    parent = context.get("parent") or {}
+    if not str(parent.get("id") or ""):
+        return None, {"error": "linear_policy_denied", "reason": "child_parent_required"}
+    parent_assignee_id = str((parent.get("assignee") or {}).get("id") or "")
+    if not parent_assignee_id or parent_assignee_id == actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "human_parent_required"}
+    parent_state_type = str((parent.get("state") or {}).get("type") or "").casefold()
+    if parent_state_type not in {"backlog", "unstarted", "started"}:
+        if parent_state_type in {"completed", "canceled"}:
+            return None, {"error": "linear_policy_denied", "reason": "parent_terminal"}
+        return None, {"error": "linear_policy_denied", "reason": "parent_state_unavailable"}
+    if open_actor_session:
+        return None, {"error": "linear_policy_denied", "reason": "child_session_still_open"}
+    if action == "complete_child" and context.get("open_blockers"):
+        return None, {"error": "linear_policy_denied", "reason": "child_has_open_blockers"}
+
+    state = context.get("state") or {}
+    state_id = str(state.get("id") or "")
+    state_type = str(state.get("type") or "").casefold()
+    if not state_id:
+        return None, {"error": "linear_policy_denied", "reason": "source_state_unavailable"}
+    if state_type == target_type:
+        return None, {
+            "status": "already_completed" if target_type == "completed" else "already_canceled",
+            "result_id": state_id,
+        }
+    if state_type not in {"backlog", "unstarted", "started"}:
+        return None, {"error": "linear_policy_denied", "reason": "child_not_terminal_actionable"}
+
+    candidates = []
+    for item in context.get("terminal_states") or []:
+        item_id = str(item.get("id") or "")
+        position = item.get("position")
+        if (
+            item_id
+            and str(item.get("type") or "").casefold() == target_type
+            and isinstance(position, (int, float))
+            and not isinstance(position, bool)
+        ):
+            candidates.append((float(position), item_id))
+    if not candidates:
+        return None, {"error": "linear_policy_denied", "reason": "terminal_state_unavailable"}
+    return {
+        "action": action,
+        "source_state_id": state_id,
+        "target_state_id": min(candidates)[1],
+        "target_state_type": target_type,
+    }, None
+
+
+async def _resolve_child_terminal_transition(
+    issue_id: str,
+    *,
+    action: str,
+    target_team_id: str,
+    actor_id: str,
+    graphql_client: LinearClient,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    context = await graphql_client.get_issue_child_terminal_context(issue_id)
+    sessions = await graphql_client.get_issue_agent_sessions(issue_id)
+    open_actor_session = any(
+        str(session.get("app_user_id") or "") == actor_id
+        and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+        for session in sessions
+    )
+    return _evaluate_child_terminal_context(
+        context,
+        action=action,
+        target_team_id=target_team_id,
+        actor_id=actor_id,
+        open_actor_session=open_actor_session,
+    )
+
+
 async def execute_with_clients(
     *,
     profile_id: str,
@@ -328,8 +439,10 @@ async def execute_with_clients(
                 "reason": "session_activity_required",
             }
 
+    lifecycle_action = str(arguments.get("lifecycle_action") or "")
     lifecycle_transition: dict[str, str] | None = None
-    if arguments.get("lifecycle_action") == "start":
+    lifecycle_noop_result: dict[str, Any] | None = None
+    if lifecycle_action == "start":
         lifecycle_transition, lifecycle_result = await _resolve_start_transition(
             str(arguments.get("id") or ""),
             target_team_id=str(arguments.get("target_team_id") or ""),
@@ -337,11 +450,33 @@ async def execute_with_clients(
             graphql_client=graphql_client,
         )
         if lifecycle_result is not None:
-            return lifecycle_result
+            if str(lifecycle_result.get("status") or "") in LIFECYCLE_NOOP_STATUSES:
+                lifecycle_noop_result = lifecycle_result
+            else:
+                return lifecycle_result
+    elif lifecycle_action in {"complete_child", "cancel_child"}:
+        lifecycle_transition, lifecycle_result = await _resolve_child_terminal_transition(
+            str(arguments.get("id") or ""),
+            action=lifecycle_action,
+            target_team_id=str(arguments.get("target_team_id") or ""),
+            actor_id=graph_actor,
+            graphql_client=graphql_client,
+        )
+        if lifecycle_result is not None:
+            if str(lifecycle_result.get("status") or "") in LIFECYCLE_NOOP_STATUSES:
+                lifecycle_noop_result = lifecycle_result
+            else:
+                return lifecycle_result
 
     forwarded = {key: value for key, value in arguments.items() if key not in WRAPPER_FIELDS}
     if lifecycle_transition is not None:
         forwarded["state"] = lifecycle_transition["target_state_id"]
+    elif lifecycle_noop_result is not None:
+        forwarded["state"] = str(lifecycle_noop_result.get("result_id") or "")
+    ledger_payload = dict(forwarded)
+    if lifecycle_action in {"start", "complete_child", "cancel_child"}:
+        ledger_payload.pop("state", None)
+        ledger_payload["lifecycle_action"] = lifecycle_action
     if not mutation:
         return await mcp_client.call_tool(vendor_tool, forwarded)
     if ledger is None:
@@ -354,33 +489,79 @@ async def execute_with_clients(
             ledger.reserve,
             operation_key=operation_key,
             tool_name=vendor_tool,
-            payload=forwarded,
+            payload=ledger_payload,
             profile_id=profile_id,
             actor_id=graph_actor,
             team_id=team_id,
         )
     except OutboundLedgerError as exc:
-        return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+        if lifecycle_action != "start":
+            return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+        try:
+            legacy_reservation = await asyncio.to_thread(
+                ledger.reserve,
+                operation_key=operation_key,
+                tool_name=vendor_tool,
+                payload=forwarded,
+                profile_id=profile_id,
+                actor_id=graph_actor,
+                team_id=team_id,
+            )
+        except OutboundLedgerError:
+            return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+        if legacy_reservation.dispatch:
+            return {
+                "error": "linear_idempotency_rejected",
+                "reason": "legacy lifecycle reservation unexpectedly required dispatch",
+            }
+        reservation = legacy_reservation
     if not reservation.dispatch:
+        lifecycle_noop_replay = _decode_lifecycle_noop_result(reservation.result_id)
+        if lifecycle_noop_replay is not None:
+            noop_status, noop_result_id = lifecycle_noop_replay
+            return {
+                "status": noop_status,
+                "replayed": True,
+                "result_id": noop_result_id,
+            }
         return {
             "status": reservation.status,
             "replayed": True,
             "result_id": reservation.result_id,
             **({"error_code": reservation.error_code} if reservation.error_code else {}),
         }
+    if lifecycle_noop_result is not None:
+        noop_status = str(lifecycle_noop_result.get("status") or "")
+        noop_result_id = str(lifecycle_noop_result.get("result_id") or "")
+        await asyncio.to_thread(
+            ledger.mark_success,
+            operation_key,
+            result_id=_encode_lifecycle_noop_result(noop_status, noop_result_id),
+        )
+        return lifecycle_noop_result
 
     if lifecycle_transition is not None:
         # Linear exposes no conditional issue mutation. Re-read every mutable
-        # authorization input immediately before this vendor-recommended
-        # non-terminal start. The remaining call boundary is an accepted risk.
+        # authorization input immediately before dispatch; immutable creator
+        # ownership narrows child terminal authority, while parent/delegate/state
+        # drift still fails closed at this boundary.
         try:
-            confirmed, confirmation_result = _evaluate_start_context(
-                await graphql_client.get_issue_start_context(
-                    str(arguments.get("id") or "")
-                ),
-                target_team_id=team_id,
-                actor_id=graph_actor,
-            )
+            if lifecycle_action == "start":
+                confirmed, confirmation_result = _evaluate_start_context(
+                    await graphql_client.get_issue_start_context(
+                        str(arguments.get("id") or "")
+                    ),
+                    target_team_id=team_id,
+                    actor_id=graph_actor,
+                )
+            else:
+                confirmed, confirmation_result = await _resolve_child_terminal_transition(
+                    str(arguments.get("id") or ""),
+                    action=lifecycle_action,
+                    target_team_id=team_id,
+                    actor_id=graph_actor,
+                    graphql_client=graphql_client,
+                )
             confirmation_matches = confirmation_result is None and confirmed == lifecycle_transition
         except Exception:
             confirmation_matches = False
@@ -446,17 +627,37 @@ async def execute_with_clients(
 
     if lifecycle_transition is not None:
         try:
-            read_back = await graphql_client.get_issue_start_context(
-                str(arguments.get("id") or "")
-            )
-            read_back_state = read_back.get("state") or {}
-            accepted = (
-                str((read_back.get("team") or {}).get("id") or "") == team_id
-                and str((read_back.get("delegate") or {}).get("id") or "") == graph_actor
-                and str(read_back_state.get("id") or "")
-                == lifecycle_transition["target_state_id"]
-                and str(read_back_state.get("type") or "").casefold() == "started"
-            )
+            if lifecycle_action == "start":
+                read_back = await graphql_client.get_issue_start_context(
+                    str(arguments.get("id") or "")
+                )
+                read_back_state = read_back.get("state") or {}
+                accepted = (
+                    str((read_back.get("team") or {}).get("id") or "") == team_id
+                    and str((read_back.get("delegate") or {}).get("id") or "") == graph_actor
+                    and str(read_back_state.get("id") or "")
+                    == lifecycle_transition["target_state_id"]
+                    and str(read_back_state.get("type") or "").casefold() == "started"
+                )
+            else:
+                _unused, terminal_result = await _resolve_child_terminal_transition(
+                    str(arguments.get("id") or ""),
+                    action=lifecycle_action,
+                    target_team_id=team_id,
+                    actor_id=graph_actor,
+                    graphql_client=graphql_client,
+                )
+                expected_status = (
+                    "already_completed"
+                    if lifecycle_action == "complete_child"
+                    else "already_canceled"
+                )
+                accepted = bool(
+                    terminal_result
+                    and terminal_result.get("status") == expected_status
+                    and terminal_result.get("result_id")
+                    == lifecycle_transition["target_state_id"]
+                )
         except Exception:
             accepted = False
         if not accepted:

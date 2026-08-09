@@ -196,7 +196,12 @@ class OutboundPolicy:
             if "state" in arguments:
                 return PolicyDecision("deny", "state_transition_not_allowed")
             if "lifecycle_action" in arguments:
-                if arguments.get("lifecycle_action") != "start":
+                lifecycle_action = arguments.get("lifecycle_action")
+                if not isinstance(lifecycle_action, str) or lifecycle_action not in {
+                    "start",
+                    "complete_child",
+                    "cancel_child",
+                }:
                     return PolicyDecision("deny", "invalid_lifecycle_action")
                 if not arguments.get("id"):
                     return PolicyDecision("deny", "lifecycle_issue_required")

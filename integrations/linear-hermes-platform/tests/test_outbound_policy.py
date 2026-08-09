@@ -175,17 +175,24 @@ class OutboundPolicyTests(unittest.TestCase):
                     ("deny", "state_transition_not_allowed"),
                 )
 
-    def test_model_facing_issue_tool_allows_only_semantic_start(self):
-        allowed = self.standard().evaluate(
-            "save_issue",
-            {"id": "OPS-1", "target_team_id": "ops-1", "lifecycle_action": "start"},
-            live_actor_id="actor-1",
-            live_organization_id="org-1",
-        )
-        self.assertEqual(allowed.action, "allow")
-        for action in ("complete", "done", "In Progress", ""):
+    def test_model_facing_issue_tool_allows_only_narrow_semantic_lifecycle_actions(self):
+        policy = self.standard()
+        for action in ("start", "complete_child", "cancel_child"):
             with self.subTest(action=action):
-                denied = self.standard().evaluate(
+                allowed = policy.evaluate(
+                    "save_issue",
+                    {
+                        "id": "OPS-1",
+                        "target_team_id": "ops-1",
+                        "lifecycle_action": action,
+                    },
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual(allowed.action, "allow")
+        for action in ("complete", "cancel", "done", "In Progress", "", [], {}):
+            with self.subTest(action=action):
+                denied = policy.evaluate(
                     "save_issue",
                     {"id": "OPS-1", "target_team_id": "ops-1", "lifecycle_action": action},
                     live_actor_id="actor-1",

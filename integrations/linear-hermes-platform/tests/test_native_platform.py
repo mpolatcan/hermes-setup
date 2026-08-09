@@ -4051,6 +4051,210 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["delegate"]["id"], "actor-1")
         self.assertEqual(context["started_states"][0]["position"], 20)
 
+    async def test_child_terminal_context_requests_creator_parent_terminal_states_and_blockers(self):
+        client = LinearClient("/unused")
+
+        async def fake_graphql(query, variables=None):
+            self.assertIn("creator { id }", query)
+            self.assertIn("parent {", query)
+            self.assertIn('filter: { type: { in: ["completed", "canceled"] } }', query)
+            self.assertIn("pageInfo { hasNextPage endCursor }", query)
+            self.assertIn("inverseRelations(first: 100, after: $after)", query)
+            self.assertEqual(
+                variables,
+                {"id": "OPS-106", "after": None, "stateAfter": None},
+            )
+            return {
+                "issue": {
+                    "id": "child-1",
+                    "state": {"id": "progress-1", "type": "started"},
+                    "creator": {"id": "actor-1"},
+                    "delegate": {"id": "actor-1"},
+                    "parent": {
+                        "id": "parent-1",
+                        "state": {"id": "parent-progress", "type": "started"},
+                        "assignee": {"id": "human-1"},
+                    },
+                    "team": {
+                        "id": "ops-1",
+                        "states": {"nodes": [
+                            {"id": "done-1", "type": "completed", "position": 40},
+                            {"id": "canceled-1", "type": "canceled", "position": 50},
+                        ], "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                    },
+                    "inverseRelations": {"nodes": [
+                        {
+                            "type": "blocks",
+                            "issue": {
+                                "id": "blocker-1",
+                                "identifier": "OPS-100",
+                                "title": "Open blocker",
+                                "state": {"name": "Todo", "type": "unstarted"},
+                            },
+                        }
+                    ], "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                }
+            }
+
+        client.graphql = fake_graphql
+        context = await client.get_issue_child_terminal_context("OPS-106")
+        self.assertEqual(context["creator"], {"id": "actor-1"})
+        self.assertEqual(context["parent"]["assignee"], {"id": "human-1"})
+        self.assertEqual(context["terminal_states"][0]["id"], "done-1")
+        self.assertEqual([item["id"] for item in context["open_blockers"]], ["blocker-1"])
+
+    async def test_child_terminal_context_paginates_blockers(self):
+        client = LinearClient("/unused")
+        calls = []
+
+        def issue_with_relations(nodes, has_next, end_cursor):
+            return {
+                "issue": {
+                    "id": "child-1",
+                    "state": {"id": "progress-1", "type": "started"},
+                    "creator": {"id": "actor-1"},
+                    "delegate": {"id": "actor-1"},
+                    "parent": {
+                        "id": "parent-1",
+                        "state": {"id": "parent-progress", "type": "started"},
+                        "assignee": {"id": "human-1"},
+                    },
+                    "team": {
+                        "id": "ops-1",
+                        "states": {"nodes": [
+                            {"id": "done-1", "type": "completed", "position": 40},
+                            {"id": "canceled-1", "type": "canceled", "position": 50},
+                        ], "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                    },
+                    "inverseRelations": {
+                        "nodes": nodes,
+                        "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                    },
+                }
+            }
+
+        async def fake_graphql(_query, variables=None):
+            self.assertIsInstance(variables, dict)
+            calls.append(variables)
+            if variables["after"] is None:
+                return issue_with_relations([], True, "cursor-1")
+            return issue_with_relations([
+                {
+                    "type": "blocks",
+                    "issue": {
+                        "id": "blocker-page-2",
+                        "identifier": "OPS-200",
+                        "title": "Paginated blocker",
+                        "state": {"name": "Todo", "type": "unstarted"},
+                    },
+                }
+            ], False, None)
+
+        client.graphql = fake_graphql
+        context = await client.get_issue_child_terminal_context("OPS-106")
+        self.assertEqual(calls, [
+            {"id": "OPS-106", "after": None, "stateAfter": None},
+            {"id": "OPS-106", "after": "cursor-1", "stateAfter": None},
+        ])
+        self.assertEqual(
+            [item["id"] for item in context["open_blockers"]],
+            ["blocker-page-2"],
+        )
+
+    async def test_child_terminal_context_rejects_authorization_drift_between_pages(self):
+        client = LinearClient("/unused")
+
+        def page(delegate_id, has_next, cursor):
+            return {
+                "issue": {
+                    "id": "child-1",
+                    "state": {"id": "progress-1", "type": "started"},
+                    "creator": {"id": "actor-1"},
+                    "delegate": {"id": delegate_id},
+                    "parent": {
+                        "id": "parent-1",
+                        "state": {"id": "parent-progress", "type": "started"},
+                        "assignee": {"id": "human-1"},
+                    },
+                    "team": {
+                        "id": "ops-1",
+                        "states": {"nodes": [
+                            {"id": "done-1", "type": "completed", "position": 40},
+                            {"id": "canceled-1", "type": "canceled", "position": 50},
+                        ], "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                    },
+                    "inverseRelations": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                    },
+                }
+            }
+
+        async def fake_graphql(_query, variables=None):
+            self.assertIsInstance(variables, dict)
+            if variables["after"] is None:
+                return page("actor-1", True, "cursor-1")
+            return page("other-agent", False, None)
+
+        client.graphql = fake_graphql
+        with self.assertRaisesRegex(LinearAPIError, "authorization context changed"):
+            await client.get_issue_child_terminal_context("OPS-106")
+
+    async def test_child_terminal_context_paginates_terminal_states(self):
+        client = LinearClient("/unused")
+        calls = []
+
+        def issue(states, has_next, cursor, *, include_relations):
+            data = {
+                "id": "child-1",
+                "state": {"id": "progress-1", "type": "started"},
+                "creator": {"id": "actor-1"},
+                "delegate": {"id": "actor-1"},
+                "parent": {
+                    "id": "parent-1",
+                    "state": {"id": "parent-progress", "type": "started"},
+                    "assignee": {"id": "human-1"},
+                },
+                "team": {
+                    "id": "ops-1",
+                    "states": {
+                        "nodes": states,
+                        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                    },
+                },
+            }
+            if include_relations:
+                data["inverseRelations"] = {
+                    "nodes": [],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            return {"issue": data}
+
+        async def fake_graphql(query, variables=None):
+            self.assertIsInstance(variables, dict)
+            calls.append((query, variables))
+            if "LinearCreatorChildTerminalStates" in query:
+                return issue(
+                    [{"id": "done-2", "type": "completed", "position": 10}],
+                    False,
+                    None,
+                    include_relations=False,
+                )
+            return issue(
+                [{"id": "done-1", "type": "completed", "position": 50}],
+                True,
+                "state-cursor-1",
+                include_relations=True,
+            )
+
+        client.graphql = fake_graphql
+        context = await client.get_issue_child_terminal_context("OPS-106")
+        completed = [
+            item for item in context["terminal_states"] if item.get("type") == "completed"
+        ]
+        self.assertEqual([item["id"] for item in completed], ["done-1", "done-2"])
+        self.assertTrue(any("LinearCreatorChildTerminalStates" in query for query, _ in calls))
+
     async def test_open_blockers_filters_terminal_relations(self):
         client = LinearClient("/unused")
 
