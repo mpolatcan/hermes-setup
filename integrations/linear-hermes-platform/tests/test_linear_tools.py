@@ -14,7 +14,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from linear_tools import _parse_plan_sections, execute_with_clients, register_outbound_tools  # noqa: E402
+from linear_tools import (  # noqa: E402
+    _canonicalize_vendor_markdown,
+    _parse_plan_sections,
+    execute_with_clients,
+    register_outbound_tools,
+)
 from mcp_client import LinearMCPToolError  # noqa: E402
 from oauth_store import LinearAPIError  # noqa: E402
 from outbound_ledger import OperationReservation, OutboundLedger  # noqa: E402
@@ -616,6 +621,54 @@ Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur
         self.assertEqual(replay["status"], "success")
         self.assertTrue(replay["replayed"])
         self.assertEqual([call[0] for call in replay_mcp.calls], ["get_user"])
+
+    async def test_enrich_plan_accepts_vendor_normalized_unordered_markers(self):
+        before = self.plan_context()
+        vendor_description = "\n".join(
+            f"* {line[2:]}" if line.startswith("- ") else line
+            for line in self.plan_description().splitlines()
+        )
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=vendor_description,
+        )
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-vendor-bullet-normalization",
+            contexts=[before, before, after],
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            len([call for call in mcp.calls if call[0] == "save_issue"]),
+            1,
+        )
+
+    def test_vendor_markdown_canonicalization_is_limited_to_real_bullet_items(self):
+        self.assertEqual(
+            _canonicalize_vendor_markdown("- item\n  - nested\n"),
+            _canonicalize_vendor_markdown("* item\n  + nested\n"),
+        )
+        self.assertNotEqual(
+            _canonicalize_vendor_markdown("- - -\n"),
+            _canonicalize_vendor_markdown("* - -\n"),
+        )
+        self.assertNotEqual(
+            _canonicalize_vendor_markdown("    - code\n"),
+            _canonicalize_vendor_markdown("    * code\n"),
+        )
+        self.assertNotEqual(
+            _canonicalize_vendor_markdown("- item\r\n"),
+            _canonicalize_vendor_markdown("* item\n"),
+        )
+        for separator in ("\v", "\f", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                self.assertNotEqual(
+                    _canonicalize_vendor_markdown(
+                        f"{separator}- protected paragraph bytes\n- actual item\n"
+                    ),
+                    _canonicalize_vendor_markdown(
+                        f"{separator}+ protected paragraph bytes\n- actual item\n"
+                    ),
+                )
 
     async def test_enrich_plan_post_dispatch_drift_reports_unknown(self):
         before = self.plan_context()

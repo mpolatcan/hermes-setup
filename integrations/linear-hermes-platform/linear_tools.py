@@ -652,6 +652,34 @@ def _evaluate_plan_context(
     }, None
 
 
+def _canonicalize_vendor_markdown(description: str) -> str:
+    bullet_item_lines: set[int] = set()
+    list_stack: list[str] = []
+    for token in _COMMONMARK.parse(description):
+        if token.type == "bullet_list_open":
+            list_stack.append("bullet")
+        elif token.type == "ordered_list_open":
+            list_stack.append("ordered")
+        elif token.type == "list_item_open" and list_stack and list_stack[-1] == "bullet":
+            if token.map:
+                bullet_item_lines.add(int(token.map[0]))
+        elif token.type in {"bullet_list_close", "ordered_list_close"} and list_stack:
+            list_stack.pop()
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", description)
+    if lines and lines[-1] == "":
+        lines.pop()
+    for index in bullet_item_lines:
+        if index >= len(lines):
+            continue
+        lines[index] = re.sub(
+            r"^([ \t]*)[-+*](?=[ \t]+)",
+            r"\1*",
+            lines[index],
+            count=1,
+        )
+    return "".join(lines)
+
+
 def _plan_readback_matches(
     context: dict[str, Any],
     *,
@@ -670,7 +698,8 @@ def _plan_readback_matches(
         and str(state.get("id") or "") == snapshot["state_id"]
         and str(state.get("type") or "").casefold() == snapshot["state_type"]
         and str(context.get("title") or "") == snapshot["title"]
-        and str(context.get("description") or "") == description
+        and _canonicalize_vendor_markdown(str(context.get("description") or ""))
+        == _canonicalize_vendor_markdown(description)
         and updated_at
         and updated_at != expected_updated_at
     )
