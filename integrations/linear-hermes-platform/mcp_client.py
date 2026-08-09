@@ -18,6 +18,7 @@ OFFICIAL_LINEAR_MCP_ENDPOINT = "https://mcp.linear.app/mcp"
 INITIAL_PROTOCOL_VERSION = "2025-03-26"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18"})
 OFFICIAL_LINEAR_INPUT_SCHEMA_URI = "https://json-schema.org/draft/2020-12/schema"
+WORKSPACE_TOOL_INPUT_SCHEMA = {"type": "object", "properties": {}}
 REQUIRED_TOOLS = frozenset({"get_user", "get_issue", "list_issues", "save_issue", "save_comment"})
 EXECUTABLE_VENDOR_TOOLS = REQUIRED_TOOLS
 MUTATION_VENDOR_TOOLS = frozenset({"save_issue", "save_comment"})
@@ -28,7 +29,7 @@ EXPECTED_VENDOR_TOOL_NAMES = frozenset(
         "delete_status_update", "extract_images", "get_agent_skill", "get_attachment",
         "get_diff", "get_diff_threads", "get_document", "get_issue", "get_issue_status",
         "get_milestone", "get_project", "get_release", "get_release_note",
-        "get_status_updates", "get_team", "get_user", "list_agent_skills",
+        "get_status_updates", "get_team", "get_user", "get_workspace", "list_agent_skills",
         "list_comments", "list_cycles", "list_diffs", "list_documents",
         "list_issue_labels", "list_issue_statuses", "list_issues", "list_milestones",
         "list_project_labels", "list_projects", "list_release_notes",
@@ -355,10 +356,13 @@ class LinearMCPClient:
             raise LinearMCPError(f"Linear MCP missing required tools: {', '.join(missing)}")
         for tool_name, tool in validated_tool_schemas.items():
             schema = tool.get("inputSchema")
-            if (
-                not isinstance(schema, dict)
-                or schema.get("$schema") != OFFICIAL_LINEAR_INPUT_SCHEMA_URI
-            ):
+            if not isinstance(schema, dict):
+                raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}")
+            if tool_name == "get_workspace":
+                if schema != WORKSPACE_TOOL_INPUT_SCHEMA:
+                    raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}")
+                continue
+            if schema.get("$schema") != OFFICIAL_LINEAR_INPUT_SCHEMA_URI:
                 raise LinearMCPError(f"Linear MCP tool schema drift: {tool_name}")
         for tool_name, required_fields in REQUIRED_TOOL_INPUT_FIELDS.items():
             schema = validated_tool_schemas[tool_name].get("inputSchema")

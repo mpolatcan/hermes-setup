@@ -145,9 +145,11 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.tools.extend(
             {
                 "name": name,
-                "inputSchema": {
-                    "$schema": "https://json-schema.org/draft/2020-12/schema",
-                },
+                "inputSchema": (
+                    {"type": "object", "properties": {}}
+                    if name == "get_workspace"
+                    else {"$schema": "https://json-schema.org/draft/2020-12/schema"}
+                ),
             }
             for name in sorted(EXPECTED_VENDOR_TOOL_NAMES - set(fields))
         )
@@ -316,6 +318,45 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await client.close()
+
+    async def test_live_workspace_contract_connects_without_schema_uri(self):
+        workspace = next(tool for tool in self.tools if tool["name"] == "get_workspace")
+        workspace["inputSchema"] = {"type": "object", "properties": {}}
+        client = self.client()
+        try:
+            await client.connect()
+            self.assertIn("get_workspace", client.tool_schemas)
+            requests_before_call = len(self.requests)
+            with self.assertRaisesRegex(LinearMCPError, "not authorized for execution"):
+                await client.call_tool("get_workspace", {})
+            self.assertEqual(len(self.requests), requests_before_call)
+        finally:
+            await client.close()
+
+    async def test_workspace_schema_shape_is_exact_and_fail_closed(self):
+        malformed_schemas = (
+            {},
+            {"type": "string", "properties": {}},
+            {"type": "object", "properties": {"id": {"type": "string"}}},
+            {"$schema": None, "type": "object", "properties": {}},
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+            },
+        )
+        for schema in malformed_schemas:
+            with self.subTest(schema=schema):
+                workspace = next(tool for tool in self.tools if tool["name"] == "get_workspace")
+                original = workspace["inputSchema"]
+                workspace["inputSchema"] = schema
+                client = self.client()
+                try:
+                    with self.assertRaisesRegex(LinearMCPError, "schema drift"):
+                        await client.connect()
+                finally:
+                    await client.close()
+                    workspace["inputSchema"] = original
 
     async def test_missing_tools_capability_fails_before_initialized_notification(self):
         self.initialize_capabilities = {}
