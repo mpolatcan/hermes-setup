@@ -3390,6 +3390,16 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_authored_terminal_event_is_ignored_before_closure_readback(self):
         self.adapter._closure_reconciliation_enabled = True
         self.adapter._closure_allowed_team_ids = {"team-ops"}
+        self.adapter._ledger.put_activation_wait(
+            "session-self",
+            "issue-self",
+            "delivery-self",
+            {"type": "AgentSessionEvent", "action": "created"},
+        )
+        self.adapter._ledger.claim_manager_activation(
+            "issue-self", "activation-self", {"issue_id": "issue-self"}
+        )
+        self.adapter._ledger.mark_manager_activation("issue-self", "delegated")
         payload = self.make_data_payload(
             webhookId="webhook-self-terminal",
             actor={"id": "agent-derya", "name": "Derya"},
@@ -3400,10 +3410,26 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             },
             updatedFrom={"stateId": "started-1"},
         )
-        response = await self.adapter._handle_webhook(self.request_for(payload))
+        issue_lock = self.adapter._issue_lock("issue-self")
+        await issue_lock.acquire()
+        response_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(payload))
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(response_task.done())
+        issue_lock.release()
+        response = await response_task
         self.assertEqual(json.loads(response.text)["status"], "ignored_self")
         self.assertEqual(self.adapter._linear.calls, [])
         self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 0)
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait("issue-self")["state"],
+            "canceled",
+        )
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation("issue-self")["state"],
+            "canceled",
+        )
 
     async def test_selected_linear_data_types_are_context_only(self):
         event_types = (

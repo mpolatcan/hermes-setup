@@ -1419,14 +1419,29 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         claimed = True
         try:
             actor_id, _ = _actor(payload)
-            if self._linear.actor_id and hmac.compare_digest(actor_id, self._linear.actor_id):
-                self._ledger.mark_done(delivery_key)
-                return web.json_response({"status": "ignored_self"}, status=200)
             event_type = str(payload.get("type") or "")
             action = str(payload.get("action") or "")
             data = payload.get("data")
             if not isinstance(data, dict):
                 data = {}
+            entity_id = str(data.get("id") or "")
+            if self._linear.actor_id and hmac.compare_digest(actor_id, self._linear.actor_id):
+                event_state = data.get("state")
+                event_state_type = str(
+                    event_state.get("type") if isinstance(event_state, dict) else ""
+                ).casefold()
+                if (
+                    event_type == "Issue"
+                    and action == "update"
+                    and entity_id
+                    and event_state_type in {"completed", "canceled"}
+                ):
+                    async with self._issue_lock(entity_id):
+                        self._ledger.cancel_activation_for_issue(entity_id)
+                        if self._ledger.get_manager_activation(entity_id):
+                            self._ledger.mark_manager_activation(entity_id, "canceled")
+                self._ledger.mark_done(delivery_key)
+                return web.json_response({"status": "ignored_self"}, status=200)
             notification = payload.get("notification")
             if not isinstance(notification, dict):
                 notification = {}
