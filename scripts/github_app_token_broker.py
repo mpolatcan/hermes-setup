@@ -390,6 +390,15 @@ def validate_command(command: Sequence[str]) -> list[str]:
     return args
 
 
+def sanitize_gh_auth_status_output(output: str) -> str:
+    sanitized = re.sub(
+        r"(?m)^(\s*-\s*Token:)\s*.*$",
+        r"\1 [REDACTED]",
+        output,
+    )
+    return re.sub(r"ghs_[A-Za-z0-9_]+", "[REDACTED]", sanitized)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] != "--":
@@ -412,7 +421,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         child = build_child_environment(
             os.environ, installation_token, gh_config_dir=gh_config_dir
         )
-        result = subprocess.run(command, env=child, check=False)
+        if command[1:] == ["auth", "status"]:
+            result = subprocess.run(
+                command,
+                env=child,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.stdout:
+                sys.stdout.write(sanitize_gh_auth_status_output(result.stdout))
+            if result.stderr:
+                sys.stderr.write(sanitize_gh_auth_status_output(result.stderr))
+        else:
+            result = subprocess.run(command, env=child, check=False)
     return result.returncode
 
 

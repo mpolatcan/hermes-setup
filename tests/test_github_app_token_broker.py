@@ -5,6 +5,8 @@ import json
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "github_app_token_broker.py"
@@ -226,6 +228,58 @@ class BrokerTests(unittest.TestCase):
         ):
             with self.subTest(command=command), self.assertRaises(BROKER.BrokerError):
                 BROKER.validate_command(command)
+
+    def test_auth_status_output_redacts_partial_and_complete_tokens(self):
+        output = """github.com
+  ✓ Logged in to account derya-hermes[bot]
+  - Token: ghs_4550664_eyJhbGciOi...suffix
+  diagnostic ghs_completeTokenValue
+"""
+        sanitized = BROKER.sanitize_gh_auth_status_output(output)
+        self.assertNotIn("ghs_", sanitized)
+        self.assertNotIn("suffix", sanitized)
+        self.assertEqual(sanitized.count("[REDACTED]"), 2)
+
+    @mock.patch.object(BROKER, "mint_installation_token", return_value="fresh-token")
+    @mock.patch.object(BROKER, "verify_installation")
+    @mock.patch.object(BROKER, "build_app_jwt", return_value="app-jwt")
+    @mock.patch.object(BROKER, "resolve_references", new_callable=mock.AsyncMock)
+    @mock.patch.object(BROKER.subprocess, "run")
+    def test_main_sanitizes_auth_status_streams_and_preserves_exit_code(
+        self,
+        run_command,
+        resolve_references,
+        _build_jwt,
+        _verify_installation,
+        _mint_token,
+    ):
+        resolve_references.return_value = {
+            "app_id": 4550664,
+            "installation_id": 152740425,
+            "repository": "mpolatcan/hermes-setup",
+            "private_key": "private",
+        }
+        run_command.return_value = SimpleNamespace(
+            stdout="  - Token: ghs_stdoutSecret\n",
+            stderr="diagnostic ghs_stderrSecret\n",
+            returncode=7,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {BROKER.TOKEN_ENV: "bootstrap"}, clear=False),
+            mock.patch.object(BROKER.sys, "stdout", stdout),
+            mock.patch.object(BROKER.sys, "stderr", stderr),
+        ):
+            result = BROKER.main(["--", BROKER.GH_BINARY, "auth", "status"])
+        self.assertEqual(result, 7)
+        self.assertNotIn("ghs_", stdout.getvalue() + stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "  - Token: [REDACTED]\n")
+        self.assertEqual(stderr.getvalue(), "diagnostic [REDACTED]\n")
+        _command, kwargs = run_command.call_args
+        self.assertTrue(kwargs["text"])
+        self.assertIs(kwargs["stdout"], BROKER.subprocess.PIPE)
+        self.assertIs(kwargs["stderr"], BROKER.subprocess.PIPE)
 
 
 if __name__ == "__main__":
