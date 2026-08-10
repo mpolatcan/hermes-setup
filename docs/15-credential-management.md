@@ -79,6 +79,21 @@ The bootstrap token is the unavoidable root-of-trust exception. It is never stor
 
 Codex `auth.json`, Hermes `mcp-tokens/*.json`, Linear's OAuth JSON, and the official Notion CLI state under `general/home/.notion/` remain native local `0600` files because OAuth refresh/workspace state requires writeback. The other profiles link to the canonical Notion CLI directory rather than copying it. These are not alternate stores for static API keys. Static companion values — client secrets, webhook signing secrets, PATs, and API keys — remain in 1Password. See [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md) for the data-plane boundary.
 
+### Derya GitHub App identity
+
+Derya's unattended GitHub API path uses a dedicated GitHub App installed only on `mpolatcan/hermes-setup`. The App ID, installation ID, repository scope, and private-key attachment live in the profile-scoped `Derya - Secrets` item. The private key is never mapped into the long-running gateway environment.
+
+`~/.hermes/scripts/derya-gh` obtains the general profile's existing 1Password service-account bootstrap identity from Keychain, resolves only the four pinned GitHub App references through the official SDK, signs a short-lived App JWT in memory, verifies the pinned installation owner/selection/permission set, requests a repository-restricted installation token, removes the bootstrap identity, and runs the pinned `/opt/homebrew/bin/gh` with a fresh mode-`0700` config directory. The wrapper never prints either credential and does not cache the installation token. Its command gate allows only exact `gh auth status` and API routes under `repos/mpolatcan/hermes-setup` plus the read-only installation-scope check; aliases, extensions, token printing, custom hosts and generic gh commands fail closed. Git remotes continue to use SSH; this identity is for API, pull-request, and narrowly scoped repository automation.
+
+Acceptance checks:
+
+```bash
+~/.hermes/scripts/derya-gh auth status
+~/.hermes/scripts/derya-gh api installation/repositories | jq '{total_count,repositories:[.repositories[].full_name]}'
+~/.hermes/scripts/derya-gh api repos/mpolatcan/hermes-setup | jq '.full_name'
+ssh -T -o BatchMode=yes git@github.com
+```
+
 ## New credential workflow
 
 1. Check whether the credential already exists in the profile or shared 1Password item.
