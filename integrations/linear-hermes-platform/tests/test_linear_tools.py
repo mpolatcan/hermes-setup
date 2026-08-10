@@ -713,17 +713,81 @@ Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur
         )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
-    async def test_enrich_plan_requires_sparse_preserved_source_and_structured_sections(self):
-        detailed_source = "Existing detailed human plan " * 25
-        result, _mcp = await self.run_plan_action(
-            operation_key="enrich-plan-nonsparse",
+    async def test_enrich_plan_preserves_structured_source_in_fenced_block(self):
+        detailed_source = """## Amaç
+Existing detailed human plan remains authoritative.
+
+## Kabul kriterleri
+- Preserve this exact structured source.
+- Keep the human revision conflict guard.
+"""
+        description = self.plan_description().replace(
+            "Kaynak brief: Short brief",
+            f"Short brief\n\nKaynak brief verbatim korunmuştur:\n\n```markdown\n{detailed_source}```",
+            1,
+        )
+        before = self.plan_context(description=detailed_source)
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=description,
+        )
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-structured-source",
+            contexts=[before, before, after],
+            description=description,
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            [call for call in mcp.calls if call[0] == "save_issue"],
+            [("save_issue", {"id": "OPS-105", "description": description}, True)],
+        )
+
+    async def test_enrich_plan_rejects_unfenced_non_sparse_source(self):
+        detailed_source = "Detailed source " + " ".join(
+            f"evidence{index}" for index in range(100)
+        )
+        description = self.plan_description().replace(
+            "Kaynak brief: Short brief",
+            f"Short brief\n\nKaynak brief verbatim korunmuştur:\n\n{detailed_source}",
+            1,
+        )
+        result, mcp = await self.run_plan_action(
+            operation_key="enrich-plan-unfenced-nonsparse-source",
             contexts=[self.plan_context(description=detailed_source)],
+            description=description,
         )
         self.assertEqual(
             result,
-            {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"},
+            {"error": "linear_policy_denied", "reason": "source_brief_not_fenced"},
         )
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
+    async def test_enrich_plan_accepts_tilde_fence_around_source_with_backticks(self):
+        detailed_source = """## Amaç
+Existing source includes its own fenced example.
+
+```text
+payload
+```
+"""
+        description = self.plan_description().replace(
+            "Kaynak brief: Short brief",
+            f"Short brief\n\nKaynak brief verbatim korunmuştur:\n\n~~~~markdown\n{detailed_source}~~~~",
+            1,
+        )
+        before = self.plan_context(description=detailed_source)
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=description,
+        )
+        result, _mcp = await self.run_plan_action(
+            operation_key="enrich-plan-tilde-fenced-source",
+            contexts=[before, before, after],
+            description=description,
+        )
+        self.assertEqual(result["status"], "success")
+
+    async def test_enrich_plan_requires_preserved_source_and_structured_sections(self):
         result, _mcp = await self.run_plan_action(
             operation_key="enrich-plan-drops-brief",
             contexts=[self.plan_context(description="Original human brief")],
@@ -936,7 +1000,7 @@ Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur
         )
         self.assertEqual(
             result,
-            {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"},
+            {"error": "linear_policy_denied", "reason": "source_brief_not_preserved"},
         )
 
     async def test_enrich_plan_stale_pending_replay_becomes_unknown(self):

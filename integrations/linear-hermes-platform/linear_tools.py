@@ -570,12 +570,18 @@ def _parse_plan_sections(description: str) -> dict[str, str] | None:
     h2_lines = _commonmark_h2_lines(description)
     if h2_lines != list(PLAN_REQUIRED_HEADINGS):
         return None
-    positions: list[int] = []
-    for heading in PLAN_REQUIRED_HEADINGS:
-        matches = [index for index, line in enumerate(lines) if line == heading]
-        if len(matches) != 1:
-            return None
-        positions.append(matches[0])
+    positions = [
+        int(token.map[0])
+        for token in document_tokens
+        if token.type == "heading_open" and token.tag == "h2" and token.map
+    ]
+    if len(positions) != len(PLAN_REQUIRED_HEADINGS):
+        return None
+    if any(
+        lines[position] != heading
+        for position, heading in zip(positions, PLAN_REQUIRED_HEADINGS, strict=True)
+    ):
+        return None
     sections: dict[str, str] = {}
     for index, position in enumerate(positions):
         end = positions[index + 1] if index + 1 < len(positions) else len(lines)
@@ -599,6 +605,15 @@ def _parse_plan_sections(description: str) -> dict[str, str] | None:
             if smaller and shared_count / smaller >= 0.70:
                 return None
     return sections
+
+
+def _source_is_exact_fenced_block(section: str, source: str) -> bool:
+    for token in _COMMONMARK.parse(section):
+        if token.type != "fence":
+            continue
+        if token.content == source or token.content == f"{source}\n":
+            return True
+    return False
 
 
 def _evaluate_plan_context(
@@ -637,10 +652,14 @@ def _evaluate_plan_context(
         }
     if not live_updated_at or live_updated_at != expected_updated_at:
         return None, {"error": "linear_policy_denied", "reason": "plan_revision_mismatch"}
-    if len(source_description) > 500 or _commonmark_h2_lines(source_description):
-        return None, {"error": "linear_policy_denied", "reason": "plan_source_not_sparse"}
     if source_description and source_description not in purpose_section:
         return None, {"error": "linear_policy_denied", "reason": "source_brief_not_preserved"}
+    if (
+        source_description
+        and (len(source_description) > 500 or _commonmark_h2_lines(source_description))
+        and not _source_is_exact_fenced_block(purpose_section, source_description)
+    ):
+        return None, {"error": "linear_policy_denied", "reason": "source_brief_not_fenced"}
     return {
         "team_id": target_team_id,
         "delegate_id": actor_id,
