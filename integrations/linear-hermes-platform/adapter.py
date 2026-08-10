@@ -267,6 +267,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
     supports_async_delivery = True
     splits_long_messages = False
     SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_TRANSIENT_PROGRESS = True
 
     def __init__(self, config: PlatformConfig, platform: Platform) -> None:
         super().__init__(config, platform)
@@ -544,7 +545,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.6",
+                "version": "0.8.7",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1640,6 +1641,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         body: str,
         *,
         item_key: str | None = None,
+        ephemeral: bool = False,
     ) -> str:
         if self._ledger is None:
             raise RuntimeError("Linear outbox is unavailable")
@@ -1652,16 +1654,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 item_key,
             )
             return activity_id
+        payload: dict[str, Any] = {
+            "activity_id": activity_id,
+            "agent_session_id": agent_session_id,
+            "activity_type": activity_type,
+            "body": body,
+        }
+        if ephemeral:
+            payload["ephemeral"] = True
         self._ledger.enqueue_outbox(
             f"activity:{item_key}",
             agent_session_id,
-            "activity.create",
-            {
-                "activity_id": activity_id,
-                "agent_session_id": agent_session_id,
-                "activity_type": activity_type,
-                "body": body,
-            },
+            "activity.transient.create" if ephemeral else "activity.create",
+            payload,
         )
         self._outbox_wakeup.set()
         return activity_id
@@ -1755,7 +1760,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 )
                 return True
             try:
-                if item.operation == "activity.create":
+                if item.operation in {"activity.create", "activity.transient.create"}:
                     if not item.id.startswith("activity:closure:"):
                         await self._validate_activity_target(
                             item.payload["agent_session_id"]
@@ -1844,7 +1849,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         reply_to: str | None = None,
         metadata: Any = None,
     ) -> SendResult:
-        del reply_to, metadata
+        del reply_to
         if self._linear is None or self._ledger is None:
             return SendResult(success=False, error="Linear outbox is unavailable", retryable=True)
         await self._wait_for_thought(chat_id)
@@ -1855,13 +1860,54 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             )
         try:
             await self._validate_activity_target(chat_id)
-            activity_type = (
-                "thought"
-                if content.startswith(_LINEAR_HOME_CHANNEL_NOTICE_PREFIX)
-                else "response"
+            transient_progress = bool(
+                isinstance(metadata, dict) and metadata.get("transient_progress") is True
             )
-            activity_id = self._enqueue_activity(chat_id, activity_type, content)
+            transient_progress_key = ""
+            if transient_progress:
+                transient_progress_key = str(
+                    metadata.get("transient_progress_key") or ""
+                ).strip()
+                if not transient_progress_key:
+                    raise LinearAPIError(
+                        "Transient Linear progress requires a trusted turn key",
+                        retryable=False,
+                    )
+            activity_type = "thought" if (
+                transient_progress
+                or content.startswith(_LINEAR_HOME_CHANNEL_NOTICE_PREFIX)
+            ) else "response"
+            item_key = None
+            if transient_progress:
+                digest = hashlib.sha256(content.encode()).hexdigest()[:24]
+                item_key = f"progress:{chat_id}:{transient_progress_key}:{digest}"
+            activity_id = self._enqueue_activity(
+                chat_id,
+                activity_type,
+                content,
+                item_key=item_key,
+                ephemeral=transient_progress,
+            )
+            if transient_progress and item_key is not None:
+                item = self._ledger.get_outbox_item(f"activity:{item_key}")
+                if item is None:
+                    raise LinearAPIError(
+                        "Transient Linear progress was not durably accepted",
+                        retryable=True,
+                    )
+                if item["state"] == "dead":
+                    raise LinearAPIError(
+                        "Transient Linear progress is dead-lettered",
+                        retryable=False,
+                    )
             await self._drain_outbox_once()
+            if transient_progress and item_key is not None:
+                item = self._ledger.get_outbox_item(f"activity:{item_key}")
+                if item is not None and item["state"] == "dead":
+                    raise LinearAPIError(
+                        "Transient Linear progress is dead-lettered",
+                        retryable=False,
+                    )
             # Success means durably accepted. The outbox owns transport retries.
             return SendResult(success=True, message_id=activity_id)
         except LinearAPIError as exc:

@@ -3569,6 +3569,106 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.adapter._linear.calls[-1], ("session-1", "response", body))
 
+    async def test_transient_progress_send_creates_ephemeral_thought(self):
+        result = await self.adapter.send(
+            "session-progress",
+            "⏳ Working — 1 min — checking GitHub permissions",
+            metadata={
+                "transient_progress": True,
+                "transient_progress_key": "turn-1",
+            },
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(self.adapter.SUPPORTS_TRANSIENT_PROGRESS)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            (
+                "session-progress",
+                "thought",
+                "⏳ Working — 1 min — checking GitHub permissions",
+            ),
+        )
+        self.assertTrue(self.adapter._linear.activity_ephemeral[-1])
+
+    async def test_identical_progress_text_in_separate_turns_creates_two_activities(self):
+        body = "⏳ Working — checking GitHub permissions"
+        first = await self.adapter.send(
+            "session-progress",
+            body,
+            metadata={"transient_progress": True, "transient_progress_key": "turn-1"},
+        )
+        second = await self.adapter.send(
+            "session-progress",
+            body,
+            metadata={"transient_progress": True, "transient_progress_key": "turn-2"},
+        )
+
+        self.assertTrue(first.success)
+        self.assertTrue(second.success)
+        self.assertNotEqual(first.message_id, second.message_id)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-progress", "thought", body),
+                ("session-progress", "thought", body),
+            ],
+        )
+        self.assertEqual(self.adapter._linear.activity_ephemeral, [True, True])
+
+    async def test_transient_progress_requires_trusted_turn_key(self):
+        result = await self.adapter.send(
+            "session-progress",
+            "⏳ Working",
+            metadata={"transient_progress": True},
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(self.adapter._linear.calls, [])
+
+    async def test_dead_transient_progress_replay_is_not_reported_as_accepted(self):
+        metadata = {"transient_progress": True, "transient_progress_key": "turn-dead"}
+        first = await self.adapter.send("session-progress", "⏳ Working", metadata=metadata)
+        self.assertTrue(first.success)
+        self.adapter._ledger._db.execute(
+            "UPDATE outbox SET state = 'dead' WHERE aggregate_key = ?",
+            ("session-progress",),
+        )
+        self.adapter._ledger._db.commit()
+
+        replay = await self.adapter.send("session-progress", "⏳ Working", metadata=metadata)
+
+        self.assertFalse(replay.success)
+        self.assertIn("dead", str(replay.error).casefold())
+        self.assertEqual(len(self.adapter._linear.calls), 1)
+
+    async def test_permanent_progress_failure_does_not_block_later_final_response(self):
+        original_create = self.adapter._linear.create_activity
+
+        async def reject_progress(*args, **kwargs):
+            raise LinearAPIError("progress rejected", retryable=False)
+
+        self.adapter._linear.create_activity = reject_progress
+        progress = await self.adapter.send(
+            "session-progress",
+            "⏳ Working",
+            metadata={"transient_progress": True, "transient_progress_key": "turn-fail"},
+        )
+
+        self.assertFalse(progress.success)
+        self.assertIn("dead", str(progress.error).casefold())
+        self.assertEqual(self.adapter._ledger.outbox_counts()["dead"], 1)
+
+        self.adapter._linear.create_activity = original_create
+        final = await self.adapter.send("session-progress", "Final deliverable")
+
+        self.assertTrue(final.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-progress", "response", "Final deliverable"),
+        )
+        self.assertFalse(self.adapter._linear.activity_ephemeral[-1])
+
     async def test_operational_inbox_on_terminal_issue_remains_a_valid_transport_anchor(self):
         self.adapter._linear.delivery_contexts["session-terminal-inbox"] = {
             "id": "session-terminal-inbox",
