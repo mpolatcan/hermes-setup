@@ -343,8 +343,10 @@ def _evaluate_child_terminal_context(
     parent_state_type = str((parent.get("state") or {}).get("type") or "").casefold()
     if parent_state_type not in {"backlog", "unstarted", "started"}:
         if parent_state_type in {"completed", "canceled"}:
-            return None, {"error": "linear_policy_denied", "reason": "parent_terminal"}
-        return None, {"error": "linear_policy_denied", "reason": "parent_state_unavailable"}
+            if action != "cancel_child":
+                return None, {"error": "linear_policy_denied", "reason": "parent_terminal"}
+        else:
+            return None, {"error": "linear_policy_denied", "reason": "parent_state_unavailable"}
     if open_actor_session:
         return None, {"error": "linear_policy_denied", "reason": "child_session_still_open"}
     if action == "complete_child" and context.get("open_blockers"):
