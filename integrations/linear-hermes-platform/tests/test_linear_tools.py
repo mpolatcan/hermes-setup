@@ -1730,6 +1730,39 @@ payload
         )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
 
+    async def test_cancel_creator_child_reconciles_after_parent_is_terminal(self):
+        for parent_type in ("completed", "canceled"):
+            with self.subTest(parent_type=parent_type):
+                before = self.child_terminal_context()
+                before["parent"]["state"] = {
+                    "id": f"parent-{parent_type}",
+                    "type": parent_type,
+                }
+                after = {**before, "state": {"id": "canceled-1", "type": "canceled"}}
+                graph = FakeGraphQL(child_terminal_contexts=[before, before, after])
+                mcp = FakeMCP()
+                result = await execute_with_clients(
+                    profile_id="general",
+                    vendor_tool="save_issue",
+                    arguments={
+                        "id": "OPS-138",
+                        "target_team_id": "ops-1",
+                        "operation_key": f"op-cancel-stale-child-{parent_type}",
+                        "lifecycle_action": "cancel_child",
+                    },
+                    mutation=True,
+                    policy=self.policy,
+                    ledger=self.ledger,
+                    graphql_client=graph,
+                    mcp_client=mcp,
+                )
+                self.assertEqual(result["status"], "success")
+                calls = [call for call in mcp.calls if call[0] == "save_issue"]
+                self.assertEqual(
+                    calls,
+                    [("save_issue", {"id": "OPS-138", "state": "canceled-1"}, True)],
+                )
+
     async def test_complete_child_denies_open_creator_session(self):
         context = self.child_terminal_context()
         result, mcp = await self.run_child_terminal_action(
