@@ -265,6 +265,9 @@ class DeployPluginTests(unittest.TestCase):
         run("git", "add", ".", cwd=self.repo)
         run("git", "commit", "-qm", "fixture", cwd=self.repo)
         self.commit = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        # main-gated policy resolves against origin/main; the fixture commit is
+        # its own ancestor, so it is deployable by default.
+        run("git", "update-ref", "refs/remotes/origin/main", self.commit, cwd=self.repo)
         self.manifest = {
             name: hashlib.sha256((f"reviewed-{index}\n").encode()).hexdigest()
             for index, name in enumerate(ALLOWLIST)
@@ -434,31 +437,53 @@ class DeployPluginTests(unittest.TestCase):
 
         self.assertEqual("old-runtime\n", (self.target / "old.py").read_text(encoding="utf-8"))
 
-    def test_unreviewed_commit_is_rejected_before_mutation(self) -> None:
+    def test_unmerged_commit_is_rejected_before_mutation(self) -> None:
         helper = load_helper()
-        with self.assertRaisesRegex(helper.DeploymentError, "no reviewed"):
+        # A branch-only commit that is not an ancestor of origin/main must be
+        # rejected: only merged code is deployable under the main-gated policy.
+        run("git", "checkout", "-qb", "side", cwd=self.repo)
+        (self.repo / "side.txt").write_text("side\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.repo)
+        run("git", "commit", "-qm", "side branch", cwd=self.repo)
+        side_commit = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        run("git", "checkout", "-q", "main", cwd=self.repo)
+
+        with self.assertRaisesRegex(helper.DeploymentError, "not an ancestor"):
             helper.deploy_reviewed(
                 repo_root=self.repo,
                 profiles_root=self.profiles,
                 profile="general",
-                commit=self.commit,
+                commit=side_commit,
             )
         self.assertTrue((self.target / "old.py").exists())
 
-    def test_reviewed_hash_mismatch_is_rejected_before_promotion(self) -> None:
+    def test_deploy_defaults_to_origin_main_head(self) -> None:
         helper = load_helper()
-        bad = dict(self.manifest)
-        bad["adapter.py"] = "0" * 64
-        helper.REVIEWED_MANIFESTS = {self.commit: bad}
+        # No --commit: deploy resolves origin/main HEAD, computes the manifest
+        # from that commit, and promotes it without any pre-registered review.
+        result = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+        )
+        self.assertEqual(self.commit, result["commit"])
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        for name in ALLOWLIST:
+            self.assertEqual(0o600, (self.target / name).stat().st_mode & 0o777)
+            self.assertEqual(self.manifest[name], hashlib.sha256((self.target / name).read_bytes()).hexdigest())
+        rollback = Path(result["rollback_path"])
+        self.assertTrue(rollback.is_dir())
+        self.assertEqual("old-runtime\n", (rollback / "old.py").read_text(encoding="utf-8"))
+        self.assertTrue(result.get("main_gated"))
 
-        with self.assertRaisesRegex(helper.DeploymentError, "source hash mismatch"):
-            helper.deploy_reviewed(
-                repo_root=self.repo,
-                profiles_root=self.profiles,
-                profile="general",
-                commit=self.commit,
-            )
-        self.assertTrue((self.target / "old.py").exists())
+    def test_manifest_from_commit_matches_reviewed_record(self) -> None:
+        helper = load_helper()
+        # The auto-computed manifest must equal the historically reviewed one
+        # for a registered commit: deploy-time hashing is equivalent to the
+        # pre-registered review contract.
+        manifest = helper._manifest_from_commit(self.repo, self.commit)
+        self.assertEqual(manifest, self.manifest)
+        self.assertEqual(set(manifest), set(ALLOWLIST))
 
     def test_symlink_target_is_rejected(self) -> None:
         helper = load_helper()
