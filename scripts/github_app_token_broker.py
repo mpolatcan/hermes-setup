@@ -415,6 +415,12 @@ def parse_credential_request(stdin_data: str) -> dict[str, str]:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
+        # git sends informational ``wwwauth[]=`` challenge hints and
+        # ``capability[]=`` negotiation hints before asking for credentials;
+        # these well-known keys are never used in decisions. The legacy
+        # username/password response keeps the flow on the classic path.
+        if key in {"wwwauth[]", "capability[]"}:
+            continue
         if not key or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key):
             raise BrokerError("git credential request key is invalid")
         if key in fields:
