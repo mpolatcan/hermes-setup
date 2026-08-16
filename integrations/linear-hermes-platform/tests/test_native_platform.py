@@ -110,6 +110,1041 @@ class FakeLinear:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def test_registers_channel_router_hook(self):
+        class FakeContext:
+            def __init__(self):
+                self.hooks = {}
+
+            def register_platform(self, **_kwargs):
+                pass
+
+            def register_hook(self, name, callback):
+                self.hooks[name] = callback
+
+        context = FakeContext()
+        with mock.patch.object(linear_tools_mod, "register_outbound_tools"):
+            package.register(context)
+
+        self.assertIs(context.hooks["pre_gateway_dispatch"], package._pre_gateway_dispatch)
+
+    def test_channel_command_parser_requires_explicit_leading_issue_command(self):
+        self.assertEqual(
+            package._parse_channel_command("OPS-159: kanonik session içinde testleri çalıştır"),
+            ("OPS-159", "kanonik session içinde testleri çalıştır"),
+        )
+        self.assertEqual(
+            package._parse_channel_command(
+                "https://linear.app/mpolatcan/issue/OPS-159/example — devam et"
+            ),
+            ("OPS-159", "devam et"),
+        )
+        self.assertIsNone(package._parse_channel_command("OPS-159 nasıl gidiyor?"))
+        self.assertIsNone(package._parse_channel_command("OPS-159:   "))
+
+    def test_unauthorized_channel_command_is_left_for_normal_gateway_rejection(self):
+        gateway = mock.Mock()
+        gateway._is_user_authorized.return_value = False
+        event = mock.Mock(
+            text="OPS-159: testleri çalıştır",
+            source=mock.Mock(platform=Platform.TELEGRAM),
+        )
+
+        self.assertIsNone(package._pre_gateway_dispatch(event=event, gateway=gateway))
+
+    def test_source_operation_key_isolated_by_profile_scope_relay_and_user(self):
+        baseline = package._source_operation_key(
+            "slack", "chat", "thread", "message", "general", "native", "team-a", "user-a"
+        )
+        variants = {
+            package._source_operation_key(
+                "slack", "chat", "thread", "message", "researcher", "native", "team-a", "user-a"
+            ),
+            package._source_operation_key(
+                "slack", "chat", "thread", "message", "general", "relay", "team-a", "user-a"
+            ),
+            package._source_operation_key(
+                "slack", "chat", "thread", "message", "general", "native", "team-b", "user-a"
+            ),
+            package._source_operation_key(
+                "slack", "chat", "thread", "message", "general", "native", "team-a", "user-b"
+            ),
+        }
+        self.assertNotIn(baseline, variants)
+        self.assertEqual(len(variants), 4)
+
+    def test_channel_router_claim_is_restart_durable(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "routes.sqlite3")
+            ledger = DeliveryLedger(path)
+            now = int(time.time())
+            route_key = package._source_operation_key(
+                "telegram", "chat-1", "thread-1", "m-1"
+            )
+            self.assertTrue(
+                ledger.claim_channel_route(
+                    route_key,
+                    source_platform="telegram",
+                    source_chat_id="chat-1",
+                    source_thread_id="thread-1",
+                    issue_id="issue-159",
+                    session_id="session-159",
+                    now=now,
+                )
+            )
+            self.assertTrue(ledger.mark_channel_route(route_key, "dispatching", now=now + 1))
+            self.assertTrue(ledger.mark_channel_route(route_key, "dispatched", now=now + 2))
+            ledger.close()
+
+            reopened = DeliveryLedger(path)
+            self.assertFalse(
+                reopened.claim_channel_route(
+                    route_key,
+                    source_platform="telegram",
+                    source_chat_id="chat-1",
+                    source_thread_id="thread-1",
+                    issue_id="issue-159",
+                    session_id="session-159",
+                    now=now + 3,
+                )
+            )
+            route = reopened.get_channel_route(route_key)
+            self.assertEqual(route["state"], "dispatched")
+            self.assertEqual(route["issue_id"], "issue-159")
+            self.assertEqual(route["session_id"], "session-159")
+            reopened.close()
+
+    def test_channel_route_restart_retries_only_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "routes.sqlite3")
+            claimed_key = package._source_operation_key("telegram", "c", "", "m-1")
+            dispatching_key = package._source_operation_key("telegram", "c", "", "m-2")
+            ledger = DeliveryLedger(path, startup_recovery=False)
+            for key in (claimed_key, dispatching_key):
+                self.assertTrue(ledger.claim_channel_route(
+                    key,
+                    source_platform="telegram",
+                    source_chat_id="c",
+                    source_thread_id="",
+                    issue_id="issue-159",
+                    session_id="session-159",
+                    now=100,
+                ))
+            self.assertTrue(ledger.mark_channel_route(dispatching_key, "dispatching", now=101))
+            ledger.close()
+
+            recovered = DeliveryLedger(path, startup_recovery=True)
+            self.assertEqual(recovered.get_channel_route(claimed_key)["state"], "claimed")
+            due = recovered.claim_due_channel_routes(limit=10, now=102)
+            self.assertEqual([item["operation_key"] for item in due], [claimed_key])
+            self.assertEqual(recovered.get_channel_route(claimed_key)["attempt_count"], 1)
+            self.assertEqual(recovered.get_channel_route(dispatching_key)["state"], "ambiguous")
+            self.assertFalse(recovered.claim_channel_route(
+                dispatching_key,
+                source_platform="telegram",
+                source_chat_id="c",
+                source_thread_id="",
+                issue_id="issue-159",
+                session_id="session-159",
+                now=103,
+            ))
+            recovered.close()
+
+    def test_channel_route_restart_preserves_profile_local_replay_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "routes.sqlite3")
+            key = package._source_operation_key("slack", "chat", "thread", "message")
+            ledger = DeliveryLedger(path, startup_recovery=False)
+            self.assertTrue(ledger.claim_channel_route(
+                key,
+                source_platform="slack",
+                source_chat_id="chat",
+                source_thread_id="thread",
+                source_message_id="message",
+                source_user_id="user-7",
+                source_user_name="Mutlu",
+                issue_ref="OPS-159",
+                command_text="full unittest suite çalıştır",
+                now=100,
+            ))
+            ledger.close()
+
+            recovered = DeliveryLedger(path, startup_recovery=True)
+            route = recovered.claim_due_channel_routes(limit=1, now=101)[0]
+            self.assertEqual(route["state"], "claimed")
+            self.assertEqual(route["issue_ref"], "OPS-159")
+            self.assertEqual(route["command_text"], "full unittest suite çalıştır")
+            self.assertEqual(route["source_message_id"], "message")
+            self.assertEqual(route["source_user_id"], "user-7")
+            recovered.close()
+
+    def test_channel_route_pre_dispatch_recovery_has_fixed_attempt_bound(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(str(Path(td) / "routes.sqlite3"))
+            key = package._source_operation_key("telegram", "chat", "", "message")
+            ledger.claim_channel_route(
+                key,
+                source_platform="telegram",
+                source_chat_id="chat",
+                source_thread_id="",
+                source_message_id="message",
+                issue_ref="OPS-159",
+                command_text="continue",
+                now=100,
+            )
+            for attempt in range(1, 6):
+                route = ledger.claim_due_channel_routes(limit=1, now=100 + attempt)[0]
+                self.assertEqual(route["attempt_count"], attempt)
+                ledger.retry_channel_route(
+                    key,
+                    error="LinearAPIError",
+                    next_attempt_at=100 + attempt + 1,
+                    max_attempts=5,
+                    now=100 + attempt,
+                )
+            self.assertEqual(ledger.get_channel_route(key)["state"], "failed")
+            self.assertEqual(ledger.claim_due_channel_routes(limit=1, now=1000), [])
+            ledger.close()
+
+    def test_missing_source_message_id_skips_source_execution_without_reservation(self):
+        async def scenario():
+            source_adapter = mock.Mock()
+            source_adapter.send = mock.AsyncMock()
+            linear_adapter = mock.Mock()
+            linear_adapter.handle_message = mock.AsyncMock()
+            gateway = mock.Mock()
+            gateway._is_user_authorized.return_value = True
+            gateway._adapter_for_source.return_value = source_adapter
+            gateway.adapters = {"linear": linear_adapter}
+            event = MessageEvent(
+                text="OPS-159: devam et",
+                source=mock.Mock(
+                    platform=Platform.TELEGRAM,
+                    chat_id="telegram-chat",
+                    thread_id="telegram-topic",
+                ),
+                message_id=None,
+            )
+
+            self.assertEqual(
+                package._pre_gateway_dispatch(event=event, gateway=gateway),
+                {"action": "skip", "reason": "linear_canonical_route_unavailable"},
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            linear_adapter.handle_message.assert_not_awaited()
+            source_adapter.send.assert_awaited_once()
+            self.assertEqual(
+                source_adapter.send.await_args_list[0].kwargs["metadata"]["thread_id"],
+                "telegram-topic",
+            )
+            self.assertIn("message ID", source_adapter.send.await_args.kwargs["content"])
+
+        asyncio.run(scenario())
+
+    def test_gateway_fails_closed_when_durable_reservation_fails(self):
+        async def scenario():
+            source_adapter = mock.Mock(send=mock.AsyncMock())
+            linear_adapter = mock.Mock()
+            linear_adapter.reserve_channel_route.side_effect = sqlite3.OperationalError(
+                "database unavailable"
+            )
+            gateway = mock.Mock()
+            gateway._is_user_authorized.return_value = True
+            gateway._adapter_for_source.return_value = source_adapter
+            gateway.adapters = {"linear": linear_adapter}
+            event = MessageEvent(
+                text="OPS-159: continue",
+                source=mock.Mock(
+                    platform=Platform.TELEGRAM,
+                    chat_id="chat",
+                    thread_id=None,
+                    user_id="user",
+                    user_name="Mutlu",
+                ),
+                message_id="message",
+            )
+
+            self.assertEqual(
+                package._pre_gateway_dispatch(event=event, gateway=gateway),
+                {"action": "skip", "reason": "linear_canonical_route_unavailable"},
+            )
+            await asyncio.sleep(0)
+            source_adapter.send.assert_awaited_once()
+            self.assertIn(
+                "kaynak kanalda çalıştırılmadı",
+                source_adapter.send.await_args.kwargs["content"],
+            )
+
+        asyncio.run(scenario())
+
+    def test_multiplexed_source_uses_only_its_profile_linear_adapter(self):
+        async def scenario():
+            primary = mock.Mock()
+            secondary = mock.Mock()
+            gateway = mock.Mock()
+            gateway._is_user_authorized.return_value = True
+            gateway.adapters = {"linear": primary}
+            gateway._profile_adapters = {"researcher": {"linear": secondary}}
+            source = mock.Mock(
+                platform=Platform.TELEGRAM,
+                chat_id="chat",
+                chat_type="dm",
+                thread_id=None,
+                user_id="user",
+                user_name="Mutlu",
+                profile="researcher",
+                delivered_via_upstream_relay=False,
+            )
+            event = MessageEvent(
+                text="OPS-159: continue",
+                source=source,
+                message_id="message",
+            )
+
+            result = package._pre_gateway_dispatch(event=event, gateway=gateway)
+
+            self.assertEqual(
+                result, {"action": "skip", "reason": "linear_canonical_route"}
+            )
+            secondary.reserve_channel_route.assert_called_once()
+            primary.reserve_channel_route.assert_not_called()
+
+        asyncio.run(scenario())
+
+    def test_active_profile_source_uses_primary_linear_adapter_registry(self):
+        async def scenario():
+            primary = mock.Mock()
+            wrong_secondary = mock.Mock()
+            gateway = mock.Mock()
+            gateway._authorization_adapter = None
+            gateway._active_profile_name.return_value = "general"
+            gateway._is_user_authorized.return_value = True
+            gateway.adapters = {"linear": primary}
+            gateway._profile_adapters = {"general": {"linear": wrong_secondary}}
+            source = mock.Mock(
+                platform=Platform.TELEGRAM,
+                chat_id="chat",
+                chat_type="dm",
+                thread_id=None,
+                user_id="user",
+                user_name="Mutlu",
+                profile="general",
+                scope_id=None,
+                delivered_via_upstream_relay=False,
+            )
+            event = MessageEvent(
+                text="OPS-159: continue",
+                source=source,
+                message_id="message-active",
+            )
+
+            result = package._pre_gateway_dispatch(event=event, gateway=gateway)
+
+            self.assertEqual(
+                result, {"action": "skip", "reason": "linear_canonical_route"}
+            )
+            primary.reserve_channel_route.assert_called_once()
+            wrong_secondary.reserve_channel_route.assert_not_called()
+
+        asyncio.run(scenario())
+
+    def test_adapter_serializes_and_revalidates_cross_channel_dispatch(self):
+        async def scenario():
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter._session_locks = {}
+            adapter._ledger = mock.Mock()
+            adapter._ledger.has_session_closure.return_value = False
+            release = asyncio.Event()
+            first_entered = asyncio.Event()
+            calls = []
+
+            async def handle(event):
+                calls.append(event)
+                if len(calls) == 1:
+                    first_entered.set()
+                    await release.wait()
+
+            context = {
+                "id": "issue-159",
+                "identifier": "OPS-159",
+                "title": "Canonical task",
+                "state": {"type": "started"},
+                "delegate": {"id": "agent-derya"},
+                "sessions": [{
+                    "id": "session-active",
+                    "status": "active",
+                    "app_user_id": "agent-derya",
+                    "started_at": "2026-08-16T18:00:00.000Z",
+                    "ended_at": "",
+                }],
+            }
+            adapter._linear = mock.Mock(
+                actor_id="agent-derya",
+                get_channel_routing_context=mock.AsyncMock(return_value=context),
+            )
+            adapter.handle_message = handle
+            event_1 = mock.Mock()
+            event_2 = mock.Mock()
+
+            first = asyncio.create_task(adapter.dispatch_channel_route(
+                "OPS-159", "issue-159", "session-active", event_1
+            ))
+            await first_entered.wait()
+            second = asyncio.create_task(adapter.dispatch_channel_route(
+                "OPS-159", "issue-159", "session-active", event_2
+            ))
+            await asyncio.sleep(0)
+            self.assertEqual(adapter._linear.get_channel_routing_context.await_count, 1)
+            self.assertEqual(calls, [event_1])
+            release.set()
+            await asyncio.gather(first, second)
+            self.assertEqual(adapter._linear.get_channel_routing_context.await_count, 2)
+            self.assertEqual(calls, [event_1, event_2])
+
+        asyncio.run(scenario())
+
+    def test_adapter_rechecks_source_authorization_inside_session_lock(self):
+        async def scenario():
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter._session_locks = {}
+            adapter._ledger = mock.Mock()
+            adapter._ledger.has_session_closure.return_value = False
+            adapter.get_channel_route_target = mock.AsyncMock(return_value={
+                "id": "issue-159",
+                "session_id": "session-active",
+                "routable": True,
+            })
+            adapter.handle_message = mock.AsyncMock()
+            before_dispatch = mock.Mock(return_value=True)
+            authorize_dispatch = mock.Mock(return_value=False)
+
+            accepted = await adapter.dispatch_channel_route(
+                "OPS-159",
+                "issue-159",
+                "session-active",
+                mock.Mock(),
+                before_dispatch=before_dispatch,
+                authorize_dispatch=authorize_dispatch,
+            )
+
+            self.assertFalse(accepted)
+            authorize_dispatch.assert_called_once_with()
+            before_dispatch.assert_not_called()
+            adapter.handle_message.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_adapter_rejects_durable_session_closure_before_dispatch(self):
+        async def scenario():
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter._session_locks = {}
+            adapter._ledger = mock.Mock()
+            adapter._ledger.has_session_closure.return_value = True
+            adapter.get_channel_route_target = mock.AsyncMock(return_value={
+                "id": "issue-159",
+                "session_id": "session-active",
+                "routable": True,
+            })
+            adapter.handle_message = mock.AsyncMock()
+            before_dispatch = mock.Mock(return_value=True)
+
+            accepted = await adapter.dispatch_channel_route(
+                "OPS-159",
+                "issue-159",
+                "session-active",
+                mock.Mock(),
+                before_dispatch=before_dispatch,
+            )
+
+            self.assertFalse(accepted)
+            before_dispatch.assert_not_called()
+            adapter.handle_message.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_adapter_rejects_cross_issue_context_change_before_dispatch(self):
+        async def scenario():
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter._session_locks = {}
+            adapter._linear = mock.Mock(
+                actor_id="agent-derya",
+                get_channel_routing_context=mock.AsyncMock(return_value={
+                    "id": "issue-other",
+                    "identifier": "OPS-999",
+                    "title": "Other task",
+                    "state": {"type": "started"},
+                    "delegate": {"id": "agent-derya"},
+                    "sessions": [{
+                        "id": "session-other",
+                        "status": "active",
+                        "app_user_id": "agent-derya",
+                        "started_at": "2026-08-16T18:00:00.000Z",
+                        "ended_at": "",
+                    }],
+                }),
+            )
+            adapter.handle_message = mock.AsyncMock()
+            before_dispatch = mock.Mock(return_value=True)
+
+            accepted = await adapter.dispatch_channel_route(
+                "OPS-159",
+                "issue-159",
+                "session-active",
+                mock.Mock(),
+                before_dispatch=before_dispatch,
+            )
+
+            self.assertFalse(accepted)
+            before_dispatch.assert_not_called()
+            adapter.handle_message.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_adapter_shutdown_cancels_recovery_worker(self):
+        async def scenario():
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter._running = True
+            adapter._channel_route_notice_tasks = set()
+            adapter._channel_route_wakeup = asyncio.Event()
+            adapter._dependency_task = None
+            adapter._outbox_task = None
+            adapter._ack_tasks = {}
+            adapter._cleanup = mock.AsyncMock()
+            started = asyncio.Event()
+
+            async def pending_route():
+                started.set()
+                await asyncio.Event().wait()
+
+            task = asyncio.create_task(pending_route())
+            adapter._channel_route_task = task
+            await started.wait()
+            await adapter.disconnect()
+
+            self.assertTrue(task.cancelled())
+            self.assertIsNone(adapter._channel_route_task)
+            adapter._cleanup.assert_awaited_once()
+
+        asyncio.run(scenario())
+
+    def test_cancellation_after_dispatch_boundary_is_ambiguous_not_replayable(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as td:
+                adapter = object.__new__(LinearPlatformAdapter)
+                adapter.platform = mock.Mock(value="linear")
+                adapter._ledger = DeliveryLedger(
+                    str(Path(td) / "routes.sqlite3"), startup_recovery=False
+                )
+                adapter._linear = mock.Mock(actor_name="Doruk")
+                adapter._notify_channel_route = mock.AsyncMock(return_value=True)
+                adapter._channel_route_source_authorized = mock.Mock(return_value=True)
+                adapter.get_channel_route_target = mock.AsyncMock(return_value={
+                    "id": "issue-159",
+                    "identifier": "OPS-159",
+                    "title": "Canonical task",
+                    "session_id": "session-159",
+                    "routable": True,
+                })
+                adapter.build_source = LinearPlatformAdapter.build_source.__get__(
+                    adapter, LinearPlatformAdapter
+                )
+                entered = asyncio.Event()
+
+                async def dispatch(
+                    _ref, _issue, _session, _event, *, before_dispatch, authorize_dispatch
+                ):
+                    self.assertTrue(authorize_dispatch())
+                    self.assertTrue(before_dispatch())
+                    entered.set()
+                    await asyncio.Event().wait()
+
+                adapter.dispatch_channel_route = dispatch
+                key = package._source_operation_key("telegram", "chat", "", "message")
+                adapter._ledger.claim_channel_route(
+                    key,
+                    source_platform="telegram",
+                    source_chat_id="chat",
+                    source_thread_id="",
+                    source_message_id="message",
+                    source_user_id="user",
+                    source_user_name="Mutlu",
+                    issue_ref="OPS-159",
+                    command_text="continue",
+                )
+                route = adapter._ledger.claim_due_channel_routes(limit=1)[0]
+                task = asyncio.create_task(adapter._process_channel_route(route))
+                await entered.wait()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+                stored = adapter._ledger.get_channel_route(key)
+                self.assertEqual(stored["state"], "ambiguous")
+                self.assertEqual(adapter._ledger.claim_due_channel_routes(limit=1), [])
+                adapter._ledger.close()
+
+        asyncio.run(scenario())
+
+    def test_failed_dispatched_state_commit_becomes_ambiguous_without_success_ack(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as td:
+                adapter = object.__new__(LinearPlatformAdapter)
+                adapter.platform = mock.Mock(value="linear")
+                adapter._ledger = DeliveryLedger(
+                    str(Path(td) / "routes.sqlite3"), startup_recovery=False
+                )
+                adapter._linear = mock.Mock(actor_name="Doruk")
+                adapter._notify_channel_route = mock.AsyncMock(return_value=True)
+                adapter._notify_channel_route_status = mock.AsyncMock()
+                adapter._channel_route_source_authorized = mock.Mock(return_value=True)
+                adapter.get_channel_route_target = mock.AsyncMock(return_value={
+                    "id": "issue-159",
+                    "identifier": "OPS-159",
+                    "title": "Canonical task",
+                    "session_id": "session-159",
+                    "routable": True,
+                })
+                adapter.build_source = LinearPlatformAdapter.build_source.__get__(
+                    adapter, LinearPlatformAdapter
+                )
+
+                async def dispatch(
+                    _ref, _issue, _session, _event, *, before_dispatch, authorize_dispatch
+                ):
+                    self.assertTrue(authorize_dispatch())
+                    self.assertTrue(before_dispatch())
+                    return True
+
+                adapter.dispatch_channel_route = dispatch
+                key = package._source_operation_key("telegram", "chat", "", "message")
+                adapter._ledger.claim_channel_route(
+                    key,
+                    source_platform="telegram",
+                    source_chat_id="chat",
+                    source_thread_id="",
+                    source_message_id="message",
+                    source_user_id="user",
+                    source_user_name="Mutlu",
+                    issue_ref="OPS-159",
+                    command_text="continue",
+                )
+                route = adapter._ledger.claim_due_channel_routes(limit=1)[0]
+                original_mark = adapter._ledger.mark_channel_route
+
+                def mark(operation_key, state, **kwargs):
+                    if state == "dispatched":
+                        return False
+                    return original_mark(operation_key, state, **kwargs)
+
+                adapter._ledger.mark_channel_route = mark
+
+                await adapter._process_channel_route(route)
+
+                stored = adapter._ledger.get_channel_route(key)
+                self.assertEqual(stored["state"], "ambiguous")
+                self.assertEqual(stored["last_error"], "dispatch_state_commit_failed")
+                adapter._notify_channel_route_status.assert_awaited_once()
+                self.assertEqual(adapter._notify_channel_route.await_count, 1)
+                adapter._ledger.close()
+
+        asyncio.run(scenario())
+
+    def test_recovery_worker_blocks_when_source_authorization_was_revoked(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as td:
+                adapter = object.__new__(LinearPlatformAdapter)
+                adapter._ledger = DeliveryLedger(
+                    str(Path(td) / "routes.sqlite3"), startup_recovery=False
+                )
+                adapter._notify_channel_route = mock.AsyncMock(return_value=True)
+                adapter._channel_route_source_authorized = mock.Mock(return_value=False)
+                adapter.get_channel_route_target = mock.AsyncMock()
+                key = package._source_operation_key("telegram", "chat", "", "message")
+                adapter._ledger.claim_channel_route(
+                    key,
+                    source_platform="telegram",
+                    source_chat_id="chat",
+                    source_thread_id="",
+                    source_message_id="message",
+                    source_user_id="user",
+                    source_user_name="Mutlu",
+                    issue_ref="OPS-159",
+                    command_text="continue",
+                )
+                route = adapter._ledger.claim_due_channel_routes(limit=1)[0]
+
+                await adapter._process_channel_route(route)
+
+                stored = adapter._ledger.get_channel_route(key)
+                self.assertEqual(stored["state"], "blocked")
+                self.assertEqual(stored["last_error"], "source_authorization_revoked")
+                adapter.get_channel_route_target.assert_not_awaited()
+                adapter._notify_channel_route.assert_awaited_once()
+                self.assertIn(
+                    "authorization is no longer valid",
+                    adapter._notify_channel_route.await_args_list[0].args[1],
+                )
+                adapter._ledger.close()
+
+        asyncio.run(scenario())
+
+    def test_relay_replay_preserves_upstream_trust_and_notice_adapter(self):
+        adapter = object.__new__(LinearPlatformAdapter)
+        relay_adapter = mock.Mock()
+        relay_adapter.send = mock.AsyncMock(return_value=mock.Mock(success=True))
+        runner = mock.Mock()
+        runner.adapters = {"relay": relay_adapter}
+        runner._is_user_authorized.side_effect = (
+            lambda source: source.delivered_via_upstream_relay is True
+        )
+        adapter.gateway_runner = runner
+        route = {
+            "source_platform": "discord",
+            "source_chat_id": "channel",
+            "source_chat_type": "channel",
+            "source_thread_id": "thread",
+            "source_user_id": "user",
+            "source_user_name": "Mutlu",
+            "source_profile": "researcher",
+            "source_scope_id": "guild-1",
+            "source_via_relay": True,
+        }
+
+        self.assertTrue(adapter._channel_route_source_authorized(route))
+        self.assertIs(adapter._channel_source_adapter(route), relay_adapter)
+        checked_source = runner._is_user_authorized.call_args.args[0]
+        self.assertTrue(checked_source.delivered_via_upstream_relay)
+        self.assertEqual(checked_source.profile, "researcher")
+        self.assertEqual(checked_source.scope_id, "guild-1")
+        self.assertTrue(asyncio.run(adapter._notify_channel_route(route, "status")))
+        metadata = relay_adapter.send.await_args_list[0].kwargs["metadata"]
+        self.assertEqual(metadata["_relay_logical_platform"], "discord")
+        self.assertEqual(metadata["scope_id"], "guild-1")
+        self.assertEqual(metadata["user_id"], "user")
+        self.assertEqual(metadata["thread_id"], "thread")
+
+    def test_native_slack_notices_preserve_workspace_and_thread(self):
+        async def scenario():
+            source_adapter = mock.Mock()
+            source_adapter.send = mock.AsyncMock(return_value=mock.Mock(success=True))
+            source = mock.Mock(
+                platform=Platform.SLACK,
+                chat_id="channel",
+                chat_type="channel",
+                thread_id="thread",
+                scope_id="team-a",
+                user_id="user-a",
+                delivered_via_upstream_relay=False,
+            )
+            gateway = mock.Mock()
+            gateway._adapter_for_source.return_value = source_adapter
+            event = MessageEvent(text="OPS-159: continue", source=source, message_id="message")
+
+            self.assertTrue(await package._send_source_message(gateway, event, "status"))
+            metadata = source_adapter.send.await_args_list[0].kwargs["metadata"]
+            self.assertEqual(metadata["slack_team_id"], "team-a")
+            self.assertEqual(metadata["thread_id"], "thread")
+
+            adapter = object.__new__(LinearPlatformAdapter)
+            adapter.gateway_runner = mock.Mock()
+            adapter.gateway_runner.adapters = {"slack": source_adapter}
+            route = {
+                "source_platform": "slack",
+                "source_chat_id": "channel",
+                "source_thread_id": "thread",
+                "source_message_id": "message",
+                "source_user_id": "user-a",
+                "source_scope_id": "team-a",
+                "source_profile": "",
+                "source_via_relay": False,
+            }
+            self.assertTrue(await adapter._notify_channel_route(route, "recovered"))
+            recovered_metadata = source_adapter.send.await_args_list[1].kwargs["metadata"]
+            self.assertEqual(recovered_metadata["slack_team_id"], "team-a")
+            self.assertEqual(recovered_metadata["thread_id"], "thread")
+
+        asyncio.run(scenario())
+
+    def test_channel_routing_context_normalizes_issue_and_sessions(self):
+        client = object.__new__(LinearClient)
+        client.graphql = mock.AsyncMock(return_value={
+            "issue": {
+                "id": "issue-159",
+                "identifier": "OPS-159",
+                "title": "Canonical task",
+                "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+                "delegate": {"id": "agent-derya"},
+                "agentSessions": {
+                    "nodes": [
+                        {
+                            "id": "session-active",
+                            "status": "active",
+                            "startedAt": "2026-08-16T18:00:00.000Z",
+                            "endedAt": None,
+                            "appUser": {"id": "agent-derya"},
+                        },
+                        {
+                            "id": "session-complete",
+                            "status": "complete",
+                            "startedAt": "2026-08-16T17:00:00.000Z",
+                            "endedAt": "2026-08-16T17:10:00.000Z",
+                            "appUser": {"id": "agent-derya"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                },
+            }
+        })
+
+        result = asyncio.run(client.get_channel_routing_context("OPS-159"))
+
+        self.assertEqual(result["id"], "issue-159")
+        self.assertEqual(result["identifier"], "OPS-159")
+        self.assertEqual(result["sessions"][0]["id"], "session-active")
+
+    def test_authorized_channel_command_routes_to_single_active_native_session(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as td:
+                source_adapter = mock.Mock()
+                source_adapter.send = mock.AsyncMock()
+                linear_adapter = mock.Mock()
+                linear_adapter._linear = mock.Mock(
+                    actor_id="agent-derya",
+                    actor_name="Doruk",
+                    get_channel_routing_context=mock.AsyncMock(return_value={
+                        "id": "issue-159",
+                        "identifier": "OPS-159",
+                        "title": "Canonical task",
+                        "state": {"type": "started"},
+                        "delegate": {"id": "agent-derya"},
+                        "sessions": [{
+                            "id": "session-active",
+                            "status": "active",
+                            "app_user_id": "agent-derya",
+                            "started_at": "2026-08-16T18:00:00.000Z",
+                            "ended_at": "",
+                        }],
+                    }),
+                )
+                linear_adapter._ledger = DeliveryLedger(str(Path(td) / "routes.sqlite3"))
+                linear_adapter._channel_route_wakeup = asyncio.Event()
+                linear_adapter._channel_route_notice_tasks = set()
+                active_target = {
+                    "id": "issue-159",
+                    "identifier": "OPS-159",
+                    "title": "Canonical task",
+                    "session_id": "session-active",
+                    "routable": True,
+                }
+                linear_adapter.get_channel_route_target = mock.AsyncMock(
+                    return_value=active_target
+                )
+                linear_adapter.build_source = LinearPlatformAdapter.build_source.__get__(
+                    linear_adapter, LinearPlatformAdapter
+                )
+                linear_adapter.reserve_channel_route = (
+                    LinearPlatformAdapter.reserve_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._channel_source_adapter = (
+                    LinearPlatformAdapter._channel_source_adapter.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._notify_channel_route = (
+                    LinearPlatformAdapter._notify_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._notify_channel_route_status = (
+                    LinearPlatformAdapter._notify_channel_route_status.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._process_channel_route = (
+                    LinearPlatformAdapter._process_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter.handle_message = mock.AsyncMock()
+
+                async def dispatch(
+                    _ref, _issue, _session, routed, *, before_dispatch, authorize_dispatch
+                ):
+                    self.assertTrue(authorize_dispatch())
+                    self.assertTrue(before_dispatch())
+                    await linear_adapter.handle_message(routed)
+                    return True
+
+                linear_adapter.dispatch_channel_route = mock.AsyncMock(side_effect=dispatch)
+                gateway = mock.Mock()
+                gateway._is_user_authorized.return_value = True
+                gateway._adapter_for_source.return_value = source_adapter
+                gateway.adapters = {"telegram": source_adapter, "linear": linear_adapter}
+                linear_adapter.gateway_runner = gateway
+                source = mock.Mock(
+                    platform=Platform.TELEGRAM,
+                    chat_id="telegram-chat",
+                    thread_id="telegram-thread",
+                    user_id="user-1",
+                    user_name="Mutlu",
+                )
+                event = MessageEvent(
+                    text="OPS-159: targeted testleri çalıştır",
+                    source=source,
+                    message_id="telegram-message-1",
+                )
+
+                result = package._pre_gateway_dispatch(event=event, gateway=gateway)
+                self.assertEqual(result, {"action": "skip", "reason": "linear_canonical_route"})
+                operation_key = package._source_operation_key(
+                    "telegram", "telegram-chat", "telegram-thread", "telegram-message-1",
+                    "", "native", "", "user-1",
+                )
+                reserved = linear_adapter._ledger.get_channel_route(operation_key)
+                self.assertEqual(reserved["state"], "claimed")
+                linear_adapter.get_channel_route_target.assert_not_awaited()
+                claimed = linear_adapter._ledger.claim_due_channel_routes(limit=1)[0]
+                await linear_adapter._process_channel_route(claimed)
+
+                linear_adapter.handle_message.assert_awaited_once()
+                routed = linear_adapter.handle_message.await_args.args[0]
+                self.assertEqual(routed.source.chat_id, "session-active")
+                self.assertEqual(routed.metadata["linear_issue_id"], "issue-159")
+                self.assertEqual(routed.metadata["linear_source_platform"], "telegram")
+                self.assertIn("targeted testleri çalıştır", routed.text)
+                self.assertEqual(source_adapter.send.await_count, 2)
+                self.assertTrue(all(
+                    call.kwargs.get("metadata", {}).get("thread_id") == "telegram-thread"
+                    for call in source_adapter.send.await_args_list
+                ))
+                provisional = source_adapter.send.await_args_list[0].kwargs["content"]
+                confirmation = source_adapter.send.await_args_list[1].kwargs["content"]
+                self.assertIn("not been dispatched yet", provisional)
+                self.assertIn("was dispatched", confirmation)
+                self.assertEqual(
+                    linear_adapter._ledger.get_channel_route(
+                        package._source_operation_key(
+                            "telegram",
+                            "telegram-chat",
+                            "telegram-thread",
+                            "telegram-message-1",
+                            "",
+                            "native",
+                            "",
+                            "user-1",
+                        )
+                    )["state"],
+                    "dispatched",
+                )
+
+                duplicate_result = package._pre_gateway_dispatch(event=event, gateway=gateway)
+                self.assertEqual(duplicate_result["action"], "skip")
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                self.assertEqual(linear_adapter.handle_message.await_count, 1)
+                self.assertEqual(source_adapter.send.await_count, 3)
+                linear_adapter._ledger.close()
+
+        asyncio.run(scenario())
+
+    def test_terminal_session_fails_closed_without_source_execution(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as td:
+                source_adapter = mock.Mock()
+                source_adapter.send = mock.AsyncMock()
+                linear_adapter = mock.Mock()
+                linear_adapter._linear = mock.Mock(
+                    actor_id="agent-derya",
+                    actor_name="Doruk",
+                    get_channel_routing_context=mock.AsyncMock(return_value={
+                        "id": "issue-159",
+                        "identifier": "OPS-159",
+                        "title": "Canonical task",
+                        "state": {"type": "started"},
+                        "delegate": {"id": "agent-derya"},
+                        "sessions": [{
+                            "id": "session-complete",
+                            "status": "complete",
+                            "app_user_id": "agent-derya",
+                            "started_at": "2026-08-16T17:00:00.000Z",
+                            "ended_at": "2026-08-16T17:10:00.000Z",
+                        }],
+                    }),
+                )
+                linear_adapter._ledger = DeliveryLedger(str(Path(td) / "routes.sqlite3"))
+                linear_adapter._channel_route_wakeup = asyncio.Event()
+                linear_adapter._channel_route_notice_tasks = set()
+                linear_adapter.get_channel_route_target = mock.AsyncMock(return_value={
+                    "id": "issue-159",
+                    "identifier": "OPS-159",
+                    "title": "Canonical task",
+                    "session_id": "",
+                    "routable": False,
+                })
+                linear_adapter.handle_message = mock.AsyncMock()
+                linear_adapter.reserve_channel_route = (
+                    LinearPlatformAdapter.reserve_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._channel_source_adapter = (
+                    LinearPlatformAdapter._channel_source_adapter.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._notify_channel_route = (
+                    LinearPlatformAdapter._notify_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                linear_adapter._process_channel_route = (
+                    LinearPlatformAdapter._process_channel_route.__get__(
+                        linear_adapter, LinearPlatformAdapter
+                    )
+                )
+                gateway = mock.Mock()
+                gateway._is_user_authorized.return_value = True
+                gateway._adapter_for_source.return_value = source_adapter
+                gateway.adapters = {"telegram": source_adapter, "linear": linear_adapter}
+                linear_adapter.gateway_runner = gateway
+                event = MessageEvent(
+                    text="OPS-159: devam et",
+                    source=mock.Mock(
+                        platform=Platform.TELEGRAM,
+                        chat_id="telegram-chat",
+                        thread_id=None,
+                        user_id="user-1",
+                        user_name="Mutlu",
+                    ),
+                    message_id="telegram-message-2",
+                )
+
+                result = package._pre_gateway_dispatch(event=event, gateway=gateway)
+                self.assertEqual(result["action"], "skip")
+                key = package._source_operation_key(
+                    "telegram", "telegram-chat", "", "telegram-message-2",
+                    "", "native", "", "user-1",
+                )
+                claimed = linear_adapter._ledger.claim_due_channel_routes(limit=1)[0]
+                await linear_adapter._process_channel_route(claimed)
+
+                linear_adapter.handle_message.assert_not_awaited()
+                self.assertEqual(source_adapter.send.await_count, 2)
+                blocker = source_adapter.send.await_args_list[1].kwargs["content"]
+                self.assertIn("@Doruk", blocker)
+                self.assertNotIn("Derya", blocker)
+                self.assertIn("OPS-159", blocker)
+                self.assertEqual(
+                    linear_adapter._ledger.get_channel_route(key)["state"],
+                    "blocked",
+                )
+                linear_adapter._ledger.close()
+
+        asyncio.run(scenario())
+
     def test_cron_delivery_registration_bridges_yaml_home_channel(self):
         class FakeContext:
             def __init__(self):
@@ -329,9 +1364,81 @@ class PluginRegistrationTests(unittest.TestCase):
 
 
 class LedgerTests(unittest.TestCase):
-    def test_populated_v4_database_migrates_to_v5_without_losing_rows(self):
+    def test_ledger_rejects_directory_accessible_to_group_or_others(self):
         with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "v4.sqlite3"
+            root = Path(td)
+            root.chmod(0o755)
+            with self.assertRaisesRegex(RuntimeError, "0700"):
+                DeliveryLedger(str(root / "private.sqlite3"), startup_recovery=False)
+
+    def test_database_symlink_swap_during_connect_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "private.sqlite3"
+            victim = Path(td) / "victim.sqlite3"
+            original_connect = ledger_mod.sqlite3.connect
+
+            def swap_then_connect(database, *args, **kwargs):
+                original = Path(database)
+                backup = Path(f"{database}.opened")
+                original.rename(backup)
+                original.symlink_to(victim)
+                return original_connect(database, *args, **kwargs)
+
+            with mock.patch.object(ledger_mod.sqlite3, "connect", side_effect=swap_then_connect):
+                with self.assertRaisesRegex(RuntimeError, "changed while"):
+                    DeliveryLedger(str(path), startup_recovery=False)
+
+    def test_channel_route_persists_relay_scope_discriminator(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(
+                str(Path(td) / "private.sqlite3"), startup_recovery=False
+            )
+            self.assertTrue(ledger.claim_channel_route(
+                "relay-route",
+                source_platform="discord",
+                source_chat_id="chat",
+                source_thread_id="thread",
+                source_message_id="message",
+                source_user_id="user",
+                source_profile="researcher",
+                source_scope_id="guild-1",
+                source_via_relay=True,
+                issue_ref="OPS-159",
+                command_text="continue",
+            ))
+            route = ledger.get_channel_route("relay-route")
+            self.assertEqual(route["source_scope_id"], "guild-1")
+            self.assertTrue(route["source_via_relay"])
+            ledger.close()
+
+    def test_preexisting_sqlite_sidecar_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "private.sqlite3"
+            first = DeliveryLedger(str(path), startup_recovery=False)
+            first.close()
+            victim = Path(td) / "victim"
+            victim.write_text("sentinel", encoding="utf-8")
+            wal = Path(f"{path}-wal")
+            wal.symlink_to(victim)
+
+            with self.assertRaisesRegex(RuntimeError, "sidecar"):
+                DeliveryLedger(str(path), startup_recovery=False)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "sentinel")
+
+    def test_ledger_and_existing_sqlite_sidecars_are_owner_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "private.sqlite3"
+            ledger = DeliveryLedger(str(path), startup_recovery=False)
+            candidates = [path, Path(f"{path}-wal"), Path(f"{path}-shm")]
+            existing = [candidate for candidate in candidates if candidate.exists()]
+            self.assertIn(path, existing)
+            for candidate in existing:
+                self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+            ledger.close()
+
+    def test_populated_v5_database_migrates_to_v6_without_losing_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "v5.sqlite3"
             existing_at = int(time.time())
             populated = DeliveryLedger(str(path), startup_recovery=False)
             populated.claim("existing-delivery", now=existing_at)
@@ -363,16 +1470,15 @@ class LedgerTests(unittest.TestCase):
             populated.close()
 
             db = sqlite3.connect(path)
-            db.execute("DROP TABLE activation_waits")
-            db.execute("DROP TABLE manager_activations")
-            db.execute("PRAGMA user_version=4")
+            db.execute("DROP TABLE channel_routes")
+            db.execute("PRAGMA user_version=5")
             db.commit()
             db.close()
 
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 5
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 6
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -425,7 +1531,7 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
             recovered.close()
 
     def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
@@ -543,7 +1649,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -660,7 +1766,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",

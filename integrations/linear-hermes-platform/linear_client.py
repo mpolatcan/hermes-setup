@@ -523,6 +523,94 @@ query LinearPolicyIssueAgentSessions($id: String!, $after: String) {
             after = cursor
         raise LinearAPIError("Agent Session pagination exceeded the policy limit")
 
+    async def get_channel_routing_context(self, issue_ref: str) -> dict[str, Any]:
+        """Resolve one explicit issue reference and all authoritative Agent Sessions."""
+        query = """
+query LinearChannelRoutingContext($id: String!, $after: String) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    state { id name type }
+    delegate { id name }
+    agentSessions(first: 50, after: $after) {
+      nodes { id status startedAt endedAt appUser { id } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+        context: dict[str, Any] | None = None
+        sessions: list[dict[str, str]] = []
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_AGENT_SESSION_PAGES):
+            data = await self.graphql(query, {"id": issue_ref, "after": after})
+            issue = data.get("issue")
+            if not isinstance(issue, dict) or not str(issue.get("id") or ""):
+                raise LinearAPIError("Channel routing issue could not be resolved")
+            page_context = {
+                "id": str(issue.get("id") or ""),
+                "identifier": str(issue.get("identifier") or issue_ref),
+                "title": str(issue.get("title") or ""),
+                "state": dict(issue.get("state") or {}),
+                "delegate": dict(issue.get("delegate") or {}),
+            }
+            if context is None:
+                context = page_context
+            elif page_context != context:
+                raise LinearAPIError(
+                    "Channel routing authorization context changed during pagination"
+                )
+            connection = issue.get("agentSessions")
+            if not isinstance(connection, dict):
+                raise LinearAPIError("Channel routing Agent Sessions were unavailable")
+            nodes = connection.get("nodes")
+            page_info = connection.get("pageInfo")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise LinearAPIError("Channel routing Agent Sessions were incomplete")
+            for raw in nodes:
+                if not isinstance(raw, dict):
+                    raise LinearAPIError("Channel routing Agent Session was malformed")
+                session_id = raw.get("id")
+                status = raw.get("status")
+                app_user = raw.get("appUser")
+                app_user_id = app_user.get("id") if isinstance(app_user, dict) else None
+                started_at = raw.get("startedAt")
+                ended_at = raw.get("endedAt")
+                if (
+                    not isinstance(session_id, str)
+                    or not session_id
+                    or not isinstance(status, str)
+                    or status not in AGENT_SESSION_STATUSES
+                    or not isinstance(app_user_id, str)
+                    or not app_user_id
+                    or (started_at is not None and not isinstance(started_at, str))
+                    or (ended_at is not None and not isinstance(ended_at, str))
+                ):
+                    raise LinearAPIError("Channel routing Agent Session was incomplete")
+                sessions.append({
+                    "id": session_id,
+                    "status": status,
+                    "started_at": started_at or "",
+                    "ended_at": ended_at or "",
+                    "app_user_id": app_user_id,
+                })
+            has_next = page_info.get("hasNextPage")
+            cursor = page_info.get("endCursor")
+            if not isinstance(has_next, bool) or (
+                cursor is not None and not isinstance(cursor, str)
+            ):
+                raise LinearAPIError("Channel routing pagination was incomplete")
+            if not has_next:
+                assert context is not None
+                return {**context, "sessions": sessions}
+            if not cursor or cursor in seen_cursors:
+                raise LinearAPIError("Channel routing pagination did not advance")
+            seen_cursors.add(cursor)
+            after = cursor
+        raise LinearAPIError("Channel routing pagination exceeded the policy limit")
+
     async def get_agent_session_terminal_response_count(self, session_id: str) -> int:
         """Count non-empty terminal responses for one authoritative Agent Session."""
         query = """
