@@ -728,12 +728,14 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         owner_id = str((context.get("assignee") or {}).get("id") or "")
                         delegate_id = str((context.get("delegate") or {}).get("id") or "")
                         creator_id = str((context.get("creator") or {}).get("id") or "")
-                        agent_created = bool(
+                        parent_id = str((context.get("parent") or {}).get("id") or "")
+                        agent_created_child = bool(
                             self._linear.actor_id
                             and creator_id
+                            and parent_id
                             and hmac.compare_digest(creator_id, self._linear.actor_id)
                         )
-                        if agent_created:
+                        if agent_created_child:
                             # Agent-created coordinator child: not planned human
                             # work. Close the native session immediately so a
                             # stale open session cannot block the MCP lifecycle

@@ -622,6 +622,7 @@ query LinearNativeIssueClosure($id: String!) {
     updatedAt
     completedAt
     creator { id }
+    parent { id }
     state { id name type }
     team { id states { nodes { id name type } } }
     assignee { id name }
@@ -641,6 +642,7 @@ query LinearNativeIssueClosure($id: String!) {
             "updated_at": str(issue.get("updatedAt") or ""),
             "completed_at": str(issue.get("completedAt") or ""),
             "creator": dict(issue.get("creator") or {}),
+            "parent": dict(issue.get("parent") or {}),
             "state": dict(issue.get("state") or {}),
             "team": {"id": str(team.get("id") or "")},
             "team_states": list(((team.get("states") or {}).get("nodes")) or []),

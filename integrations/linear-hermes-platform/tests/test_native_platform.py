@@ -1287,6 +1287,41 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(duplicate.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
 
+    async def test_agent_created_top_level_planned_issue_is_parked_not_closed_as_child(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-agent-created-top-level"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [],
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-agent-created-top-level",
+            actor={"id": "user-1", "name": "Mutlu"},
+            agentSession={
+                "id": "session-agent-created-top-level",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-999",
+                    "title": "Agent-created top-level planned issue",
+                },
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "waiting_for_activation")
+        wait = self.adapter._ledger.get_activation_wait(issue_id)
+        self.assertIsNotNone(wait)
+        self.assertEqual(wait["session_id"], "session-agent-created-top-level")
+
     async def test_todo_transition_delegates_and_starts_one_manager_session(self):
         self.adapter._planned_activation_enabled = True
         self.adapter._activation_allowed_team_ids = {"team-ops"}
