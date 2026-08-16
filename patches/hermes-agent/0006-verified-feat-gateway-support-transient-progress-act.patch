@@ -1,0 +1,170 @@
+From a244928ff9a24b69a216833d81eb00082b454c15 Mon Sep 17 00:00:00 2001
+From: Mutlu Polatcan <mutlupolatcan@gmail.com>
+Date: Mon, 10 Aug 2026 23:09:09 +0300
+Subject: [PATCH] [verified] feat(gateway): support transient progress
+ activities
+
+---
+ gateway/run.py                                | 27 ++++--
+ .../test_long_running_notifications.py        | 89 +++++++++++++++++++
+ 2 files changed, 110 insertions(+), 6 deletions(-)
+
+diff --git a/gateway/run.py b/gateway/run.py
+index 392dd723..227e8aaa 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -475,17 +475,29 @@ async def _send_long_running_notification(
+     text: str,
+     heartbeat_message_id: Optional[str],
+     metadata: Optional[Dict[str, Any]],
++    transient_progress_key: Optional[str] = None,
+ ) -> tuple[Optional[str], bool]:
+-    """Send or edit a transient heartbeat only on editable surfaces.
++    """Deliver a transient heartbeat only on explicitly safe surfaces.
+ 
+-    Append-only adapters map every send to a terminal activity. Sending a
+-    periodic heartbeat there would prematurely complete the remote session,
+-    so capability-gate the entire transient delivery path.
++    Append-only adapters map every normal send to a terminal activity. Suppress
++    those surfaces unless the adapter explicitly exposes a vendor-native
++    transient-progress activity that cannot complete the remote session.
+     """
+-    if not getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True):
++    supports_editing = bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
++    supports_transient_progress = bool(
++        getattr(adapter, "SUPPORTS_TRANSIENT_PROGRESS", False)
++    )
++    if not supports_editing and not supports_transient_progress:
+         return heartbeat_message_id, False
+ 
+-    if heartbeat_message_id:
++    if supports_transient_progress:
++        if not transient_progress_key:
++            return heartbeat_message_id, False
++        metadata = dict(metadata or {})
++        metadata["transient_progress"] = True
++        metadata["transient_progress_key"] = transient_progress_key
++
++    if heartbeat_message_id and supports_editing:
+         try:
+             edit_result = await adapter.edit_message(
+                 chat_id,
+@@ -25607,6 +25619,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                                 _status_thread_metadata,
+                                 platform=source.platform,
+                             ),
++                            transient_progress_key=str(
++                                event_message_id or session_id or source.chat_id
++                            ),
+                         )
+                     )
+                     if (
+diff --git a/tests/gateway/test_long_running_notifications.py b/tests/gateway/test_long_running_notifications.py
+index 9d39b17e..44eb4fc9 100644
+--- a/tests/gateway/test_long_running_notifications.py
++++ b/tests/gateway/test_long_running_notifications.py
+@@ -29,6 +29,18 @@ class _NonEditableAdapter:
+         return _Result(success=True, message_id="sent")
+ 
+ 
++class _TransientActivityAdapter:
++    SUPPORTS_MESSAGE_EDITING = False
++    SUPPORTS_TRANSIENT_PROGRESS = True
++
++    def __init__(self) -> None:
++        self.send_calls = []
++
++    async def send(self, *args, **kwargs):
++        self.send_calls.append((args, kwargs))
++        return _Result(success=True, message_id="transient-activity")
++
++
+ class _FailedSendAdapter:
+     SUPPORTS_MESSAGE_EDITING = True
+ 
+@@ -72,6 +84,83 @@ def test_long_running_heartbeat_is_suppressed_on_noneditable_adapter() -> None:
+     assert adapter.send_calls == 0
+ 
+ 
++def test_transient_activity_adapter_receives_initial_heartbeat_without_terminal_send() -> None:
++    adapter = _TransientActivityAdapter()
++
++    message_id, delivered = asyncio.run(
++        _send_long_running_notification(
++            adapter,
++            chat_id="session-uuid",
++            text="working",
++            heartbeat_message_id=None,
++            metadata={"thread_id": "thread-1"},
++            transient_progress_key="turn-1",
++        )
++    )
++
++    assert message_id == "transient-activity"
++    assert delivered is True
++    assert adapter.send_calls == [
++        (
++            ("session-uuid", "working"),
++            {
++                "metadata": {
++                    "thread_id": "thread-1",
++                    "transient_progress": True,
++                    "transient_progress_key": "turn-1",
++                }
++            },
++        )
++    ]
++
++
++def test_transient_activity_adapter_appends_vendor_replacement_activity() -> None:
++    adapter = _TransientActivityAdapter()
++
++    message_id, delivered = asyncio.run(
++        _send_long_running_notification(
++            adapter,
++            chat_id="session-uuid",
++            text="still working",
++            heartbeat_message_id="transient-activity",
++            metadata=None,
++            transient_progress_key="turn-1",
++        )
++    )
++
++    assert message_id == "transient-activity"
++    assert delivered is True
++    assert adapter.send_calls == [
++        (
++            ("session-uuid", "still working"),
++            {
++                "metadata": {
++                    "transient_progress": True,
++                    "transient_progress_key": "turn-1",
++                }
++            },
++        )
++    ]
++
++
++def test_transient_activity_adapter_requires_stable_turn_key() -> None:
++    adapter = _TransientActivityAdapter()
++
++    message_id, delivered = asyncio.run(
++        _send_long_running_notification(
++            adapter,
++            chat_id="session-uuid",
++            text="working",
++            heartbeat_message_id=None,
++            metadata=None,
++        )
++    )
++
++    assert message_id is None
++    assert delivered is False
++    assert adapter.send_calls == []
++
++
+ def test_failed_heartbeat_send_does_not_adopt_partial_message_id() -> None:
+     message_id, delivered = asyncio.run(
+         _send_long_running_notification(
+-- 
+2.50.1 (Apple Git-155)

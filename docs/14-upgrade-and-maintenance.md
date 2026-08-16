@@ -184,6 +184,22 @@ patches/hermes-agent/0005-fix-gateway-suppress-heartbeats-on-noneditable-platfor
 
 Before promotion, run `tests/gateway/test_long_running_notifications.py`, Ruff, compile checks, and an independent diff review. Production acceptance requires a fresh human-triggered AgentSession that lasts beyond the configured heartbeat interval, remains active without a heartbeat `response`, then completes with exactly one real terminal `response`; pending/in-flight/dead outbox counts must remain zero.
 
+Linear later gained a vendor-native transient surface that does not share the terminal semantics of a normal append-only `send()`: ephemeral `thought` activities are replaced by the next activity. The follow-up compatibility patch preserves the append-only suppression by default while allowing adapters that explicitly declare `SUPPORTS_TRANSIENT_PROGRESS` to receive gateway heartbeats with typed metadata:
+
+```text
+patches/hermes-agent/0006-verified-feat-gateway-support-transient-progress-act.patch
+```
+
+The Linear adapter maps per-turn-keyed heartbeats to durable ephemeral `thought` activities; ordinary sends remain final `response` activities and generic tool-progress remains disabled. Acceptance must prove the first transient activity arrives after the configured interval, an identical heartbeat in a later follow-up gets a distinct durable activity, progress does not complete the AgentSession, final delivery replaces the ephemeral status, and no outbox row is pending, in-flight, or dead.
+
+A later semantic-progress patch keeps a per-turn, lock-protected summary of the last safe tool phase so transport states such as `receiving stream response` cannot erase useful context:
+
+```text
+patches/hermes-agent/0007-verified-feat-gateway-publish-meaningful-heartbeat-c.patch
+```
+
+The summary layer is allowlist-only: it emits fixed phrases such as `Running tests` or `Reading Linear work state`, never raw commands, paths, issue identifiers, arbitrary tool names, tool results, or model reasoning. Parallel and completion-only events degrade conservatively to aggregate wording. Run both `tests/gateway/test_meaningful_heartbeat_progress.py` and `tests/gateway/test_long_running_notifications.py`; verify callback wiring with long-running notifications as the sole progress consumer, then require a real Linear AgentSession canary whose ephemeral `thought` shows the safe phase before the iteration counter and remains non-terminal.
+
 After each Hermes Agent upgrade, classify all owned patches before promotion:
 
 ```bash

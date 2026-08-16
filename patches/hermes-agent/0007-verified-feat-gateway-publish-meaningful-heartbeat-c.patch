@@ -1,0 +1,474 @@
+From 0047546b864e234cb2ce9e4a925e3cf9677a271d Mon Sep 17 00:00:00 2001
+From: Mutlu Polatcan <mutlupolatcan@gmail.com>
+Date: Tue, 11 Aug 2026 00:30:07 +0300
+Subject: [PATCH] [verified] feat(gateway): publish meaningful heartbeat
+ context
+
+---
+ gateway/run.py                                | 196 ++++++++++++++++--
+ gateway/turn_context.py                       |   9 +
+ .../test_meaningful_heartbeat_progress.py     | 175 ++++++++++++++++
+ 3 files changed, 361 insertions(+), 19 deletions(-)
+ create mode 100644 tests/gateway/test_meaningful_heartbeat_progress.py
+
+diff --git a/gateway/run.py b/gateway/run.py
+index 227e8aaa..a3af3485 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -468,6 +468,124 @@ def _non_conversational_metadata(
+     return merged
+ 
+ 
++def _safe_heartbeat_tool_activity(
++    tool_name: Optional[str], args: Optional[Dict[str, Any]]
++) -> tuple[Optional[str], Optional[str]]:
++    """Build secret-safe active/completed summaries for periodic heartbeats.
++
++    Raw arguments and model reasoning are intentionally never rendered.  A
++    handful of deterministic classifications retain useful phase context
++    without exposing commands, paths, queries, tokens, or tool results.
++    """
++    name = str(tool_name or "").strip()
++    if not name or name == "_thinking":
++        return None, None
++    safe_args = args if isinstance(args, dict) else {}
++
++    if name == "terminal":
++        command = str(safe_args.get("command") or "").casefold()
++        if any(marker in command for marker in ("pytest", "unittest", " test", "/test", "tox ")):
++            return "Running tests", "Ran tests; reviewing results"
++        if "1password" in command or command.strip().startswith("op ") or " op " in command:
++            return (
++                "Checking 1Password access",
++                "Checked 1Password access; reviewing result",
++            )
++        if "git " in command or command.strip().startswith("git"):
++            return (
++                "Checking source changes",
++                "Checked source changes; planning next step",
++            )
++        if any(marker in command for marker in ("curl ", "wget ", "http://", "https://")):
++            return (
++                "Checking service connectivity",
++                "Checked service connectivity; reviewing result",
++            )
++        if "python" in command:
++            return (
++                "Running a validation script",
++                "Ran a validation script; reviewing results",
++            )
++        return "Running a system check", "Ran a system check; reviewing result"
++
++    if name in {"linear_get_issue", "linear_save_issue", "linear_save_comment"}:
++        if name == "linear_get_issue":
++            return (
++                "Reading Linear work state",
++                "Read Linear work state; planning next step",
++            )
++        return (
++            "Updating Linear work state",
++            "Updated Linear work state; verifying result",
++        )
++    if name == "linear_list_issues":
++        return (
++            "Reviewing Linear work state",
++            "Reviewed Linear work state; planning next step",
++        )
++    if name in {"read_file", "search_files"}:
++        return (
++            "Inspecting relevant source files",
++            "Inspected relevant source files; planning next step",
++        )
++    if name in {"write_file", "patch"}:
++        return "Applying a code change", "Applied a code change; verifying it"
++    if name in {"web_search", "web_extract"} or name.startswith("mcp__tinyfish__"):
++        return (
++            "Reviewing external documentation",
++            "Reviewed external documentation; planning next step",
++        )
++    if name in {"skill_view", "skills_list"}:
++        return (
++            "Reviewing the operating procedure",
++            "Reviewed the operating procedure; planning next step",
++        )
++    if name == "session_search":
++        return (
++            "Reviewing prior work context",
++            "Reviewed prior work context; planning next step",
++        )
++    if name == "vision_analyze":
++        return "Inspecting the screenshot", "Inspected the screenshot; planning next step"
++
++    return "Using an integration", "Finished an integration; planning next step"
++
++
++def _build_long_running_status_detail(
++    activity_summary: Dict[str, Any],
++    *,
++    safe_activity: Optional[str],
++    include_iteration: bool,
++) -> str:
++    """Prefer meaningful work context over transport-level activity strings."""
++    parts: list[str] = []
++    if safe_activity:
++        parts.append(str(safe_activity))
++    else:
++        current_tool = activity_summary.get("current_tool")
++        active, _ = _safe_heartbeat_tool_activity(current_tool, None)
++        if active:
++            parts.append(active)
++
++    if include_iteration:
++        parts.append(
++            "iteration "
++            f"{activity_summary.get('api_call_count', 0)}/"
++            f"{activity_summary.get('max_iterations', 0)}"
++        )
++    return " — " + " · ".join(parts) if parts else ""
++
++
++def _should_install_progress_callback(ctx: Any) -> bool:
++    """Return whether any per-turn surface consumes tool lifecycle events."""
++    return bool(
++        ctx.needs_progress_queue
++        or ctx.log_mode_enabled
++        or ctx._live_status_adapter is not None
++        or ctx.heartbeat_progress_enabled
++    )
++
++
+ async def _send_long_running_notification(
+     adapter: Any,
+     *,
+@@ -3763,6 +3881,50 @@ class TurnRunner:
+     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+         """Callback invoked by agent on tool lifecycle events."""
+         ctx = self._ctx
++        # Heartbeats need meaningful work context even when ordinary tool
++        # progress is disabled (as it is for append-only Linear sessions).
++        # Store only deterministic, secret-safe summaries; never raw previews,
++        # arguments, results, or model reasoning.
++        if event_type == "tool.started" and tool_name and tool_name != "_thinking":
++            _active, _completed = _safe_heartbeat_tool_activity(tool_name, args)
++            with ctx.heartbeat_lock:
++                ctx.heartbeat_active_tools.append((tool_name, _active, _completed))
++                if len(ctx.heartbeat_active_tools) > 1:
++                    ctx.heartbeat_parallel[0] = True
++                    ctx.heartbeat_activity[0] = "Running multiple work steps"
++                else:
++                    ctx.heartbeat_activity[0] = _active
++        elif event_type == "tool.completed" and tool_name and tool_name != "_thinking":
++            with ctx.heartbeat_lock:
++                _matched = None
++                for _index, _entry in enumerate(ctx.heartbeat_active_tools):
++                    if _entry[0] == tool_name:
++                        _matched = ctx.heartbeat_active_tools.pop(_index)
++                        break
++                if _matched is None and ctx.heartbeat_active_tools:
++                    # Some runtimes emit completion-only events for fast tools.
++                    # If another tool is already active, conservatively treat
++                    # the overlap as parallel work instead of replacing the
++                    # known-active summary with an unrelated completion.
++                    ctx.heartbeat_parallel[0] = True
++                    ctx.heartbeat_activity[0] = "Running multiple work steps"
++                elif ctx.heartbeat_parallel[0]:
++                    if ctx.heartbeat_active_tools:
++                        ctx.heartbeat_activity[0] = "Running multiple work steps"
++                    else:
++                        ctx.heartbeat_activity[0] = (
++                            "A work step failed; reviewing the error"
++                            if kwargs.get("is_error")
++                            else "Completed multiple work steps; reviewing results"
++                        )
++                        ctx.heartbeat_parallel[0] = False
++                elif kwargs.get("is_error"):
++                    ctx.heartbeat_activity[0] = "A work step failed; reviewing the error"
++                else:
++                    _completed = _matched[2] if _matched else None
++                    if not _completed:
++                        _, _completed = _safe_heartbeat_tool_activity(tool_name, None)
++                    ctx.heartbeat_activity[0] = _completed
+         # Live status line (Slack's assistant status): stash the current
+         # tool phrase on the adapter; the _keep_typing refresh renders it
+         # within a couple of seconds. Handled before every other gate
+@@ -4930,13 +5092,7 @@ class TurnRunner:
+         # None callback — so _thinking scratch bubbles never relayed even
+         # though the progress queue was created for them.
+         agent.tool_progress_callback = (
+-            ctx.progress_callback
+-            if (
+-                ctx.needs_progress_queue
+-                or ctx.log_mode_enabled
+-                or ctx._live_status_adapter is not None
+-            )
+-            else None
++            ctx.progress_callback if _should_install_progress_callback(ctx) else None
+         )
+         # Discord voice verbal-ack hook (fires once per turn on first tool
+         # call; armed only when in a voice channel with the mixer running).
+@@ -25543,6 +25699,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         )
+         if _long_running_mode == "off":
+             _NOTIFY_INTERVAL = None
++        # The callback is also the observation source for safe heartbeat
++        # summaries.  This remains independent of ordinary chat tool-progress
++        # queues, which append-only Linear intentionally keeps disabled.
++        turn_ctx.heartbeat_progress_enabled = _NOTIFY_INTERVAL is not None
+         _notify_start = time.time()
+ 
+         async def _notify_long_running():
+@@ -25579,7 +25739,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                 # iteration counter is gated on busy_ack_detail so users
+                 # who want it can opt in per platform.
+                 _agent_ref = agent_holder[0]
+-                _status_detail = ""
+                 _want_iteration_detail = bool(
+                     resolve_display_setting(
+                         user_config,
+@@ -25591,18 +25750,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+                     try:
+                         _a = _agent_ref.get_activity_summary()
+-                        _parts = []
+-                        if _want_iteration_detail:
+-                            _parts.append(
+-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+-                            )
+-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
+-                        if _action:
+-                            _parts.append(str(_action))
+-                        if _parts:
+-                            _status_detail = " — " + ", ".join(_parts)
++                        with turn_ctx.heartbeat_lock:
++                            _safe_heartbeat_activity = turn_ctx.heartbeat_activity[0]
++                        _status_detail = _build_long_running_status_detail(
++                            _a,
++                            safe_activity=_safe_heartbeat_activity,
++                            include_iteration=_want_iteration_detail,
++                        )
+                     except Exception:
+-                        pass
++                        _status_detail = ""
++                else:
++                    _status_detail = ""
+                 _heartbeat_text = (
+                     _generic_status_phrase("status")
+                     if _long_running_mode == "generic"
+diff --git a/gateway/turn_context.py b/gateway/turn_context.py
+index ac727e2b..2d83ee00 100644
+--- a/gateway/turn_context.py
++++ b/gateway/turn_context.py
+@@ -25,6 +25,7 @@ Field notes:
+ 
+ from __future__ import annotations
+ 
++import threading
+ from dataclasses import dataclass, field
+ from typing import Any, Callable, List, Optional
+ 
+@@ -50,6 +51,13 @@ class TurnContext:
+     # --- mutable single-element containers (shared with the outer body) --
+     last_progress_msg: list = field(default_factory=lambda: [None])
+     last_tool: list = field(default_factory=lambda: [None])
++    # Safe, user-facing summary for periodic heartbeats.  Keep this separate
++    # from AIAgent.last_activity_desc: transport updates such as "receiving
++    # stream response" must not erase the last meaningful work step.
++    heartbeat_activity: list = field(default_factory=lambda: [None])
++    heartbeat_active_tools: list = field(default_factory=list)
++    heartbeat_parallel: list = field(default_factory=lambda: [False])
++    heartbeat_lock: Any = field(default_factory=threading.Lock)
+     last_was_terminal_block: list = field(default_factory=lambda: [False])
+     repeat_count: list = field(default_factory=lambda: [0])
+     long_tool_hint_fired: list = field(default_factory=lambda: [False])
+@@ -97,6 +105,7 @@ class TurnContext:
+     log_mode_enabled: bool = False
+     interim_assistant_messages_enabled: bool = False
+     needs_progress_queue: bool = False
++    heartbeat_progress_enabled: bool = False
+ 
+     # --- lazy-imported callables captured from the outer body -------------
+     AIAgent: Any = None
+diff --git a/tests/gateway/test_meaningful_heartbeat_progress.py b/tests/gateway/test_meaningful_heartbeat_progress.py
+new file mode 100644
+index 00000000..dc9c0cfc
+--- /dev/null
++++ b/tests/gateway/test_meaningful_heartbeat_progress.py
+@@ -0,0 +1,175 @@
++from types import SimpleNamespace
++
++from gateway.run import (
++    TurnRunner,
++    _build_long_running_status_detail,
++    _safe_heartbeat_tool_activity,
++    _should_install_progress_callback,
++)
++from gateway.turn_context import TurnContext
++
++
++def test_long_running_heartbeat_alone_installs_progress_callback() -> None:
++    ctx = TurnContext(
++        needs_progress_queue=False,
++        log_mode_enabled=False,
++        _live_status_adapter=None,
++        heartbeat_progress_enabled=True,
++    )
++
++    assert _should_install_progress_callback(ctx) is True
++
++
++def test_terminal_activity_classifies_tests_without_exposing_command() -> None:
++    command = "pytest tests/gateway -q --token super-secret"
++
++    active, completed = _safe_heartbeat_tool_activity(
++        "terminal", {"command": command}
++    )
++
++    assert active == "Running tests"
++    assert completed == "Ran tests; reviewing results"
++    assert "super-secret" not in active + completed
++    assert command not in active + completed
++
++
++def test_linear_activity_never_interpolates_raw_arguments() -> None:
++    active, completed = _safe_heartbeat_tool_activity(
++        "linear_get_issue",
++        {"id": "OPS-69", "unsafe": "credential-value"},
++    )
++
++    assert active == "Reading Linear work state"
++    assert completed == "Read Linear work state; planning next step"
++    assert "OPS-69" not in active + completed
++    assert "credential-value" not in active + completed
++
++
++def test_unknown_tool_name_is_not_rendered() -> None:
++    active, completed = _safe_heartbeat_tool_activity(
++        "plugin_secret_identifier", {"token": "credential-value"}
++    )
++
++    assert active == "Using an integration"
++    assert completed == "Finished an integration; planning next step"
++    assert "secret" not in (active + completed).casefold()
++    assert "credential-value" not in active + completed
++
++
++def test_progress_callback_retains_last_meaningful_completed_step_when_chat_progress_is_off() -> None:
++    ctx = TurnContext(
++        source=SimpleNamespace(chat_id="session-1"),
++        _run_still_current=lambda: True,
++        progress_queue=None,
++        tool_progress_enabled=False,
++    )
++    runner = TurnRunner(SimpleNamespace(), ctx)
++
++    runner.progress_callback(
++        "tool.started",
++        "terminal",
++        preview="unsafe preview",
++        args={"command": "op item get Shared --format json"},
++    )
++    assert ctx.heartbeat_activity[0] == "Checking 1Password access"
++
++    runner.progress_callback("tool.completed", "terminal", duration=1.2)
++    assert ctx.heartbeat_activity[0] == (
++        "Checked 1Password access; reviewing result"
++    )
++
++
++def test_completion_only_event_still_records_safe_completed_step() -> None:
++    ctx = TurnContext(
++        source=SimpleNamespace(chat_id="session-1"),
++        _run_still_current=lambda: True,
++        progress_queue=None,
++        tool_progress_enabled=False,
++    )
++    runner = TurnRunner(SimpleNamespace(), ctx)
++
++    runner.progress_callback("tool.completed", "linear_get_issue", duration=0.1)
++
++    assert ctx.heartbeat_activity[0] == (
++        "Read Linear work state; planning next step"
++    )
++
++
++def test_parallel_tools_use_fixed_aggregate_until_all_complete() -> None:
++    ctx = TurnContext(
++        source=SimpleNamespace(chat_id="session-1"),
++        _run_still_current=lambda: True,
++        progress_queue=None,
++        tool_progress_enabled=False,
++    )
++    runner = TurnRunner(SimpleNamespace(), ctx)
++
++    runner.progress_callback(
++        "tool.started", "terminal", args={"command": "op item get Shared"}
++    )
++    runner.progress_callback("tool.started", "read_file", args={"path": "secret.txt"})
++    assert ctx.heartbeat_activity[0] == "Running multiple work steps"
++
++    runner.progress_callback("tool.completed", "terminal")
++    assert ctx.heartbeat_activity[0] == "Running multiple work steps"
++
++    runner.progress_callback("tool.completed", "read_file")
++    assert ctx.heartbeat_activity[0] == (
++        "Completed multiple work steps; reviewing results"
++    )
++
++
++def test_completion_only_event_does_not_erase_an_overlapping_active_tool() -> None:
++    ctx = TurnContext(
++        source=SimpleNamespace(chat_id="session-1"),
++        _run_still_current=lambda: True,
++        progress_queue=None,
++        tool_progress_enabled=False,
++    )
++    runner = TurnRunner(SimpleNamespace(), ctx)
++
++    runner.progress_callback(
++        "tool.started", "terminal", args={"command": "pytest -q"}
++    )
++    runner.progress_callback("tool.completed", "linear_get_issue")
++
++    assert ctx.heartbeat_activity[0] == "Running multiple work steps"
++
++    runner.progress_callback("tool.completed", "terminal")
++    assert ctx.heartbeat_activity[0] == (
++        "Completed multiple work steps; reviewing results"
++    )
++
++
++def test_heartbeat_prefers_safe_work_context_over_stream_transport_state() -> None:
++    detail = _build_long_running_status_detail(
++        {
++            "api_call_count": 22,
++            "max_iterations": 90,
++            "current_tool": None,
++            "last_activity_desc": "receiving stream response",
++        },
++        safe_activity="Checked 1Password access; reviewing result",
++        include_iteration=True,
++    )
++
++    assert detail == (
++        " — Checked 1Password access; reviewing result · iteration 22/90"
++    )
++    assert "receiving stream response" not in detail
++
++
++def test_heartbeat_never_falls_back_to_unrestricted_activity_description() -> None:
++    detail = _build_long_running_status_detail(
++        {
++            "api_call_count": 4,
++            "max_iterations": 90,
++            "current_tool": None,
++            "last_activity_desc": "token=credential-value from plugin output",
++        },
++        safe_activity=None,
++        include_iteration=True,
++    )
++
++    assert detail == " — iteration 4/90"
++    assert "credential-value" not in detail
+-- 
+2.50.1 (Apple Git-155)
+
