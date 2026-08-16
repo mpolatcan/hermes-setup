@@ -227,16 +227,23 @@ Deployment is an approval-gated operation, not a blind fleet copy. There is inte
 
 The reviewed one-command helper is [`scripts/deploy_plugin.py`](scripts/deploy_plugin.py). It implements the source-manifest, descriptor confinement, profile lock, private staging, durable pre-mutation coordinates, state-aware signal recovery, atomic promotion, exact read-back and symmetric rollback invariants above. It deliberately does **not** edit Hermes config or restart a gateway.
 
-For the reviewed 0.8.6 source commit, the exact single-profile promotion command is:
+Deployment is main-gated: any commit merged into `origin/main` is deployable,
+and the SHA-256 manifest is computed from the pinned commit at deploy time
+(git commits are immutable, so deploy-time hashing equals a pre-registered
+review). The exact single-profile promotion command for the current main HEAD is:
 
 ```bash
 /Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
   integrations/linear-hermes-platform/scripts/deploy_plugin.py deploy \
   --repo-root /Users/mutlupolatcan/.hermes/source/hermes-setup \
   --profiles-root /Users/mutlupolatcan/.hermes/profiles \
-  --profile general \
-  --commit '9d96f4295496982967143fc063b78146fc73348b'
+  --profile general
 ```
+
+An explicit `--commit <full-sha>` may pin an older merged commit; the helper
+rejects any commit that is not an ancestor of `origin/main`, so unreviewed
+branch-only code can never reach a profile runtime. Each deploy records
+`main_gated: true` alongside the immutable rollback coordinates.
 
 The helper writes and prints the immutable rollback path and tree digest before the first rename. Rollback must use those exact values; never discover a backup by recency:
 
