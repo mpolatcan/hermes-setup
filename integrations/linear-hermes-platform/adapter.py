@@ -726,6 +726,27 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         team_id = str((context.get("team") or {}).get("id") or "")
                         owner_id = str((context.get("assignee") or {}).get("id") or "")
                         delegate_id = str((context.get("delegate") or {}).get("id") or "")
+                        creator_id = str((context.get("creator") or {}).get("id") or "")
+                        agent_created = bool(
+                            self._linear.actor_id
+                            and creator_id
+                            and hmac.compare_digest(creator_id, self._linear.actor_id)
+                        )
+                        if agent_created:
+                            # Agent-created coordinator child: not planned human
+                            # work. Close the native session immediately so a
+                            # stale open session cannot block the MCP lifecycle
+                            # (start/complete_child) transitions.
+                            self._enqueue_activity(
+                                agent_session_id,
+                                "response",
+                                "Creator-agent manages this child through the MCP lifecycle; native session closed.",
+                                item_key=f"creator-owned:{delivery_key}",
+                            )
+                            self._ledger.mark_done(delivery_key)
+                            return web.json_response(
+                                {"status": "accepted"}, status=200
+                            )
                         if not (
                             team_id in self._activation_allowed_team_ids
                             and owner_id in self._planned_owner_ids
@@ -1003,7 +1024,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if not (
             previous_state_id
             and event_state_id
-            and event_state_type == "unstarted"
+            and event_state_type in {"unstarted", "started"}
             and event_updated_at
             and actor_id
         ):
@@ -1026,7 +1047,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             and assignee_id in self._planned_owner_ids
             and hmac.compare_digest(actor_id, assignee_id)
             and self._linear.actor_id
-            and str(state.get("type") or "").casefold() == "unstarted"
+            and str(state.get("type") or "").casefold() in {"unstarted", "started"}
             and hmac.compare_digest(str(state.get("id") or ""), event_state_id)
             and live_updated_at
             and hmac.compare_digest(live_updated_at, event_updated_at)
