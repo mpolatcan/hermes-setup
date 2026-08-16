@@ -645,7 +645,15 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 manager_activation
                 and manager_activation.get("state") == "delegated"
             )
-            if action == "created" and issue_id and manager_activation is not None:
+            manager_activation_state = str(
+                (manager_activation or {}).get("state") or ""
+            )
+            if (
+                action == "created"
+                and issue_id
+                and manager_activation is not None
+                and manager_activation_state != "canceled"
+            ):
                 return await self._handle_manager_session_created(
                     payload,
                     delivery_key,
