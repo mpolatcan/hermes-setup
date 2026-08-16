@@ -399,8 +399,108 @@ def sanitize_gh_auth_status_output(output: str) -> str:
     return re.sub(r"ghs_[A-Za-z0-9_]+", "[REDACTED]", sanitized)
 
 
+def parse_credential_request(stdin_data: str) -> dict[str, str]:
+    """Parse a git credential 'get' request into key/value fields.
+
+    Git sends NUL/newline separated lines like ``protocol=https``,
+    ``host=github.com`` and ``path=mpolatcan/hermes-setup`` followed by a
+    blank line. Unknown or repeated keys fail closed.
+    """
+    fields: dict[str, str] = {}
+    for line in stdin_data.splitlines():
+        if not line.strip():
+            continue
+        if "=" not in line:
+            raise BrokerError("git credential request line is malformed")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key):
+            raise BrokerError("git credential request key is invalid")
+        if key in fields:
+            raise BrokerError("git credential request key is duplicated")
+        fields[key] = value
+    return fields
+
+
+def validate_credential_request(fields: Mapping[str, str]) -> str:
+    """Return the canonical repository when the request is in scope.
+
+    Only HTTPS pushes against github.com for mpolatcan/hermes-setup are
+    answered. Anything else (protocol, host, path, extra keys) fails closed.
+    """
+    allowed_keys = {"protocol", "host", "path"}
+    if set(fields) - allowed_keys:
+        raise BrokerError("git credential request carries unexpected fields")
+    protocol = fields.get("protocol", "")
+    host = fields.get("host", "")
+    path = fields.get("path", "")
+    if protocol != "https":
+        raise BrokerError("git credential request is not HTTPS")
+    if host != "github.com":
+        raise BrokerError("git credential request host is not github.com")
+    if path not in {ALLOWED_REPOSITORY, f"{ALLOWED_REPOSITORY}.git"}:
+        raise BrokerError("git credential request is outside the pinned repository")
+    return ALLOWED_REPOSITORY
+
+
+def emit_credential_response(token: str) -> str:
+    """Format a git credential response; the token is only written to stdout."""
+    if not token:
+        raise BrokerError("empty GitHub installation token")
+    return (
+        f"protocol=https\n"
+        f"host=github.com\n"
+        f"path={ALLOWED_REPOSITORY}\n"
+        f"username=x-access-token\n"
+        f"password={token}\n"
+    )
+
+
+def credential_get(*, opener: Callable[..., Any] = urllib.request.urlopen) -> int:
+    """Handle `--credential get`: mint and print a scoped installation token."""
+    request = parse_credential_request(sys.stdin.read())
+    validate_credential_request(request)
+    bootstrap_token = os.environ.get(TOKEN_ENV, "")
+    resolved = asyncio.run(resolve_references(bootstrap_token))
+    os.environ.pop(TOKEN_ENV, None)
+    jwt = build_app_jwt(resolved["app_id"], resolved["private_key"])
+    verify_installation(jwt=jwt, installation_id=resolved["installation_id"])
+    installation_token = mint_installation_token(
+        jwt=jwt,
+        installation_id=resolved["installation_id"],
+        repository=resolved["repository"],
+        opener=opener,
+    )
+    sys.stdout.write(emit_credential_response(installation_token))
+    return 0
+
+
+def credential_store_or_erase() -> int:
+    """Handle `--credential store|erase`: never persist anything.
+
+    Git may call store/erase after a successful or failed push. The broker
+    keeps no credential state, so both operations are safe no-ops that must
+    still consume stdin so git does not block on the pipe.
+    """
+    try:
+        sys.stdin.read()
+    except Exception:
+        pass
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--credential":
+        if len(args) != 2:
+            raise BrokerError("usage: github_app_token_broker.py --credential get|store|erase")
+        operation = args[1]
+        if operation == "get":
+            return credential_get()
+        if operation in {"store", "erase"}:
+            return credential_store_or_erase()
+        raise BrokerError("git credential operation is not allowed")
     if not args or args[0] != "--":
         raise BrokerError("usage: github_app_token_broker.py -- /opt/homebrew/bin/gh ...")
     command = validate_command(args[1:])

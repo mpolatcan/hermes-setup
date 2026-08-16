@@ -281,6 +281,122 @@ class BrokerTests(unittest.TestCase):
         self.assertIs(kwargs["stdout"], BROKER.subprocess.PIPE)
         self.assertIs(kwargs["stderr"], BROKER.subprocess.PIPE)
 
+    def test_parse_credential_request_accepts_scoped_https_github_request(self):
+        request = (
+            "protocol=https\n"
+            "host=github.com\n"
+            "path=mpolatcan/hermes-setup\n"
+            "\n"
+        )
+        self.assertEqual(
+            BROKER.parse_credential_request(request),
+            {
+                "protocol": "https",
+                "host": "github.com",
+                "path": "mpolatcan/hermes-setup",
+            },
+        )
+
+    def test_parse_credential_request_rejects_malformed_or_duplicate_keys(self):
+        for request in (
+            "protocol=https\nhost=github.com\nnot-a-valid-line\n",
+            "protocol=https\nprotocol=https\nhost=github.com\n",
+            "protocol=https\nhost=github.com\n=emptykey\n",
+        ):
+            with self.subTest(request=request), self.assertRaises(BROKER.BrokerError):
+                BROKER.parse_credential_request(request)
+
+    def test_validate_credential_request_accepts_only_pinned_repository(self):
+        self.assertEqual(
+            BROKER.validate_credential_request(
+                {
+                    "protocol": "https",
+                    "host": "github.com",
+                    "path": "mpolatcan/hermes-setup",
+                }
+            ),
+            "mpolatcan/hermes-setup",
+        )
+        self.assertEqual(
+            BROKER.validate_credential_request(
+                {
+                    "protocol": "https",
+                    "host": "github.com",
+                    "path": "mpolatcan/hermes-setup.git",
+                }
+            ),
+            "mpolatcan/hermes-setup",
+        )
+
+        invalid_requests = (
+            {"protocol": "http", "host": "github.com", "path": "mpolatcan/hermes-setup"},
+            {"protocol": "https", "host": "gitlab.com", "path": "mpolatcan/hermes-setup"},
+            {"protocol": "https", "host": "github.com", "path": "mpolatcan/other"},
+            {"protocol": "https", "host": "github.com", "path": "mpolatcan"},
+            {"protocol": "https", "host": "github.com", "path": "mpolatcan/hermes-setup/.."},
+            {
+                "protocol": "https",
+                "host": "github.com",
+                "path": "mpolatcan/hermes-setup",
+                "extra": "field",
+            },
+        )
+        for fields in invalid_requests:
+            with self.subTest(fields=fields), self.assertRaises(BROKER.BrokerError):
+                BROKER.validate_credential_request(fields)
+
+    def test_emit_credential_response_writes_token_only_to_stdout_protocol(self):
+        response = BROKER.emit_credential_response("installation-token-123")
+        self.assertIn("protocol=https\n", response)
+        self.assertIn("host=github.com\n", response)
+        self.assertIn("path=mpolatcan/hermes-setup\n", response)
+        self.assertIn("username=x-access-token\n", response)
+        self.assertIn("password=installation-token-123\n", response)
+        with self.assertRaises(BROKER.BrokerError):
+            BROKER.emit_credential_response("")
+
+    @mock.patch.object(BROKER, "mint_installation_token", return_value="credential-token")
+    @mock.patch.object(BROKER, "verify_installation")
+    @mock.patch.object(BROKER, "build_app_jwt", return_value="app-jwt")
+    @mock.patch.object(BROKER, "resolve_references", new_callable=mock.AsyncMock)
+    def test_credential_get_prints_scoped_response_and_never_leaks_token_to_args(
+        self,
+        resolve_references,
+        _build_jwt,
+        _verify_installation,
+        _mint_token,
+    ):
+        resolve_references.return_value = {
+            "app_id": 4550664,
+            "installation_id": 152740425,
+            "repository": "mpolatcan/hermes-setup",
+            "private_key": "private",
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {BROKER.TOKEN_ENV: "bootstrap"}, clear=False),
+            mock.patch.object(BROKER.sys, "stdin", io.StringIO("protocol=https\nhost=github.com\npath=mpolatcan/hermes-setup\n\n")),
+            mock.patch.object(BROKER.sys, "stdout", stdout),
+        ):
+            result = BROKER.main(["--credential", "get"])
+        self.assertEqual(result, 0)
+        self.assertIn("username=x-access-token\n", stdout.getvalue())
+        self.assertIn("password=credential-token\n", stdout.getvalue())
+        self.assertNotIn("bootstrap", stdout.getvalue())
+
+    @mock.patch.object(BROKER.sys, "stdin", io.StringIO("protocol=https\nhost=github.com\npath=mpolatcan/hermes-setup\n\n"))
+    def test_credential_store_and_erase_are_noops(self):
+        self.assertEqual(BROKER.main(["--credential", "store"]), 0)
+        self.assertEqual(BROKER.main(["--credential", "erase"]), 0)
+
+    def test_credential_dispatch_rejects_bad_usage(self):
+        with self.assertRaises(BROKER.BrokerError):
+            BROKER.main(["--credential"])
+        with self.assertRaises(BROKER.BrokerError):
+            BROKER.main(["--credential", "fill"])
+        with self.assertRaises(BROKER.BrokerError):
+            BROKER.main(["--credential", "get", "extra-argument"])
+
 
 if __name__ == "__main__":
     unittest.main()
