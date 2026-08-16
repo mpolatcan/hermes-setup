@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -35,14 +37,43 @@ class DeliveryLedger:
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        parent_stat = self.path.parent.stat()
+        if hasattr(os, "geteuid") and parent_stat.st_uid != os.geteuid():
+            raise RuntimeError("Linear ledger directory must be owned by the profile user")
+        if stat.S_IMODE(parent_stat.st_mode) & 0o077:
+            raise RuntimeError("Linear ledger directory must be owner-only (0700)")
         self.processing_timeout_seconds = processing_timeout_seconds
         self.retention_seconds = retention_seconds
         self.outbox_claim_timeout_seconds = outbox_claim_timeout_seconds
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
-        self._db.execute("PRAGMA foreign_keys=ON")
+        sidecars = (Path(f"{self.path}-wal"), Path(f"{self.path}-shm"))
+        for sidecar in sidecars:
+            if sidecar.is_symlink():
+                raise RuntimeError("Linear ledger SQLite sidecar must not be a symlink")
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(self.path, flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            opened = os.fstat(fd)
+            self._db = sqlite3.connect(self.path, check_same_thread=False)
+            actual = os.lstat(self.path)
+            if stat.S_ISLNK(actual.st_mode) or (
+                actual.st_dev, actual.st_ino
+            ) != (opened.st_dev, opened.st_ino):
+                self._db.close()
+                raise RuntimeError("Linear ledger changed while it was being opened")
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA synchronous=FULL")
+            self._db.execute("PRAGMA foreign_keys=ON")
+        finally:
+            os.close(fd)
+        for sidecar in sidecars:
+            if sidecar.is_symlink():
+                self._db.close()
+                raise RuntimeError("Linear ledger SQLite sidecar must not be a symlink")
+
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS deliveries ("
             "webhook_id TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at INTEGER NOT NULL)"
@@ -108,6 +139,27 @@ class DeliveryLedger:
             "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
         )
         self._db.execute(
+            "CREATE TABLE IF NOT EXISTS channel_routes ("
+            "operation_key TEXT PRIMARY KEY, source_platform TEXT NOT NULL, "
+            "source_chat_id TEXT NOT NULL, source_thread_id TEXT NOT NULL, "
+            "source_message_id TEXT NOT NULL, source_user_id TEXT NOT NULL, "
+            "source_user_name TEXT NOT NULL, source_chat_type TEXT NOT NULL, "
+            "source_profile TEXT NOT NULL, source_scope_id TEXT NOT NULL, "
+            "source_via_relay INTEGER NOT NULL, "
+            "issue_ref TEXT NOT NULL, "
+            "command_text TEXT NOT NULL, issue_id TEXT NOT NULL DEFAULT '', "
+            "session_id TEXT NOT NULL DEFAULT '', "
+            "state TEXT NOT NULL CHECK(state IN "
+            "('claimed', 'dispatching', 'dispatched', 'blocked', 'failed', 'ambiguous')), "
+            "last_error TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, "
+            "next_attempt_at REAL NOT NULL DEFAULT 0, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS channel_routes_issue_state_idx "
+            "ON channel_routes(issue_id, state, updated_at)"
+        )
+        self._db.execute(
             "CREATE TABLE IF NOT EXISTS closure_reconciliations ("
             "closure_key TEXT PRIMARY KEY, issue_id TEXT NOT NULL, session_id TEXT NOT NULL, "
             "outbox_id TEXT NOT NULL UNIQUE, evidence_json TEXT NOT NULL, "
@@ -124,8 +176,8 @@ class DeliveryLedger:
             "issue_id TEXT PRIMARY KEY, event_revision REAL NOT NULL, "
             "event_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 5:
-            self._db.execute("PRAGMA user_version=5")
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 6:
+            self._db.execute("PRAGMA user_version=6")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Outbound-only clients may open this database while
         # the gateway is live, so they must not run process-start recovery.
@@ -143,6 +195,11 @@ class DeliveryLedger:
                 (int(time.time()),),
             )
             self._db.execute(
+                "UPDATE channel_routes SET state='ambiguous', "
+                "last_error='restart_during_dispatch', updated_at=? WHERE state='dispatching'",
+                (int(time.time()),),
+            )
+            self._db.execute(
                 "UPDATE closure_reconciliations SET state = 'completed', last_error = NULL, "
                 "updated_at = COALESCE((SELECT delivered_at FROM outbox "
                 "WHERE outbox.id = closure_reconciliations.outbox_id), updated_at), "
@@ -153,8 +210,18 @@ class DeliveryLedger:
                 "AND outbox.state = 'delivered')"
             )
         self._db.commit()
+        self._secure_state_files()
         if startup_recovery:
             self.prune()
+
+    def _secure_state_files(self) -> None:
+        """Keep the database and SQLite sidecars private to the profile owner."""
+        for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            if not candidate.exists():
+                continue
+            if candidate.is_symlink():
+                raise RuntimeError("Linear ledger state path must not be a symlink")
+            candidate.chmod(0o600)
 
     def bind_issue_session(
         self, issue_id: str, session_id: str, *, now: int | None = None,
@@ -177,6 +244,186 @@ class DeliveryLedger:
                 (issue_id,),
             ).fetchone()
         return str(row[0]) if row else None
+
+    def claim_channel_route(
+        self,
+        operation_key: str,
+        *,
+        source_platform: str,
+        source_chat_id: str,
+        source_thread_id: str,
+        source_message_id: str = "",
+        source_user_id: str = "",
+        source_user_name: str = "",
+        source_chat_type: str = "dm",
+        source_profile: str = "",
+        source_scope_id: str = "",
+        source_via_relay: bool = False,
+        issue_ref: str = "",
+        command_text: str = "",
+        issue_id: str = "",
+        session_id: str = "",
+        now: int | None = None,
+    ) -> bool:
+        """Durably reserve a source command before any remote authorization lookup."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO channel_routes("
+                "operation_key, source_platform, source_chat_id, source_thread_id, "
+                "source_message_id, source_user_id, source_user_name, issue_ref, command_text, "
+                "source_chat_type, source_profile, source_scope_id, source_via_relay, "
+                "state, next_attempt_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)",
+                (
+                    operation_key,
+                    source_platform,
+                    source_chat_id,
+                    source_thread_id,
+                    source_message_id,
+                    source_user_id,
+                    source_user_name,
+                    issue_ref or issue_id,
+                    command_text,
+                    source_chat_type,
+                    source_profile,
+                    source_scope_id,
+                    int(source_via_relay),
+                    float(now),
+                    now,
+                    now,
+                ),
+            )
+            if cursor.rowcount == 1 and (issue_id or session_id):
+                self._db.execute(
+                    "UPDATE channel_routes SET issue_id=?, session_id=? WHERE operation_key=?",
+                    (issue_id, session_id, operation_key),
+                )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def claim_due_channel_routes(
+        self, *, limit: int, now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Claim a bounded batch for the adapter's single recovery worker."""
+        if limit <= 0:
+            return []
+        now = time.time() if now is None else float(now)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT operation_key FROM channel_routes WHERE state='claimed' "
+                "AND next_attempt_at <= ? ORDER BY created_at, operation_key LIMIT ?",
+                (now, int(limit)),
+            ).fetchall()
+            keys = [str(row[0]) for row in rows]
+            if keys:
+                placeholders = ",".join("?" for _ in keys)
+                self._db.execute(
+                    f"UPDATE channel_routes SET attempt_count=attempt_count+1, updated_at=? "
+                    f"WHERE state='claimed' AND operation_key IN ({placeholders})",
+                    (int(now), *keys),
+                )
+                self._db.commit()
+        return [route for key in keys if (route := self.get_channel_route(key)) is not None]
+
+    def set_channel_route_target(
+        self, operation_key: str, issue_id: str, session_id: str, *, now: int | None = None,
+    ) -> bool:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE channel_routes SET issue_id=?, session_id=?, updated_at=? "
+                "WHERE operation_key=? AND state='claimed'",
+                (issue_id, session_id, now, operation_key),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def retry_channel_route(
+        self,
+        operation_key: str,
+        *,
+        error: str,
+        next_attempt_at: float,
+        max_attempts: int,
+        now: int | None = None,
+    ) -> bool:
+        """Back off a pre-dispatch failure, terminally failing at the fixed attempt bound."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE channel_routes SET "
+                "state=CASE WHEN attempt_count >= ? THEN 'failed' ELSE 'claimed' END, "
+                "last_error=?, next_attempt_at=?, updated_at=? "
+                "WHERE operation_key=? AND state='claimed'",
+                (int(max_attempts), error, float(next_attempt_at), now, operation_key),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def mark_channel_route(
+        self,
+        operation_key: str,
+        state: str,
+        *,
+        error: str | None = None,
+        now: int | None = None,
+    ) -> bool:
+        transitions = {
+            "dispatching": "claimed",
+            "dispatched": "dispatching",
+            "blocked": "claimed",
+            "failed": "claimed",
+            "ambiguous": "dispatching",
+        }
+        if state not in transitions:
+            raise ValueError(f"Unsupported channel route state: {state}")
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE channel_routes SET state=?, last_error=?, updated_at=? "
+                "WHERE operation_key=? AND state=?",
+                (state, error, now, operation_key, transitions[state]),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def get_channel_route(self, operation_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT operation_key, source_platform, source_chat_id, source_thread_id, "
+                "source_message_id, source_user_id, source_user_name, issue_ref, command_text, "
+                "source_chat_type, source_profile, source_scope_id, source_via_relay, "
+                "issue_id, session_id, state, last_error, attempt_count, next_attempt_at, "
+                "created_at, updated_at FROM channel_routes "
+                "WHERE operation_key=?",
+                (operation_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "operation_key": str(row[0]),
+            "source_platform": str(row[1]),
+            "source_chat_id": str(row[2]),
+            "source_thread_id": str(row[3]),
+            "source_message_id": str(row[4]),
+            "source_user_id": str(row[5]),
+            "source_user_name": str(row[6]),
+            "issue_ref": str(row[7]),
+            "command_text": str(row[8]),
+            "source_chat_type": str(row[9]),
+            "source_profile": str(row[10]),
+            "source_scope_id": str(row[11]),
+            "source_via_relay": bool(row[12]),
+            "issue_id": str(row[13]),
+            "session_id": str(row[14]),
+            "state": str(row[15]),
+            "last_error": row[16],
+            "attempt_count": int(row[17]),
+            "next_attempt_at": float(row[18]),
+            "created_at": int(row[19]),
+            "updated_at": int(row[20]),
+        }
 
     @staticmethod
     def _decode_activation_wait(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -1104,6 +1351,13 @@ class DeliveryLedger:
         result.update({str(state): int(count) for state, count in rows})
         return result
 
+    def channel_route_counts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, COUNT(*) FROM channel_routes GROUP BY state"
+            ).fetchall()
+        return {str(state): int(count) for state, count in rows}
+
     def manager_activation_counts(self) -> dict[str, int]:
         with self._lock:
             rows = self._db.execute(
@@ -1145,10 +1399,15 @@ class DeliveryLedger:
                 "DELETE FROM manager_activations WHERE state IN ('session_started', 'canceled') "
                 "AND updated_at < ?", (cutoff,),
             ).rowcount
+            routes = self._db.execute(
+                "DELETE FROM channel_routes WHERE state IN "
+                "('dispatched', 'blocked', 'failed', 'ambiguous') AND updated_at < ?",
+                (cutoff,),
+            ).rowcount
             self._db.commit()
             return (
                 int(inbound) + int(outbound) + int(waits)
-                + int(activations) + int(managers)
+                + int(activations) + int(managers) + int(routes)
             )
 
     def close(self) -> None:

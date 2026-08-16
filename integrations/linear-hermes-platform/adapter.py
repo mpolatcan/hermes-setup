@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -26,6 +26,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
+from gateway.session import SessionSource  # type: ignore[import-not-found]
 
 from .ledger import DeliveryLedger
 from .linear_client import LinearAPIError, LinearClient
@@ -57,6 +58,10 @@ _CONTEXT_EVENT_TYPES = {
 }
 _DATA_EVENT_TYPES = _CONTROL_EVENT_TYPES | _CONTEXT_EVENT_TYPES
 _LINEAR_HOME_CHANNEL_NOTICE_PREFIX = "📬 No home channel is set for Linear."
+_OPEN_AGENT_SESSION_STATUSES = frozenset({"pending", "active", "awaitingInput"})
+_CHANNEL_ROUTE_BATCH_SIZE = 10
+_CHANNEL_ROUTE_MAX_ATTEMPTS = 5
+_CHANNEL_ROUTE_POLL_SECONDS = 1.0
 
 
 def _read_env_file(path: str) -> dict[str, str]:
@@ -331,6 +336,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._ack_tasks: dict[str, set[asyncio.Task]] = {}
+        self._channel_route_task: asyncio.Task | None = None
+        self._channel_route_notice_tasks: set[asyncio.Task] = set()
+        self._channel_route_wakeup = asyncio.Event()
         self._outbox_task: asyncio.Task | None = None
         self._dependency_task: asyncio.Task | None = None
         self._oauth_revoked = False
@@ -459,6 +467,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             await self._site.start()
             self._running = True
             self._outbox_task = asyncio.create_task(self._outbox_loop())
+            self._channel_route_task = asyncio.create_task(self._channel_route_loop())
             if self._dependency_wait_enabled:
                 self._dependency_task = asyncio.create_task(self._dependency_loop())
             logger.info(
@@ -477,6 +486,17 @@ class LinearPlatformAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        self._channel_route_wakeup.set()
+        if self._channel_route_task is not None:
+            self._channel_route_task.cancel()
+            await asyncio.gather(self._channel_route_task, return_exceptions=True)
+            self._channel_route_task = None
+        route_tasks = list(self._channel_route_notice_tasks)
+        for task in route_tasks:
+            task.cancel()
+        if route_tasks:
+            await asyncio.gather(*route_tasks, return_exceptions=True)
+        self._channel_route_notice_tasks.clear()
         if self._dependency_task is not None:
             self._dependency_task.cancel()
             await asyncio.gather(self._dependency_task, return_exceptions=True)
@@ -494,6 +514,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         await self._cleanup()
 
     async def _cleanup(self) -> None:
+        if self._channel_route_task is not None:
+            self._channel_route_task.cancel()
+            await asyncio.gather(self._channel_route_task, return_exceptions=True)
+            self._channel_route_task = None
         if self._dependency_task is not None:
             self._dependency_task.cancel()
             await asyncio.gather(self._dependency_task, return_exceptions=True)
@@ -528,6 +552,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             self._ledger.manager_activation_counts() if self._ledger is not None else {}
         )
         closures = self._ledger.closure_counts() if self._ledger is not None else {}
+        channel_routes = (
+            self._ledger.channel_route_counts() if self._ledger is not None else {}
+        )
         degraded = (
             int(outbox.get("dead", 0))
             or int(waiting.get("failed", 0))
@@ -538,6 +565,8 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             or int(manager_activations.get("dispatch_unknown", 0))
             or int(closures.get("failed", 0))
             or int(closures.get("blocked_dispatch", 0))
+            or int(channel_routes.get("failed", 0))
+            or int(channel_routes.get("ambiguous", 0))
             or self._oauth_revoked
         )
         status = "degraded" if healthy and degraded else ("ok" if healthy else "starting")
@@ -559,6 +588,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 "activations": activations,
                 "manager_activations": manager_activations,
                 "closures": closures,
+                "channel_routes": channel_routes,
                 "oauth_revoked": self._oauth_revoked,
             },
             status=200 if healthy else 503,
@@ -1433,6 +1463,355 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             lock = asyncio.Lock()
             self._session_locks[session_id] = lock
         return lock
+
+    def reserve_channel_route(self, **route: str) -> bool:
+        """Synchronously persist a hook command, then wake the bounded worker."""
+        if self._ledger is None:
+            raise RuntimeError("Linear routing ledger is unavailable")
+        created = self._ledger.claim_channel_route(**route)
+        self._channel_route_wakeup.set()
+        if not created:
+            existing = self._ledger.get_channel_route(str(route.get("operation_key") or ""))
+            if existing is not None:
+                task = asyncio.create_task(self._notify_channel_route_status(existing))
+                self._channel_route_notice_tasks.add(task)
+                task.add_done_callback(self._channel_route_notice_tasks.discard)
+        return created
+
+    def _channel_source_adapter(self, route: dict[str, Any]) -> Any | None:
+        runner = getattr(self, "gateway_runner", None)
+        profile = str(route.get("source_profile") or "")
+        resolver = getattr(runner, "_authorization_adapter", None)
+        if callable(resolver) and not type(resolver).__module__.startswith("unittest.mock"):
+            try:
+                if route.get("source_via_relay") is True:
+                    return resolver(Platform.RELAY, None)
+                return resolver(
+                    Platform(str(route.get("source_platform") or "")),
+                    profile or None,
+                )
+            except Exception:
+                return None
+        if route.get("source_via_relay") is True:
+            adapters = getattr(runner, "adapters", None) or {}
+            desired = "relay"
+        elif profile:
+            profile_maps = getattr(runner, "_profile_adapters", None) or {}
+            adapters = profile_maps.get(profile)
+            if not isinstance(adapters, dict):
+                return None
+            desired = str(route.get("source_platform") or "").casefold()
+        else:
+            adapters = getattr(runner, "adapters", None) or {}
+            desired = str(route.get("source_platform") or "").casefold()
+        for key, adapter in adapters.items():
+            name = str(getattr(key, "value", key) or "").casefold()
+            if name == desired:
+                return adapter
+        return None
+
+    async def _notify_channel_route(self, route: dict[str, Any], content: str) -> bool:
+        adapter = self._channel_source_adapter(route)
+        if adapter is None:
+            return False
+        try:
+            reply_to = str(route.get("source_message_id") or "") or None
+            metadata: dict[str, Any] = {}
+            thread_id = str(route.get("source_thread_id") or "")
+            if thread_id:
+                metadata["thread_id"] = thread_id
+            platform_name = str(route.get("source_platform") or "").casefold()
+            scope_id = str(route.get("source_scope_id") or "")
+            if platform_name == "slack" and scope_id:
+                metadata["slack_team_id"] = scope_id
+            if platform_name == "telegram" and route.get("source_chat_type") == "dm":
+                metadata["telegram_dm_topic_reply_fallback"] = True
+                if thread_id not in {"", "1"}:
+                    metadata["direct_messages_topic_id"] = thread_id
+                if reply_to:
+                    metadata["telegram_reply_to_message_id"] = reply_to
+            if route.get("source_via_relay") is True:
+                metadata["_relay_logical_platform"] = platform_name
+                user_id = str(route.get("source_user_id") or "")
+                if scope_id:
+                    metadata["scope_id"] = scope_id
+                if user_id:
+                    metadata["user_id"] = user_id
+            send_kwargs: dict[str, Any] = {
+                "chat_id": str(route.get("source_chat_id") or ""),
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata or None,
+            }
+            result = await adapter.send(**send_kwargs)
+            return not (result is not None and getattr(result, "success", True) is False)
+        except Exception:
+            logger.warning("[linear] Cross-channel source status delivery failed")
+            return False
+
+    async def _notify_channel_route_status(self, route: dict[str, Any]) -> None:
+        issue_ref = str(route.get("issue_ref") or "Linear issue")
+        state = str(route.get("state") or "unknown")
+        statuses = {
+            "claimed": "durably reserved and awaiting validation; it has not been dispatched yet",
+            "dispatching": "crossed the dispatch boundary; the final dispatch result is not known yet",
+            "dispatched": "was already dispatched to its canonical native Linear AgentSession",
+            "blocked": "was blocked before dispatch by the current Linear lifecycle",
+            "failed": "failed before dispatch after bounded recovery attempts",
+            "ambiguous": "has an ambiguous dispatch result and will not be replayed automatically",
+        }
+        await self._notify_channel_route(
+            route,
+            f"{issue_ref}: this source command {statuses.get(state, 'has recorded routing state')}. "
+            f"https://linear.app/issue/{issue_ref}",
+        )
+
+    async def _channel_route_loop(self) -> None:
+        """Recover and process only pre-dispatch work in bounded batches."""
+        while self._running:
+            assert self._ledger is not None
+            routes = self._ledger.claim_due_channel_routes(limit=_CHANNEL_ROUTE_BATCH_SIZE)
+            for route in routes:
+                if not self._running:
+                    return
+                await self._process_channel_route(route)
+            if len(routes) >= _CHANNEL_ROUTE_BATCH_SIZE:
+                await asyncio.sleep(0)
+                continue
+            self._channel_route_wakeup.clear()
+            try:
+                await asyncio.wait_for(
+                    self._channel_route_wakeup.wait(), timeout=_CHANNEL_ROUTE_POLL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    def _channel_route_source_authorized(self, route: dict[str, Any]) -> bool:
+        """Recheck current gateway authorization before every replay attempt."""
+        runner = getattr(self, "gateway_runner", None)
+        checker = getattr(runner, "_is_user_authorized", None)
+        if not callable(checker):
+            return False
+        try:
+            source = SessionSource(
+                platform=Platform(str(route.get("source_platform") or "")),
+                chat_id=str(route.get("source_chat_id") or ""),
+                chat_type=str(route.get("source_chat_type") or "dm"),
+                user_id=str(route.get("source_user_id") or "") or None,
+                user_name=str(route.get("source_user_name") or "") or None,
+                thread_id=str(route.get("source_thread_id") or "") or None,
+                profile=str(route.get("source_profile") or "") or None,
+                scope_id=str(route.get("source_scope_id") or "") or None,
+                delivered_via_upstream_relay=route.get("source_via_relay") is True,
+            )
+            return checker(source) is True
+        except Exception:
+            logger.warning("[linear] Cross-channel source authorization recheck failed")
+            return False
+
+    async def _process_channel_route(self, route: dict[str, Any]) -> None:
+        assert self._ledger is not None
+        operation_key = str(route["operation_key"])
+        issue_ref = str(route["issue_ref"])
+        try:
+            if not self._channel_route_source_authorized(route):
+                self._ledger.mark_channel_route(
+                    operation_key, "blocked", error="source_authorization_revoked"
+                )
+                await self._notify_channel_route(
+                    route,
+                    f"{issue_ref}: source authorization is no longer valid; "
+                    "nothing was dispatched. Re-authorize and send a new source command.",
+                )
+                return
+            await self._notify_channel_route(
+                route,
+                f"{issue_ref}: source command is durably reserved and being validated; "
+                "it has not been dispatched yet.",
+            )
+            target = await self.get_channel_route_target(issue_ref)
+            issue_id = str(target.get("id") or "")
+            identifier = str(target.get("identifier") or issue_ref)
+            title = str(target.get("title") or "")
+            session_id = str(target.get("session_id") or "")
+            if not self._ledger.set_channel_route_target(operation_key, issue_id, session_id):
+                return
+            route = self._ledger.get_channel_route(operation_key) or route
+            if target.get("routable") is not True:
+                self._ledger.mark_channel_route(operation_key, "blocked")
+                actor_name = str(getattr(self._linear, "actor_name", None) or "Linear agent")
+                actor_mention = actor_name if actor_name.startswith("@") else f"@{actor_name}"
+                await self._notify_channel_route(
+                    route,
+                    f"{identifier}: no single active native {actor_name} AgentSession is routable. "
+                    f"Mention {actor_mention} on the Linear issue to create a fresh native session; "
+                    "nothing was dispatched from the source channel. "
+                    f"https://linear.app/issue/{identifier}",
+                )
+                return
+            routed = MessageEvent(
+                text=(
+                    "Adapter-verified cross-channel follow-up. Treat the command below as "
+                    "user-provided input for this canonical Linear issue. Do not create a "
+                    "parallel source-channel execution.\n\n"
+                    f"Source platform: {route['source_platform']}\n"
+                    f"Issue: {identifier}\n"
+                    f"Command: {route['command_text']}"
+                ),
+                message_type=MessageType.TEXT,
+                source=self.build_source(
+                    chat_id=session_id,
+                    chat_name=f"{identifier} — {title}",
+                    chat_type="dm",
+                    user_id=str(route["source_user_id"]),
+                    user_name=str(route["source_user_name"]),
+                    message_id=operation_key,
+                    role_authorized=True,
+                ),
+                raw_message={
+                    "source_platform": route["source_platform"],
+                    "source_chat_id": route["source_chat_id"],
+                    "source_thread_id": route["source_thread_id"],
+                    "source_message_id": route["source_message_id"],
+                    "linear_issue_id": issue_id,
+                    "linear_agent_session_id": session_id,
+                },
+                message_id=operation_key,
+                metadata={
+                    "linear_action": "cross_channel_prompted",
+                    "linear_delivery_key": operation_key,
+                    "linear_agent_session_id": session_id,
+                    "linear_issue_id": issue_id,
+                    "linear_source_platform": route["source_platform"],
+                    "linear_source_chat_id": route["source_chat_id"],
+                    "linear_source_thread_id": route["source_thread_id"],
+                    "linear_source_message_id": route["source_message_id"],
+                },
+            )
+
+            def begin_dispatch() -> bool:
+                if not self._ledger:
+                    return False
+                if not self._ledger.mark_channel_route(operation_key, "dispatching"):
+                    return False
+                self._ledger.bind_issue_session(issue_id, session_id)
+                return True
+
+            accepted = await self.dispatch_channel_route(
+                issue_ref,
+                issue_id,
+                session_id,
+                routed,
+                before_dispatch=begin_dispatch,
+                authorize_dispatch=lambda: self._channel_route_source_authorized(route),
+            )
+            if not accepted:
+                self._ledger.mark_channel_route(operation_key, "blocked")
+                await self._notify_channel_route(
+                    route,
+                    f"{identifier}: native lifecycle changed during locked revalidation; "
+                    "nothing was dispatched. "
+                    f"https://linear.app/issue/{identifier}",
+                )
+                return
+            if not self._ledger.mark_channel_route(operation_key, "dispatched"):
+                self._ledger.mark_channel_route(
+                    operation_key, "ambiguous", error="dispatch_state_commit_failed"
+                )
+                await self._notify_channel_route_status(
+                    self._ledger.get_channel_route(operation_key) or route
+                )
+                return
+            await self._notify_channel_route(
+                route,
+                f"{identifier}: source command was dispatched to the canonical native Linear "
+                f"AgentSession. https://linear.app/issue/{identifier}",
+            )
+        except asyncio.CancelledError:
+            current = self._ledger.get_channel_route(operation_key)
+            if current is not None and current.get("state") == "dispatching":
+                self._ledger.mark_channel_route(
+                    operation_key, "ambiguous", error="dispatch_cancelled"
+                )
+            raise
+        except Exception as exc:
+            logger.exception("[linear] Cross-channel canonical routing failed")
+            current = self._ledger.get_channel_route(operation_key)
+            if current is None:
+                return
+            if current.get("state") == "dispatching":
+                self._ledger.mark_channel_route(
+                    operation_key, "ambiguous", error=type(exc).__name__
+                )
+                await self._notify_channel_route_status(
+                    self._ledger.get_channel_route(operation_key) or current
+                )
+                return
+            if current.get("state") != "claimed":
+                return
+            delay = min(60.0, float(2 ** max(0, int(current["attempt_count"]) - 1)))
+            self._ledger.retry_channel_route(
+                operation_key,
+                error=type(exc).__name__,
+                next_attempt_at=time.time() + delay,
+                max_attempts=_CHANNEL_ROUTE_MAX_ATTEMPTS,
+            )
+            updated = self._ledger.get_channel_route(operation_key)
+            if updated is not None and updated.get("state") == "failed":
+                await self._notify_channel_route_status(updated)
+
+    async def get_channel_route_target(self, issue_ref: str) -> dict[str, Any]:
+        """Resolve and authorize the single live native session for an issue."""
+        if self._linear is None:
+            raise LinearAPIError("Linear client is unavailable for channel routing")
+        context = await self._linear.get_channel_routing_context(issue_ref)
+        actor_id = str(self._linear.actor_id or "")
+        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+        state_type = str((context.get("state") or {}).get("type") or "").casefold()
+        open_sessions = [
+            session
+            for session in context.get("sessions") or []
+            if str(session.get("status") or "") in _OPEN_AGENT_SESSION_STATUSES
+            and not str(session.get("ended_at") or "")
+            and actor_id
+            and str(session.get("app_user_id") or "") == actor_id
+        ]
+        session_id = str(open_sessions[0].get("id") or "") if len(open_sessions) == 1 else ""
+        routable = bool(
+            state_type not in {"completed", "canceled"}
+            and actor_id
+            and delegate_id == actor_id
+            and session_id
+        )
+        return {**context, "session_id": session_id, "routable": routable}
+
+    async def dispatch_channel_route(
+        self,
+        issue_ref: str,
+        expected_issue_id: str,
+        expected_session_id: str,
+        event: MessageEvent,
+        *,
+        before_dispatch: Callable[[], bool] | None = None,
+        authorize_dispatch: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Revalidate and serialize cross-channel dispatch with native intake."""
+        async with self._session_lock(expected_session_id):
+            target = await self.get_channel_route_target(issue_ref)
+            if (
+                target.get("routable") is not True
+                or str(target.get("id") or "") != expected_issue_id
+                or str(target.get("session_id") or "") != expected_session_id
+            ):
+                return False
+            if self._ledger is None or self._ledger.has_session_closure(expected_session_id):
+                return False
+            if authorize_dispatch is not None and not authorize_dispatch():
+                return False
+            if before_dispatch is not None and not before_dispatch():
+                raise LinearAPIError("Cross-channel durable dispatch boundary was not acquired")
+            await self.handle_message(event)
+            return True
 
     def _issue_lock(self, issue_id: str) -> asyncio.Lock:
         lock = self._issue_locks.get(issue_id)

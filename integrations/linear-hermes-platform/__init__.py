@@ -2,14 +2,214 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
+import re
+from typing import Any
 
 
 LINEAR_HOME_CHANNEL_ENV = "LINEAR_HOME_CHANNEL"
 logger = logging.getLogger(__name__)
 _yaml_home_channel_owned = False
 _yaml_home_channel_value: str | None = None
+_CHANNEL_COMMAND_RE = re.compile(
+    r"^\s*(?:https://linear\.app/[^/\s]+/issue/)?"
+    r"(?P<issue>[A-Z][A-Z0-9]*-\d+)"
+    r"(?:/[^\s]*)?\s*(?::|—|-)\s*(?P<body>\S(?:.|\n)*)$"
+)
+
+
+def _parse_channel_command(text: str) -> tuple[str, str] | None:
+    """Parse only an explicit, leading Linear issue command."""
+    match = _CHANNEL_COMMAND_RE.fullmatch(str(text or ""))
+    if match is None:
+        return None
+    issue_ref = match.group("issue").upper()
+    body = match.group("body").strip()
+    return (issue_ref, body) if body else None
+
+
+def _source_operation_key(
+    platform: str,
+    chat_id: str,
+    thread_id: str,
+    message_id: str,
+    profile: str = "",
+    relay_discriminator: str = "",
+    scope_id: str = "",
+    user_id: str = "",
+) -> str:
+    material = "\0".join(
+        (
+            profile,
+            relay_discriminator,
+            platform,
+            scope_id,
+            user_id,
+            chat_id,
+            thread_id,
+            message_id,
+        )
+    )
+    return "channel-route:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _platform_name(source: Any) -> str:
+    platform = getattr(source, "platform", None)
+    return str(getattr(platform, "value", platform) or "").casefold()
+
+
+def _source_profile(source: Any) -> str:
+    value = getattr(source, "profile", None)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _source_identity_value(source: Any, name: str) -> str:
+    value = getattr(source, name, None)
+    return str(value) if isinstance(value, (str, int)) else ""
+
+
+def _linear_adapter_for_gateway(gateway: Any, source: Any) -> Any | None:
+    profile = _source_profile(source)
+    resolver = getattr(gateway, "_authorization_adapter", None)
+    if callable(resolver) and not type(resolver).__module__.startswith("unittest.mock"):
+        try:
+            from gateway.config import Platform  # type: ignore[import-not-found]
+
+            return resolver(Platform("linear"), profile or None)
+        except Exception:
+            logger.exception("[linear] Profile-aware adapter resolution failed")
+            return None
+    if profile:
+        active_profile_fn = getattr(gateway, "_active_profile_name", None)
+        try:
+            active_profile = active_profile_fn() if callable(active_profile_fn) else None
+        except Exception:
+            active_profile = None
+        if profile == active_profile:
+            adapters = getattr(gateway, "adapters", None) or {}
+        else:
+            profile_maps = getattr(gateway, "_profile_adapters", None) or {}
+            adapters = profile_maps.get(profile)
+            if not isinstance(adapters, dict):
+                return None
+    else:
+        adapters = getattr(gateway, "adapters", None) or {}
+    for key, adapter in adapters.items():
+        name = str(getattr(key, "value", key) or "").casefold()
+        if name == "linear":
+            return adapter
+    return None
+
+
+async def _send_source_message(gateway: Any, event: Any, content: str) -> bool:
+    source = event.source
+    adapter = gateway._adapter_for_source(source)
+    if adapter is None:
+        return False
+    reply_to = str(event.message_id or "") or None
+    metadata: dict[str, Any] = {}
+    thread_id = str(getattr(source, "thread_id", None) or "")
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    platform_name = _platform_name(source)
+    scope_id = _source_identity_value(source, "scope_id")
+    if platform_name == "slack" and scope_id:
+        metadata["slack_team_id"] = scope_id
+    if platform_name == "telegram" and getattr(source, "chat_type", None) == "dm":
+        metadata["telegram_dm_topic_reply_fallback"] = True
+        if thread_id not in {"", "1"}:
+            metadata["direct_messages_topic_id"] = thread_id
+        if reply_to:
+            metadata["telegram_reply_to_message_id"] = reply_to
+    if getattr(source, "delivered_via_upstream_relay", False) is True:
+        metadata["_relay_logical_platform"] = platform_name
+        if scope_id:
+            metadata["scope_id"] = scope_id
+        user_id = _source_identity_value(source, "user_id")
+        if user_id:
+            metadata["user_id"] = user_id
+    send_kwargs: dict[str, Any] = {
+        "chat_id": str(source.chat_id),
+        "content": content,
+        "reply_to": reply_to,
+        "metadata": metadata or None,
+    }
+    result = await adapter.send(**send_kwargs)
+    return not (result is not None and getattr(result, "success", True) is False)
+
+
+async def _report_unreserved_command(gateway: Any, event: Any, issue_ref: str) -> None:
+    await _send_source_message(
+        gateway,
+        event,
+        f"{issue_ref} komutu stable source message ID veya durable Linear routing state "
+        "bulunmadığı için alınamadı; "
+        "kanonik Linear routing başlatılmadı ve kaynak kanalda çalıştırılmadı.",
+    )
+
+
+def _pre_gateway_dispatch(*, event: Any, gateway: Any, **_kwargs: Any) -> dict[str, str] | None:
+    parsed = _parse_channel_command(str(getattr(event, "text", None) or ""))
+    if parsed is None or _platform_name(event.source) == "linear":
+        return None
+    try:
+        if not gateway._is_user_authorized(event.source):
+            return None
+    except Exception:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    issue_ref, command = parsed
+    source = event.source
+    linear_adapter = _linear_adapter_for_gateway(gateway, source)
+    message_id = str(getattr(event, "message_id", None) or "")
+    reserve = getattr(linear_adapter, "reserve_channel_route", None)
+    if not message_id or not callable(reserve):
+        loop.create_task(_report_unreserved_command(gateway, event, issue_ref))
+        return {"action": "skip", "reason": "linear_canonical_route_unavailable"}
+    platform = _platform_name(source)
+    chat_id = str(getattr(source, "chat_id", None) or "")
+    thread_id = str(getattr(source, "thread_id", None) or "")
+    profile = _source_profile(source)
+    via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+    scope_id = _source_identity_value(source, "scope_id")
+    user_id = _source_identity_value(source, "user_id")
+    operation_key = _source_operation_key(
+        platform,
+        chat_id,
+        thread_id,
+        message_id,
+        profile,
+        "relay" if via_relay else "native",
+        scope_id,
+        user_id,
+    )
+    try:
+        reserve(
+            operation_key=operation_key,
+            source_platform=platform,
+            source_chat_id=chat_id,
+            source_thread_id=thread_id,
+            source_message_id=message_id,
+            source_user_id=user_id,
+            source_user_name=str(getattr(source, "user_name", None) or ""),
+            source_chat_type=str(getattr(source, "chat_type", None) or "dm"),
+            source_profile=profile,
+            source_scope_id=scope_id,
+            source_via_relay=via_relay,
+            issue_ref=issue_ref,
+            command_text=command,
+        )
+    except Exception:
+        logger.exception("[linear] Could not durably reserve cross-channel command")
+        loop.create_task(_report_unreserved_command(gateway, event, issue_ref))
+        return {"action": "skip", "reason": "linear_canonical_route_unavailable"}
+    return {"action": "skip", "reason": "linear_canonical_route"}
 
 
 def _apply_yaml_config(_yaml_cfg: dict, linear_cfg: dict) -> None:
@@ -113,4 +313,7 @@ def register(ctx) -> None:
             "Telegram delivery. Do not emit local MEDIA paths; use durable links when files matter."
         ),
     )
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     register_outbound_tools(ctx)
