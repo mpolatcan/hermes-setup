@@ -430,6 +430,19 @@ class FakeGraphQL:
             return self.plan_contexts[0]
         return self.plan_contexts.pop(0)
 
+    async def create_activity(self, agent_session_id, activity_type, body, *, activity_id, ephemeral=False):
+        self.created_activities = getattr(self, "created_activities", [])
+        self.created_activities.append(
+            {
+                "agent_session_id": agent_session_id,
+                "activity_type": activity_type,
+                "body": body,
+                "activity_id": activity_id,
+                "ephemeral": ephemeral,
+            }
+        )
+        return activity_id
+
 
 class FakeMCP:
     def __init__(self, *, explicit_failure=False) -> None:
@@ -1779,6 +1792,47 @@ payload
             {"error": "linear_policy_denied", "reason": "child_session_still_open"},
         )
         self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_complete_child_closes_stale_creator_parked_session_then_succeeds(self):
+        context = self.child_terminal_context()
+        after = {**context, "state": {"id": "done-1", "type": "completed"}}
+        result, mcp = await self.run_child_terminal_action(
+            context=context,
+            operation_key="op-complete-stale-parked-session",
+            agent_sessions=[{
+                "id": "session-1",
+                "status": "active",
+                "app_user_id": "actor-1",
+            }],
+            agent_session_reads=[
+                [{
+                    "id": "session-1",
+                    "status": "active",
+                    "app_user_id": "actor-1",
+                }],
+                [],
+                [{
+                    "id": "session-1",
+                    "status": "active",
+                    "app_user_id": "actor-1",
+                }],
+                [],
+                [{
+                    "id": "session-1",
+                    "status": "active",
+                    "app_user_id": "actor-1",
+                }],
+                [],
+            ],
+            after_context=after,
+        )
+        self.assertIn("status", result, f"unexpected result: {result}")
+        self.assertEqual(result["status"], "success")
+        calls = [call for call in mcp.calls if call[0] == "save_issue"]
+        self.assertEqual(
+            calls,
+            [("save_issue", {"id": "OPS-106", "state": "done-1"}, True)],
+        )
 
     async def test_complete_child_denies_open_blocker(self):
         context = self.child_terminal_context()

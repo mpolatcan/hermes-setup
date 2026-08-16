@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import hashlib
+import hmac
 import html
 import json
 import os
 import re
 import stat
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -386,6 +389,70 @@ def _evaluate_child_terminal_context(
     }, None
 
 
+def _deterministic_activity_uuid(item_key: str) -> str:
+    """Derive a UUIDv4-shaped activity id from a stable key.
+
+    Linear accepts client-generated activity IDs but its live validator
+    requires UUIDv4-shaped values. Derive bytes from the stable item key,
+    then set RFC 4122 version/variant bits to v4 (same contract as the
+    adapter's `_activity_uuid`).
+    """
+    digest = hashlib.sha256(f"linear-hermes:{item_key}".encode()).digest()[:16]
+    return str(uuid.UUID(bytes=digest, version=4))
+
+
+async def _release_parked_creator_session(
+    issue_id: str,
+    *,
+    context: dict[str, Any],
+    actor_id: str,
+    sessions: list[dict[str, str]],
+    graphql_client: LinearClient,
+) -> list[dict[str, str]]:
+    """Close stale native sessions blocking a creator-owned child transition.
+
+    The inbound ``created`` handler parks a Backlog issue whose assignee is a
+    planned human owner and whose delegate is the installed app. A coordinator
+    child matches that shape (human assignee + agent delegate), so a stale
+    native AgentSession can remain ``pending/active/awaitingInput`` even though
+    the creator-agent drives the child through MCP lifecycle actions. That
+    open session blocks terminal transitions (``child_session_still_open``).
+
+    For a child whose creator is the acting agent, send a closing ``response``
+    activity into each such stale session (Linear then completes the session)
+    and return the refreshed session list for guard re-evaluation.
+    """
+    creator_id = str((context.get("creator") or {}).get("id") or "")
+    if not creator_id or not hmac.compare_digest(creator_id, actor_id):
+        return sessions
+    stale = [
+        session
+        for session in sessions
+        if str(session.get("app_user_id") or "") == actor_id
+        and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+    ]
+    if not stale:
+        return sessions
+    item_key = f"parked-release:{issue_id}:{creator_id}"
+    for session in stale:
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            continue
+        activity_id = _deterministic_activity_uuid(f"{item_key}:{session_id}")
+        try:
+            await graphql_client.create_activity(
+                session_id,
+                "response",
+                "Creator-agent completed this child through the MCP lifecycle; stale planned-activation session closed.",
+                activity_id=activity_id,
+            )
+        except Exception:
+            # Best effort: a failed close must not silently pass the guard,
+            # so keep the session visible and let the caller fail closed.
+            continue
+    return await graphql_client.get_issue_agent_sessions(issue_id)
+
+
 async def _resolve_child_terminal_transition(
     issue_id: str,
     *,
@@ -397,6 +464,13 @@ async def _resolve_child_terminal_transition(
 ) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
     context = await graphql_client.get_issue_child_terminal_context(issue_id)
     sessions = await graphql_client.get_issue_agent_sessions(issue_id)
+    sessions = await _release_parked_creator_session(
+        issue_id,
+        context=context,
+        actor_id=actor_id,
+        sessions=sessions,
+        graphql_client=graphql_client,
+    )
     delegate_id = str((context.get("delegate") or {}).get("id") or "")
     open_actor_session = any(
         str(session.get("app_user_id") or "") == actor_id
