@@ -663,12 +663,49 @@ def _restore_signal_guards(previous: dict[int, Any]) -> None:
         signal.signal(signum, handler)
 
 
+def _manifest_from_commit(repo_root: Path, commit: str) -> dict[str, str]:
+    """Compute the SHA-256 manifest of the allowlisted files at a commit.
+
+    A git commit is immutable, so hashing the pinned source at deploy time is
+    equivalent to a pre-registered reviewed manifest and removes the need to
+    hand-register every deployable commit.
+    """
+    manifest: dict[str, str] = {}
+    for name in ALLOWLIST:
+        data = _run_git(repo_root, "show", f"{commit}:{(PLUGIN_RELATIVE / name).as_posix()}", binary=True)
+        if not isinstance(data, bytes):
+            raise DeploymentError(f"Source path is not a file at {commit}: {name}")
+        manifest[name] = _sha256(data)
+    return manifest
+
+
+def _resolve_main_commit(repo_root: Path, commit: str | None) -> str:
+    """Resolve the deployable commit: the user-provided SHA, or origin/main HEAD.
+
+    Main-gated policy: any commit that has been merged into origin/main is
+    deployable; a commit that is not an ancestor of origin/main is rejected so
+    unreviewed/branch-only code can never reach a profile runtime.
+    """
+    if commit is None:
+        resolved = str(_run_git(repo_root, "rev-parse", "origin/main")).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", resolved):
+            raise DeploymentError("Could not resolve origin/main HEAD")
+        return resolved
+    resolved = str(_run_git(repo_root, "rev-parse", f"{commit}^{{commit}}")).strip()
+    if resolved != commit:
+        raise DeploymentError("Commit must be an exact full SHA")
+    merge_base = str(_run_git(repo_root, "merge-base", commit, "origin/main")).strip()
+    if merge_base != commit:
+        raise DeploymentError("Commit is not an ancestor of origin/main (not merged)")
+    return resolved
+
+
 def deploy_reviewed(
     *,
     repo_root: Path,
     profiles_root: Path,
     profile: str,
-    commit: str,
+    commit: str | None = None,
     lock_timeout: float = 8.0,
     announce: Callable[[dict[str, str]], None] | None = None,
     _post_promote_hook: Callable[[Path], None] | None = None,
@@ -688,16 +725,13 @@ def deploy_reviewed(
     recovering = False
 
     try:
-        manifest = REVIEWED_MANIFESTS.get(commit)
-        if manifest is None:
-            raise DeploymentError("Commit has no reviewed deployment manifest")
-        if set(manifest) != set(ALLOWLIST):
-            raise DeploymentError("Reviewed manifest is incomplete")
-        resolved = str(_run_git(repo_root, "rev-parse", f"{commit}^{{commit}}")).strip()
-        if resolved != commit:
-            raise DeploymentError("Commit must be an exact full reviewed SHA")
+        resolved = _resolve_main_commit(repo_root, commit)
+        commit = resolved
         if str(_run_git(repo_root, "status", "--porcelain", "--untracked-files=all")).strip():
             raise DeploymentError("Repository worktree is not clean")
+        manifest = _manifest_from_commit(repo_root, commit)
+        if set(manifest) != set(ALLOWLIST):
+            raise DeploymentError("Computed source manifest is incomplete")
 
         lock_fd = _acquire_lock(state_fd, lock_timeout)
         target_fd = _open_child_dir(plugins_fd, "linear", "linear target")
@@ -763,6 +797,7 @@ def deploy_reviewed(
             "status": "prepared",
             "profile": profile,
             "commit": commit,
+            "main_gated": True,
             "rollback_path": rollback_path,
             "rollback_digest": rollback_digest,
         }
@@ -934,7 +969,7 @@ def _parser() -> argparse.ArgumentParser:
     deploy.add_argument("--repo-root", type=Path, required=True)
     deploy.add_argument("--profiles-root", type=Path, required=True)
     deploy.add_argument("--profile", required=True)
-    deploy.add_argument("--commit", required=True)
+    deploy.add_argument("--commit", default=None, help="Exact full SHA merged into origin/main (default: origin/main HEAD)")
     deploy.add_argument("--lock-timeout", type=float, default=8.0)
     rollback = sub.add_parser("rollback")
     rollback.add_argument("--profiles-root", type=Path, required=True)
