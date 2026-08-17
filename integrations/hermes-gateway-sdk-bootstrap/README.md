@@ -120,7 +120,7 @@ The installer requires the signed, notarized Python.org 3.13 runtime at `/Librar
 Production is strict across all nine profiles:
 
 - `secrets.onepassword.enabled: false` in every profile.
-- `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the active managed Hermes release. Production currently reports Hermes Agent `v0.20.2` on Python `3.13.15`; this is a live acceptance fact, not a hard-coded launcher dependency.
+- `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the active managed Hermes release. Production currently reports Hermes Agent `v0.20.3` (`2026.8.16.2`) on Python `3.13.15`; this is a live acceptance fact, not a hard-coded launcher dependency.
 - The production launcher carries no `--legacy-hermes` argument. An accidental re-enable therefore fails closed.
 - `~/.hermes/scripts/hermes-send-keychain.sh` re-execs itself with a clean environment before Keychain lookup, then uses the same resolution boundary for the narrow Telegram-home `hermes send` command used by maintenance notifications. The bootstrap token is removed before Hermes executes.
 - `~/.hermes/scripts/hermes-serve-keychain.sh` does the same for a general-only, argument-free `hermes serve --isolated --host 127.0.0.1 --port 9120` backend used by Hermes Desktop remote-backend mode.

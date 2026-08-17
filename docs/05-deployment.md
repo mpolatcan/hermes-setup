@@ -83,7 +83,7 @@ All state will live under `~/.hermes/`.
 
 ```bash
 hermes profile create researcher
-hermes -p researcher setup        # re-verified v0.20.2: global -p/--profile flag
+hermes -p researcher setup        # re-verified v0.20.3: global -p/--profile flag
                                 # (or use the wrapper: `researcher setup`)
 ```
 
@@ -107,7 +107,7 @@ do not flatten disagreement. Concise by default; expand only when asked.
 **Step 1.4: Run the gateway**
 
 ```bash
-hermes -p researcher gateway run   # foreground; re-verified v0.20.2
+hermes -p researcher gateway run   # foreground; re-verified v0.20.3
 ```
 
 Confirm it connects and responds to a Telegram message. Once it works in the foreground, install the built-in launchd service so it survives logout/reboot: `hermes -p researcher gateway install` (Section 7).

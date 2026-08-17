@@ -85,7 +85,7 @@ command -v hermes && hermes --version
 curl -fsS http://127.0.0.1:9119/ >/dev/null
 ```
 
-The current accepted core is official Hermes Agent `v0.20.2` (`2026.8.16`) on Python `3.13.15`. Its checkout matches `NousResearch/hermes-agent` `origin/main` with zero local commits and zero behavioral source diff. Local capabilities belong in profile plugins/config, not updater-managed release directories.
+The current accepted core is official Hermes Agent `v0.20.3` (`2026.8.16.2`) on Python `3.13.15`. Its active managed release matches `NousResearch/hermes-agent` `origin/main` with zero local commits and zero behavioral source diff. Local capabilities belong in profile plugins/config, not updater-managed release directories.
 
 ### Preserve the 07:00 Telegram session boundary
 
