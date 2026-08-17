@@ -5351,6 +5351,30 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(self.adapter._linear.activity_ephemeral[-1])
 
+    async def test_known_runtime_stream_heartbeat_is_ephemeral_nonterminal_thought(self):
+        body = "⏳ Working — 6 min — iteration 33/90, receiving stream response"
+
+        result = await self.adapter.send("session-runtime-heartbeat", body)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-runtime-heartbeat", "thought", body),
+        )
+        self.assertTrue(self.adapter._linear.activity_ephemeral[-1])
+
+    async def test_near_match_runtime_stream_heartbeat_remains_final_response(self):
+        body = "⏳ Working — 6 min — iteration 33/90, receiving final response"
+
+        result = await self.adapter.send("session-runtime-heartbeat-near", body)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-runtime-heartbeat-near", "response", body),
+        )
+        self.assertFalse(self.adapter._linear.activity_ephemeral[-1])
+
     async def test_long_running_heartbeat_replay_is_idempotent(self):
         body = "⏳ Working — 3 min — iteration 7/90, linear_list_issues"
 

@@ -62,7 +62,8 @@ _DATA_EVENT_TYPES = _CONTROL_EVENT_TYPES | _CONTEXT_EVENT_TYPES
 _LINEAR_HOME_CHANNEL_NOTICE_PREFIX = "📬 No home channel is set for Linear."
 _LINEAR_LONG_RUNNING_HEARTBEAT_RE = re.compile(
     r"^⏳ Working — [0-9]+ min(?: — (?:"
-    r"iteration [0-9]+/[1-9][0-9]*(?:, [A-Za-z][A-Za-z0-9_.:-]{0,127})?"
+    r"iteration [0-9]+/[1-9][0-9]*(?:, (?:"
+    r"[A-Za-z][A-Za-z0-9_.:-]{0,127}|receiving stream response))?"
     r"|[A-Za-z][A-Za-z0-9_.:-]{0,127}))?$"
 )
 _OPEN_AGENT_SESSION_STATUSES = frozenset({"pending", "active", "awaitingInput"})
@@ -672,7 +673,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.11",
+                "version": "0.8.12",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
