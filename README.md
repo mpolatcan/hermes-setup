@@ -2,7 +2,7 @@
 
 A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots and Linear Agent Sessions as the human interfaces, self-hosted Honcho for conversational memory, Notion for durable knowledge/reporting, and 1Password as the canonical static-credential plane. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
 
-**Status: fully deployed — 9/9 agents live** under launchd on the Mini. The fleet runs official upstream-clean Hermes Agent `v0.20.2`; Linear is a reviewed profile-local plugin (`0.8.10` active on `general`; reviewed `0.8.11` staged pending restart and fleet parity), while Honcho local authentication is config-only and keeps scoped JWTs in process memory.
+**Status: fully deployed — 9/9 agents live** under launchd on the Mini. The fleet runs official upstream-clean Hermes Agent `v0.20.2`; Linear is a reviewed profile-local plugin (`0.8.11` active and behavior-accepted on all nine profiles), while Honcho local authentication is config-only and keeps scoped JWTs in process memory.
 
 The fleet is **not** game-studio-only. It's a **general-purpose personal assistant layer** (works for your whole life) **plus** a **game-studio pipeline** layered on top. The studio names are flavor; the capabilities underneath are general.
 
