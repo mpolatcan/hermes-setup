@@ -2949,6 +2949,51 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "session-manager-canceled-fresh-mention",
         )
 
+    async def test_completed_manager_session_does_not_poison_fresh_human_mention_session(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-completed-fresh-mention"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-completed", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(
+            issue_id,
+            "session_started",
+            session_id="session-manager-completed-old",
+        )
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [],
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        created = self.make_payload(
+            webhookId="webhook-manager-completed-fresh-mention",
+            actor={"id": "user-1", "name": "Mutlu"},
+            agentSession={
+                "id": "session-manager-completed-fresh-mention",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-210",
+                    "title": "Fresh mention after completed manager session",
+                },
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(
+            self.adapter._ledger.get_issue_session(issue_id),
+            "session-manager-completed-fresh-mention",
+        )
+
     async def test_manager_dispatch_failure_leaves_ambiguity_and_degrades_without_replay(self):
         self.adapter._running = True
         self.adapter._planned_activation_enabled = True

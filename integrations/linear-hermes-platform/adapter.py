@@ -667,7 +667,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.8",
+                "version": "0.8.9",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -771,11 +771,20 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             manager_activation_state = str(
                 (manager_activation or {}).get("state") or ""
             )
+            manager_activation_session_id = str(
+                (manager_activation or {}).get("session_id") or ""
+            )
             if (
                 action == "created"
                 and issue_id
                 and manager_activation is not None
                 and manager_activation_state != "canceled"
+                and (
+                    manager_activation_state != "session_started"
+                    or hmac.compare_digest(
+                        manager_activation_session_id, agent_session_id
+                    )
+                )
             ):
                 return await self._handle_manager_session_created(
                     payload,
