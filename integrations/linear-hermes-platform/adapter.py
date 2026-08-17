@@ -667,7 +667,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.9",
+                "version": "0.8.10",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1132,7 +1132,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         *,
         _issue_locked: bool = False,
     ) -> str | None:
-        """Resume one parked Planned session after authoritative Backlog→Todo."""
+        """Resume one parked Planned session after verified Todo activation."""
         if (
             not self._planned_activation_enabled
             or not self._activation_allowed_team_ids
@@ -1185,6 +1185,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             ),
             None,
         )
+        previous_state_type = str(
+            previous_live.get("type") if isinstance(previous_live, dict) else ""
+        ).casefold()
+        standard_activation = previous_state_type == "backlog"
+        parked_recovery = bool(
+            wait is not None
+            and wait.get("state") == "waiting"
+            and previous_state_type == "started"
+            and event_state_type == "unstarted"
+        )
+        # Recovery is narrower than ordinary activation: the existing durable
+        # wait is the fence and only a human started→Todo transition may use it.
+        # Manager activations without a wait must still originate from Backlog.
         authoritative = bool(
             team_id in self._activation_allowed_team_ids
             and assignee_id in self._planned_owner_ids
@@ -1195,7 +1208,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             and live_updated_at
             and hmac.compare_digest(live_updated_at, event_updated_at)
             and previous_live
-            and str(previous_live.get("type") or "").casefold() == "backlog"
+            and (standard_activation or parked_recovery)
         )
         if not authoritative:
             return "activation_rejected"

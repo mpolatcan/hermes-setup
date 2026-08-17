@@ -3200,6 +3200,156 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(second.text)["status"], "duplicate")
         self.assertEqual(len(self.events), 1)
 
+    async def test_parked_session_recovers_from_started_to_todo_transition(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-planned-started-recovery"
+        created = self.make_payload(
+            webhookId="webhook-started-recovery-created",
+            agentSession={
+                "id": "session-started-recovery",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-212",
+                    "title": "Recover parked work",
+                },
+            },
+        )
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-17T16:00:00.000Z",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+
+        waiting = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(waiting.text)["status"], "waiting_for_activation")
+        context.update(
+            {
+                "updated_at": "2026-08-17T16:02:00.000Z",
+                "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            }
+        )
+        recovery = self.make_data_payload(
+            webhookId="webhook-started-recovery-todo",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(recovery))
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_resumed")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"], "resumed"
+        )
+
+    async def test_parked_session_rejects_started_to_started_recovery(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-planned-started-to-started"
+        created = self.make_payload(
+            webhookId="webhook-started-to-started-created",
+            agentSession={
+                "id": "session-started-to-started",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-213",
+                    "title": "Reject invalid recovery",
+                },
+            },
+        )
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-17T16:04:00.000Z",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        await self.adapter._handle_webhook(self.request_for(created))
+        context.update(
+            {
+                "updated_at": "2026-08-17T16:05:00.000Z",
+                "state": {
+                    "id": "started-1",
+                    "name": "In Progress",
+                    "type": "started",
+                },
+            }
+        )
+        invalid_recovery = self.make_data_payload(
+            webhookId="webhook-started-to-started-update",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(
+            self.request_for(invalid_recovery)
+        )
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_rejected")
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_activation_wait(issue_id)["state"], "waiting"
+        )
+
+    async def test_started_to_todo_without_parked_wait_remains_rejected(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-unparked-started-transition"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-17T16:03:00.000Z",
+            "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+            ],
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        transition = self.make_data_payload(
+            webhookId="webhook-unparked-started-transition",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-17T16:03:00.000Z",
+                "state": {"id": "todo-1", "type": "unstarted"},
+            },
+            updatedFrom={"stateId": "started-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(transition))
+
+        self.assertEqual(json.loads(response.text)["status"], "activation_rejected")
+        self.assertEqual(self.events, [])
+
     async def test_backlog_parking_rejects_non_planned_owner(self):
         self.adapter._planned_activation_enabled = True
         self.adapter._activation_allowed_team_ids = {"team-ops"}
