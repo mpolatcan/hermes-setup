@@ -5339,6 +5339,60 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "Linear AgentActivities cannot edit streaming previews in place",
         )
 
+    async def test_long_running_heartbeat_is_ephemeral_nonterminal_thought(self):
+        body = "⏳ Working — 3 min — iteration 7/90, linear_list_issues"
+
+        result = await self.adapter.send("session-heartbeat", body)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-heartbeat", "thought", body),
+        )
+        self.assertTrue(self.adapter._linear.activity_ephemeral[-1])
+
+    async def test_long_running_heartbeat_replay_is_idempotent(self):
+        body = "⏳ Working — 3 min — iteration 7/90, linear_list_issues"
+
+        first = await self.adapter.send("session-heartbeat-replay", body)
+        second = await self.adapter.send("session-heartbeat-replay", body)
+
+        self.assertTrue(first.success)
+        self.assertTrue(second.success)
+        self.assertEqual(first.message_id, second.message_id)
+        calls = [
+            call
+            for call in self.adapter._linear.calls
+            if call[0] == "session-heartbeat-replay"
+        ]
+        self.assertEqual(calls, [("session-heartbeat-replay", "thought", body)])
+
+    async def test_near_match_long_running_text_remains_final_response(self):
+        body = "⏳ Working — 3 min — Here is the final report"
+
+        result = await self.adapter.send("session-heartbeat-near-match", body)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            self.adapter._linear.calls[-1],
+            ("session-heartbeat-near-match", "response", body),
+        )
+        self.assertFalse(self.adapter._linear.activity_ephemeral[-1])
+
+    async def test_noncanonical_heartbeat_shapes_remain_final_responses(self):
+        bodies = (
+            " ⏳ Working — 3 min",
+            "⏳ working — 3 min",
+            "⏳ Working — ٠٣ min",
+            "⏳\nWorking — 3 min",
+        )
+
+        for index, body in enumerate(bodies):
+            result = await self.adapter.send(f"session-heartbeat-shape-{index}", body)
+            self.assertTrue(result.success)
+            self.assertEqual(self.adapter._linear.calls[-1][1], "response")
+            self.assertFalse(self.adapter._linear.activity_ephemeral[-1])
+
     async def test_home_channel_notice_is_nonterminal_thought(self):
         body = (
             "📬 No home channel is set for Linear. "

@@ -60,6 +60,11 @@ _CONTEXT_EVENT_TYPES = {
 }
 _DATA_EVENT_TYPES = _CONTROL_EVENT_TYPES | _CONTEXT_EVENT_TYPES
 _LINEAR_HOME_CHANNEL_NOTICE_PREFIX = "📬 No home channel is set for Linear."
+_LINEAR_LONG_RUNNING_HEARTBEAT_RE = re.compile(
+    r"^⏳ Working — [0-9]+ min(?: — (?:"
+    r"iteration [0-9]+/[1-9][0-9]*(?:, [A-Za-z][A-Za-z0-9_.:-]{0,127})?"
+    r"|[A-Za-z][A-Za-z0-9_.:-]{0,127}))?$"
+)
 _OPEN_AGENT_SESSION_STATUSES = frozenset({"pending", "active", "awaitingInput"})
 _CHANNEL_ROUTE_BATCH_SIZE = 10
 _CHANNEL_ROUTE_MAX_ATTEMPTS = 5
@@ -667,7 +672,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.10",
+                "version": "0.8.11",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -2388,6 +2393,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             transient_progress = bool(
                 isinstance(metadata, dict) and metadata.get("transient_progress") is True
             )
+            long_running_heartbeat = bool(
+                _LINEAR_LONG_RUNNING_HEARTBEAT_RE.fullmatch(content)
+            )
+            nonterminal_progress = transient_progress or long_running_heartbeat
             transient_progress_key = ""
             if transient_progress:
                 transient_progress_key = str(
@@ -2399,21 +2408,24 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         retryable=False,
                     )
             activity_type = "thought" if (
-                transient_progress
+                nonterminal_progress
                 or content.startswith(_LINEAR_HOME_CHANNEL_NOTICE_PREFIX)
             ) else "response"
             item_key = None
             if transient_progress:
                 digest = hashlib.sha256(content.encode()).hexdigest()[:24]
                 item_key = f"progress:{chat_id}:{transient_progress_key}:{digest}"
+            elif long_running_heartbeat:
+                digest = hashlib.sha256(content.encode()).hexdigest()[:24]
+                item_key = f"heartbeat:{chat_id}:{digest}"
             activity_id = self._enqueue_activity(
                 chat_id,
                 activity_type,
                 content,
                 item_key=item_key,
-                ephemeral=transient_progress,
+                ephemeral=nonterminal_progress,
             )
-            if transient_progress and item_key is not None:
+            if nonterminal_progress and item_key is not None:
                 item = self._ledger.get_outbox_item(f"activity:{item_key}")
                 if item is None:
                     raise LinearAPIError(
@@ -2426,7 +2438,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         retryable=False,
                     )
             await self._drain_outbox_once()
-            if transient_progress and item_key is not None:
+            if nonterminal_progress and item_key is not None:
                 item = self._ledger.get_outbox_item(f"activity:{item_key}")
                 if item is not None and item["state"] == "dead":
                     raise LinearAPIError(
