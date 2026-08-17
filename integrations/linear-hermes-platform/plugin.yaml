@@ -1,5 +1,5 @@
 name: linear
-version: 0.8.7
-description: Native Linear Agent Sessions, ephemeral progress, closure reconciliation, and policy-gated MCP tools
+version: 0.8.8
+description: Native Linear Agent Sessions, tool-driven ephemeral progress, closure reconciliation, and policy-gated MCP tools
 kind: platform
 author: Polatcan Studio

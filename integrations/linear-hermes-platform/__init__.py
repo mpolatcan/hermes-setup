@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import weakref
 from typing import Any
 
 
@@ -14,6 +15,8 @@ LINEAR_HOME_CHANNEL_ENV = "LINEAR_HOME_CHANNEL"
 logger = logging.getLogger(__name__)
 _yaml_home_channel_owned = False
 _yaml_home_channel_value: str | None = None
+_progress_adapters: weakref.WeakSet[Any] = weakref.WeakSet()
+_progress_seen: dict[tuple[str, str, str, str], None] = {}
 _CHANNEL_COMMAND_RE = re.compile(
     r"^\s*(?:https://linear\.app/[^/\s]+/issue/)?"
     r"(?P<issue>[A-Z][A-Z0-9]*-\d+)"
@@ -290,6 +293,79 @@ async def _standalone_send(
                 logger.warning("[linear] Standalone adapter cleanup failed")
 
 
+def _linear_adapter_factory(config: Any) -> Any:
+    from .adapter import LinearPlatformAdapter
+
+    adapter = LinearPlatformAdapter.from_config(config)
+    _progress_adapters.add(adapter)
+    return adapter
+
+
+def _progress_adapter(profile: str = "") -> Any | None:
+    """Return the profile-matching live adapter, failing closed on ambiguity."""
+    candidates = list(_progress_adapters)
+    for adapter in candidates:
+        runner = getattr(adapter, "gateway_runner", None)
+        resolver = getattr(runner, "_authorization_adapter", None)
+        platform = getattr(adapter, "platform", None)
+        if callable(resolver) and platform is not None:
+            try:
+                resolved = resolver(platform, profile or None)
+                if resolved is not None:
+                    return resolved
+            except Exception:
+                logger.warning("[linear] Tool progress adapter resolution failed", exc_info=True)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _tool_progress_label(tool_name: str) -> str:
+    """Map only the trusted tool name; arguments/results are never rendered."""
+    name = str(tool_name or "").strip().lower()
+    if name in {"terminal", "execute_code", "process"}:
+        return "Sistem kontrolü yürütülüyor"
+    if name in {"read_file", "search_files", "web_extract", "web_search"}:
+        return "Kaynaklar inceleniyor"
+    if name in {"patch", "write_file"}:
+        return "Değişiklik uygulanıyor"
+    return "İşlem yürütülüyor"
+
+
+def _pre_tool_progress(**kwargs: Any) -> None:
+    """Publish one secret-safe ephemeral thought when a Linear tool starts."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = str(
+            kwargs.get("platform")
+            or get_session_env("HERMES_SESSION_PLATFORM", "")
+        ).strip().lower()
+        if platform != "linear":
+            return None
+        chat_id = str(get_session_env("HERMES_SESSION_CHAT_ID", "")).strip()
+        profile = str(get_session_env("HERMES_SESSION_PROFILE", "")).strip()
+        turn_key = str(kwargs.get("turn_id") or kwargs.get("api_request_id") or "").strip()
+        adapter = _progress_adapter(profile)
+        if not chat_id or not turn_key or adapter is None:
+            return None
+    except (ImportError, RuntimeError):
+        return None
+
+    label = _tool_progress_label(str(kwargs.get("tool_name") or ""))
+    dedupe_key = (profile, chat_id, turn_key, label)
+    if dedupe_key in _progress_seen:
+        return None
+
+    try:
+        adapter.schedule_tool_progress(chat_id, label, turn_key=turn_key)
+    except RuntimeError:
+        logger.warning("[linear] Tool progress scheduling failed", exc_info=True)
+        return None
+    _progress_seen[dedupe_key] = None
+    while len(_progress_seen) > 256:
+        _progress_seen.pop(next(iter(_progress_seen)))
+    return None
+
+
 def register(ctx) -> None:
     from .adapter import LinearPlatformAdapter
     from .linear_tools import register_outbound_tools
@@ -297,7 +373,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="linear",
         label="Linear",
-        adapter_factory=LinearPlatformAdapter.from_config,
+        adapter_factory=_linear_adapter_factory,
         check_fn=LinearPlatformAdapter.check_requirements,
         validate_config=LinearPlatformAdapter.validate_config,
         apply_yaml_config_fn=_apply_yaml_config,
@@ -316,4 +392,5 @@ def register(ctx) -> None:
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
+        register_hook("pre_tool_call", _pre_tool_progress)
     register_outbound_tools(ctx)

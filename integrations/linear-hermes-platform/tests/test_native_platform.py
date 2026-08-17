@@ -110,7 +110,7 @@ class FakeLinear:
 
 
 class PluginRegistrationTests(unittest.TestCase):
-    def test_registers_channel_router_hook(self):
+    def test_registers_gateway_and_tool_progress_hooks(self):
         class FakeContext:
             def __init__(self):
                 self.hooks = {}
@@ -126,6 +126,8 @@ class PluginRegistrationTests(unittest.TestCase):
             package.register(context)
 
         self.assertIs(context.hooks["pre_gateway_dispatch"], package._pre_gateway_dispatch)
+        self.assertIs(context.hooks["pre_tool_call"], package._pre_tool_progress)
+
 
     def test_channel_command_parser_requires_explicit_leading_issue_command(self):
         self.assertEqual(
@@ -171,6 +173,7 @@ class PluginRegistrationTests(unittest.TestCase):
         }
         self.assertNotIn(baseline, variants)
         self.assertEqual(len(variants), 4)
+
 
     def test_channel_router_claim_is_restart_durable(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1363,6 +1366,125 @@ class PluginRegistrationTests(unittest.TestCase):
         )
 
 
+class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        package._progress_seen.clear()
+
+    async def test_tool_start_schedules_secret_safe_ephemeral_linear_thought(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "hermes-session-1",
+        }
+
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            result = package._pre_tool_progress(
+                tool_name="terminal",
+                args={"command": "sensitive-command-value"},
+                turn_id="turn-1",
+                tool_call_id="tool-1",
+            )
+
+        self.assertIsNone(result)
+        adapter.schedule_tool_progress.assert_called_once_with(
+            "agent-session-1",
+            "Sistem kontrolü yürütülüyor",
+            turn_key="turn-1",
+        )
+        self.assertNotIn(
+            "sensitive-command-value", adapter.schedule_tool_progress.call_args.args[1]
+        )
+
+    async def test_repeated_same_category_is_deduplicated_for_entire_turn(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(tool_name="read_file", turn_id="turn-1")
+            package._pre_tool_progress(tool_name="search_files", turn_id="turn-1")
+
+        adapter.schedule_tool_progress.assert_called_once()
+
+    async def test_non_linear_context_never_sends_progress(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": {
+                     "HERMES_SESSION_PLATFORM": "telegram",
+                     "HERMES_SESSION_CHAT_ID": "chat-1",
+                     "HERMES_SESSION_PROFILE": "general",
+                 }.get(name, default),
+             ):
+            package._pre_tool_progress(tool_name="terminal", turn_id="turn-1")
+
+        adapter.schedule_tool_progress.assert_not_called()
+
+    async def test_missing_trusted_turn_key_never_sends_progress(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": {
+                     "HERMES_SESSION_PLATFORM": "linear",
+                     "HERMES_SESSION_CHAT_ID": "agent-session-1",
+                     "HERMES_SESSION_PROFILE": "general",
+                 }.get(name, default),
+             ):
+            package._pre_tool_progress(tool_name="terminal")
+
+        adapter.schedule_tool_progress.assert_not_called()
+
+    def test_adapter_resolution_uses_production_multiplex_resolver(self):
+        first = mock.Mock()
+        second = mock.Mock()
+        runner = mock.Mock()
+        runner._authorization_adapter.side_effect = lambda _platform, profile: (
+            second if profile == "researcher" else None
+        )
+        first.gateway_runner = runner
+        second.gateway_runner = runner
+        with mock.patch.object(package, "_progress_adapters", [first, second]):
+            self.assertIsNone(package._progress_adapter("general"))
+            self.assertIs(package._progress_adapter("researcher"), second)
+
+    async def test_scheduling_failure_is_fail_open_for_tool_and_not_deduplicated(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress.side_effect = RuntimeError("no loop")
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            self.assertIsNone(
+                package._pre_tool_progress(tool_name="terminal", turn_id="turn-1")
+            )
+
+        self.assertEqual(package._progress_seen, {})
+
+
 class LedgerTests(unittest.TestCase):
     def test_ledger_rejects_directory_accessible_to_group_or_others(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2304,6 +2426,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         db_path = str(Path(self.temp.name) / "ledger.sqlite3")
         config = PlatformConfig(enabled=True, extra={"database_path": db_path})
         self.adapter = LinearPlatformAdapter(config, Platform.WEBHOOK)
+        self.adapter._event_loop = asyncio.get_running_loop()
+        self.adapter._accepting_tool_progress = True
         self.adapter._signing_secrets = ("s" * 32, "p" * 32)
         self.adapter._linear = FakeLinear("org-1")
         self.adapter._ledger = DeliveryLedger(db_path)
@@ -2329,6 +2453,75 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         )
         response = await self.adapter._health(None)
         self.assertEqual(json.loads(response.text)["version"], manifest_version)
+
+    async def test_tool_progress_rejection_is_logged_and_task_is_released(self):
+        self.adapter.send = mock.AsyncMock(
+            return_value=mock.Mock(success=False, retryable=False, error="rejected")
+        )
+        with mock.patch.object(adapter_mod.logger, "warning") as warning:
+            self.adapter.schedule_tool_progress(
+                "agent-session-1", "Kaynaklar inceleniyor", turn_key="turn-1"
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        self.assertEqual(self.adapter._tool_progress_tasks, set())
+        warning.assert_called_once()
+
+    async def test_tool_progress_schedules_from_executor_thread_to_adapter_loop(self):
+        delivered = asyncio.Event()
+
+        async def successful_send(*_args, **_kwargs):
+            delivered.set()
+            return mock.Mock(success=True, retryable=False, error=None)
+
+        self.adapter.send = mock.AsyncMock(side_effect=successful_send)
+        await asyncio.to_thread(
+            self.adapter.schedule_tool_progress,
+            "agent-session-1",
+            "Kaynaklar inceleniyor",
+            turn_key="turn-1",
+        )
+        await asyncio.wait_for(delivered.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+
+        self.adapter.send.assert_awaited_once()
+        self.assertEqual(self.adapter._tool_progress_tasks, set())
+
+    async def test_disconnect_cancels_and_awaits_tool_progress_tasks(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def blocked_send(*_args, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        self.adapter.send = mock.AsyncMock(side_effect=blocked_send)
+        self.adapter.schedule_tool_progress(
+            "agent-session-1", "Kaynaklar inceleniyor", turn_key="turn-1"
+        )
+        await started.wait()
+        with mock.patch.object(self.adapter, "_cleanup", new=mock.AsyncMock()):
+            await self.adapter.disconnect()
+
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(self.adapter._tool_progress_tasks, set())
+
+    async def test_tool_progress_is_rejected_after_shutdown_gate_closes(self):
+        self.adapter._accepting_tool_progress = False
+
+        with self.assertRaisesRegex(RuntimeError, "event loop is unavailable"):
+            await asyncio.to_thread(
+                self.adapter.schedule_tool_progress,
+                "agent-session-1",
+                "Kaynaklar inceleniyor",
+                turn_key="turn-1",
+            )
+
+        self.assertEqual(self.adapter._tool_progress_tasks, set())
 
     async def asyncTearDown(self):
         pending = [task for tasks in self.adapter._ack_tasks.values() for task in tasks]

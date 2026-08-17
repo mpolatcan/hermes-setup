@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import datetime as dt
 import hashlib
 import hmac
@@ -10,6 +11,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from collections import deque
@@ -336,6 +338,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._ack_tasks: dict[str, set[asyncio.Task]] = {}
+        self._tool_progress_tasks: set[Any] = set()
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._accepting_tool_progress = False
         self._channel_route_task: asyncio.Task | None = None
         self._channel_route_notice_tasks: set[asyncio.Task] = set()
         self._channel_route_wakeup = asyncio.Event()
@@ -417,6 +422,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
 
     async def connect_outbound_only(self, *, startup_recovery: bool = False) -> bool:
         """Open the durable outbox and OAuth client without binding the webhook port."""
+        self._event_loop = asyncio.get_running_loop()
         self._last_connect_error = None
         try:
             if self._ledger is None:
@@ -445,6 +451,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
+        self._event_loop = asyncio.get_running_loop()
         try:
             credentials = _read_webhook_credentials(self.credential_env_file)
             current_secret = credentials.get("LINEAR_WEBHOOK_SECRET", "")
@@ -466,6 +473,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             self._site = web.TCPSite(self._runner, self.host, self.port)
             await self._site.start()
             self._running = True
+            self._accepting_tool_progress = True
             self._outbox_task = asyncio.create_task(self._outbox_loop())
             self._channel_route_task = asyncio.create_task(self._channel_route_loop())
             if self._dependency_wait_enabled:
@@ -485,6 +493,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
+        self._accepting_tool_progress = False
         self._running = False
         self._channel_route_wakeup.set()
         if self._channel_route_task is not None:
@@ -511,9 +520,92 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._ack_tasks.clear()
+        progress_task_set = getattr(self, "_tool_progress_tasks", None)
+        progress_tasks = list(progress_task_set or ())
+        for task in progress_tasks:
+            task.cancel()
+        if progress_tasks:
+            await asyncio.gather(*progress_tasks, return_exceptions=True)
+        if progress_task_set is not None:
+            progress_task_set.clear()
         await self._cleanup()
 
+    def schedule_tool_progress(
+        self, chat_id: str, content: str, *, turn_key: str
+    ) -> asyncio.Task:
+        """Own transient progress delivery inside the adapter lifecycle."""
+        loop = self._event_loop
+        if not self._accepting_tool_progress or loop is None or loop.is_closed():
+            raise RuntimeError("Linear adapter event loop is unavailable")
+
+        def done(completed: Any) -> None:
+            self._tool_progress_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                result = completed.result()
+            except Exception:
+                logger.warning("[linear] Tool progress activity failed", exc_info=True)
+                return
+            if not result.success:
+                logger.warning(
+                    "[linear] Tool progress activity rejected retryable=%s error=%s",
+                    result.retryable,
+                    result.error or "unknown",
+                )
+
+        def start() -> asyncio.Task:
+            if not self._accepting_tool_progress:
+                raise RuntimeError("Linear adapter is shutting down")
+            task = loop.create_task(
+                self.send(
+                    chat_id,
+                    content,
+                    metadata={
+                        "transient_progress": True,
+                        "transient_progress_key": turn_key,
+                    },
+                )
+            )
+            self._tool_progress_tasks.add(task)
+            task.add_done_callback(done)
+            return task
+
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            return start()
+
+        handshake: concurrent.futures.Future[asyncio.Task] = concurrent.futures.Future()
+        handshake_lock = threading.Lock()
+        handshake_timed_out = False
+
+        def start_from_loop() -> None:
+            nonlocal handshake_timed_out
+            with handshake_lock:
+                if handshake_timed_out:
+                    return
+                try:
+                    handshake.set_result(start())
+                except Exception as exc:
+                    handshake.set_exception(exc)
+
+        loop.call_soon_threadsafe(start_from_loop)
+        try:
+            return handshake.result(timeout=1.0)
+        except concurrent.futures.TimeoutError as exc:
+            with handshake_lock:
+                if handshake.done():
+                    return handshake.result()
+                handshake_timed_out = True
+            raise RuntimeError("Linear tool progress task could not be scheduled") from exc
+        except Exception as exc:
+            raise RuntimeError("Linear tool progress task could not be scheduled") from exc
+
     async def _cleanup(self) -> None:
+        self._accepting_tool_progress = False
         if self._channel_route_task is not None:
             self._channel_route_task.cancel()
             await asyncio.gather(self._channel_route_task, return_exceptions=True)
@@ -536,6 +628,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         if self._ledger is not None:
             self._ledger.close()
             self._ledger = None
+        self._event_loop = None
 
     async def _health(self, request: web.Request) -> web.Response:
         del request
@@ -574,7 +667,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.7",
+                "version": "0.8.8",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
