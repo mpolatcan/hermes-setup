@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import re
+import threading
 import weakref
 from typing import Any
 
@@ -17,7 +18,19 @@ logger = logging.getLogger(__name__)
 _yaml_home_channel_owned = False
 _yaml_home_channel_value: str | None = None
 _progress_adapters: weakref.WeakSet[Any] = weakref.WeakSet()
-_progress_seen: dict[tuple[str, str, str, str], None] = {}
+_progress_lock = threading.RLock()
+_progress_seen: dict[tuple[str, ...], None] = {}
+_progress_routes: dict[str, dict[str, Any]] = {}
+_pending_progress: list[tuple[str, str, str]] = []
+_PENDING_PROGRESS_LIMIT = 32
+_PROGRESS_ROUTE_LIMIT = 256
+_SEMANTIC_PROGRESS_PER_TURN = 3
+_SEMANTIC_PROGRESS_MAX_CHARS = 500
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?|password|secret|token)"
+    r'''\b\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)'''
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _CHANNEL_COMMAND_RE = re.compile(
     r"^\s*(?:https://linear\.app/[^/\s]+/issue/)?"
     r"(?P<issue>[A-Z][A-Z0-9]*-\d+)"
@@ -298,6 +311,7 @@ def _linear_adapter_factory(config: Any) -> Any:
     from .adapter import LinearPlatformAdapter
 
     adapter = LinearPlatformAdapter.from_config(config)
+    adapter._terminal_progress_callback = _fence_terminal_progress
     _progress_adapters.add(adapter)
     return adapter
 
@@ -331,6 +345,161 @@ def _tool_progress_label(tool_name: str) -> str:
     return "İşlem yürütülüyor"
 
 
+def _reset_progress_state_for_tests() -> None:
+    """Reset process-local observer state; production state is lifetime-bounded."""
+    with _progress_lock:
+        _progress_seen.clear()
+        _progress_routes.clear()
+        _pending_progress.clear()
+
+
+def _sanitize_interim_text(text: Any) -> str:
+    """Return bounded observer text with common credential forms removed."""
+    if not isinstance(text, str):
+        return ""
+    visible = " ".join(text.replace("\x00", " ").split()).strip()
+    if not visible:
+        return ""
+    visible = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", visible)
+    visible = _BEARER_RE.sub("Bearer [REDACTED]", visible)
+    from agent.redact import redact_sensitive_text
+
+    visible = redact_sensitive_text(
+        visible,
+        force=True,
+        redact_url_credentials=True,
+    )
+    if len(visible) > _SEMANTIC_PROGRESS_MAX_CHARS:
+        visible = visible[: _SEMANTIC_PROGRESS_MAX_CHARS - 1].rstrip() + "…"
+    return visible
+
+
+def _trim_progress_state_locked() -> None:
+    while len(_progress_routes) > _PROGRESS_ROUTE_LIMIT:
+        oldest_session_id = next(iter(_progress_routes))
+        _progress_routes.pop(oldest_session_id, None)
+        _pending_progress[:] = [
+            item for item in _pending_progress if item[0] != oldest_session_id
+        ]
+    while len(_progress_seen) > 512:
+        _progress_seen.pop(next(iter(_progress_seen)))
+
+
+def _bind_progress_route(
+    session_id: str,
+    profile: str,
+    chat_id: str,
+    turn_key: str,
+    *,
+    adapter: Any | None = None,
+) -> list[tuple[str, str, str]]:
+    """Bind a trusted main turn and take its hook-before-route messages."""
+    open_progress_turn = getattr(adapter, "open_progress_turn", None)
+    if callable(open_progress_turn):
+        open_progress_turn(chat_id, turn_key)
+    with _progress_lock:
+        prior = _progress_routes.get(session_id)
+        is_new_turn = prior is None or prior.get("turn_key") != turn_key
+        _progress_routes[session_id] = {
+            "profile": profile,
+            "chat_id": chat_id,
+            "turn_key": turn_key,
+            "adapter": adapter,
+            "fenced": False if is_new_turn else bool(prior.get("fenced")),
+            "semantic_count": 0 if is_new_turn else int(prior.get("semantic_count", 0)),
+        }
+        matching = [
+            item for item in _pending_progress
+            if item[0] == session_id and item[1] == turn_key
+        ]
+        _pending_progress[:] = [
+            item for item in _pending_progress if item[0] != session_id
+        ]
+        _trim_progress_state_locked()
+        return matching
+
+
+def _fence_terminal_progress(
+    chat_id: str, *, turn_key: str = "", adapter: Any | None = None
+) -> None:
+    """Fence every route for a durably accepted terminal Linear response."""
+    with _progress_lock:
+        for route in _progress_routes.values():
+            if route.get("chat_id") != chat_id:
+                continue
+            route_adapter = route.get("adapter")
+            if adapter is not None and route_adapter is not None and route_adapter is not adapter:
+                continue
+            if turn_key and route.get("turn_key") != turn_key:
+                continue
+            route["fenced"] = True
+
+
+def _schedule_semantic_progress(
+    session_id: str, turn_key: str, text: str
+) -> None:
+    digest = hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()
+    seen_key = ("semantic", session_id, turn_key, digest)
+    with _progress_lock:
+        route = _progress_routes.get(session_id)
+        if (
+            route is None
+            or route.get("turn_key") != turn_key
+            or route.get("fenced") is True
+            or seen_key in _progress_seen
+            or int(route.get("semantic_count", 0)) >= _SEMANTIC_PROGRESS_PER_TURN
+        ):
+            return
+        adapter = route.get("adapter") or _progress_adapter(str(route.get("profile") or ""))
+        if adapter is None:
+            return
+        route["semantic_count"] = int(route.get("semantic_count", 0)) + 1
+        _progress_seen[seen_key] = None
+        _trim_progress_state_locked()
+        chat_id = str(route.get("chat_id") or "")
+    try:
+        adapter.schedule_tool_progress(
+            chat_id,
+            text,
+            turn_key=turn_key,
+            progress_kind="semantic",
+        )
+    except RuntimeError:
+        with _progress_lock:
+            _progress_seen.pop(seen_key, None)
+            current = _progress_routes.get(session_id)
+            if current is route:
+                current["semantic_count"] = max(
+                    0, int(current.get("semantic_count", 0)) - 1
+                )
+        logger.warning("[linear] Semantic progress scheduling failed", exc_info=True)
+
+
+def _on_interim_message(
+    *,
+    text: Any = None,
+    session_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    **_kwargs: Any,
+) -> None:
+    """Observe provider-independent visible interim text, never tool payloads."""
+    normalized_session_id = str(session_id or "").strip()
+    turn_key = str(turn_id or api_request_id or "").strip()
+    visible = _sanitize_interim_text(text)
+    if not normalized_session_id or not turn_key or not visible:
+        return None
+    with _progress_lock:
+        route = _progress_routes.get(normalized_session_id)
+        if route is None or route.get("turn_key") != turn_key:
+            _pending_progress.append((normalized_session_id, turn_key, visible))
+            if len(_pending_progress) > _PENDING_PROGRESS_LIMIT:
+                del _pending_progress[: len(_pending_progress) - _PENDING_PROGRESS_LIMIT]
+            return None
+    _schedule_semantic_progress(normalized_session_id, turn_key, visible)
+    return None
+
+
 def _pre_tool_progress(**kwargs: Any) -> None:
     """Publish one secret-safe ephemeral thought when a Linear tool starts."""
     try:
@@ -346,7 +515,7 @@ def _pre_tool_progress(**kwargs: Any) -> None:
         profile = str(get_session_env("HERMES_SESSION_PROFILE", "")).strip()
         bound_session_id = str(get_session_env("HERMES_SESSION_ID", "")).strip()
         hook_session_id = str(kwargs.get("session_id") or "").strip()
-        if bound_session_id and hook_session_id and not hmac.compare_digest(
+        if not bound_session_id or not hook_session_id or not hmac.compare_digest(
             bound_session_id, hook_session_id
         ):
             return None
@@ -357,19 +526,31 @@ def _pre_tool_progress(**kwargs: Any) -> None:
     except (ImportError, RuntimeError):
         return None
 
-    label = _tool_progress_label(str(kwargs.get("tool_name") or ""))
-    dedupe_key = (profile, chat_id, turn_key, label)
-    if dedupe_key in _progress_seen:
-        return None
+    pending = _bind_progress_route(
+        hook_session_id, profile, chat_id, turn_key, adapter=adapter
+    )
+    with _progress_lock:
+        route = _progress_routes.get(hook_session_id)
+        if route is None or route.get("fenced") is True:
+            return None
+        label = _tool_progress_label(str(kwargs.get("tool_name") or ""))
+        dedupe_key = ("tool", profile, chat_id, turn_key, label)
+        if dedupe_key in _progress_seen:
+            should_schedule_tool = False
+        else:
+            _progress_seen[dedupe_key] = None
+            _trim_progress_state_locked()
+            should_schedule_tool = True
 
-    try:
-        adapter.schedule_tool_progress(chat_id, label, turn_key=turn_key)
-    except RuntimeError:
-        logger.warning("[linear] Tool progress scheduling failed", exc_info=True)
-        return None
-    _progress_seen[dedupe_key] = None
-    while len(_progress_seen) > 256:
-        _progress_seen.pop(next(iter(_progress_seen)))
+    if should_schedule_tool:
+        try:
+            adapter.schedule_tool_progress(chat_id, label, turn_key=turn_key)
+        except RuntimeError:
+            with _progress_lock:
+                _progress_seen.pop(dedupe_key, None)
+            logger.warning("[linear] Tool progress scheduling failed", exc_info=True)
+    for _pending_session_id, _pending_turn_key, pending_text in pending:
+        _schedule_semantic_progress(_pending_session_id, _pending_turn_key, pending_text)
     return None
 
 
@@ -400,4 +581,5 @@ def register(ctx) -> None:
     if callable(register_hook):
         register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
         register_hook("pre_tool_call", _pre_tool_progress)
+        register_hook("on_interim_message", _on_interim_message)
     register_outbound_tools(ctx)

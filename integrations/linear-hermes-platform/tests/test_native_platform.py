@@ -5,11 +5,13 @@ import datetime as dt
 import hashlib
 import hmac
 import importlib.util
+import inspect
 import json
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -127,6 +129,18 @@ class PluginRegistrationTests(unittest.TestCase):
 
         self.assertIs(context.hooks["pre_gateway_dispatch"], package._pre_gateway_dispatch)
         self.assertIs(context.hooks["pre_tool_call"], package._pre_tool_progress)
+        self.assertIs(context.hooks["on_interim_message"], package._on_interim_message)
+
+    def test_codex_streamed_commentary_hook_gap_is_an_explicit_residual(self):
+        from run_agent import AIAgent
+
+        source = inspect.getsource(AIAgent._fire_streamed_codex_commentary)
+        documentation = (PLUGIN_DIR / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("interim_assistant_callback", source)
+        self.assertNotIn("on_interim_message", source)
+        self.assertIn("AIAgent._fire_streamed_codex_commentary", documentation)
+        self.assertIn("does not invoke `on_interim_message`", documentation)
 
 
     def test_channel_command_parser_requires_explicit_leading_issue_command(self):
@@ -1368,7 +1382,7 @@ class PluginRegistrationTests(unittest.TestCase):
 
 class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        package._progress_seen.clear()
+        package._reset_progress_state_for_tests()
 
     async def test_tool_start_schedules_secret_safe_ephemeral_linear_thought(self):
         adapter = mock.Mock()
@@ -1389,6 +1403,7 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
                 tool_name="terminal",
                 args={"command": "sensitive-command-value"},
                 turn_id="turn-1",
+                session_id="hermes-session-1",
                 tool_call_id="tool-1",
             )
 
@@ -1424,6 +1439,183 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
 
         adapter.schedule_tool_progress.assert_not_called()
 
+    async def test_missing_hook_session_identity_never_binds_or_sends_progress(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(tool_name="terminal", turn_id="turn-1")
+
+        adapter.schedule_tool_progress.assert_not_called()
+        self.assertEqual(package._progress_routes, {})
+
+    async def test_interim_before_route_is_bounded_then_flushed_by_trusted_tool_hook(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        for index in range(package._PENDING_PROGRESS_LIMIT + 5):
+            package._on_interim_message(
+                text=f"safe update {index}",
+                session_id="main-hermes-session",
+                turn_id="turn-race",
+            )
+        self.assertEqual(len(package._pending_progress), package._PENDING_PROGRESS_LIMIT)
+
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(
+                tool_name="terminal",
+                turn_id="turn-race",
+                session_id="main-hermes-session",
+            )
+
+        semantic_calls = [
+            call for call in adapter.schedule_tool_progress.call_args_list
+            if call.kwargs.get("progress_kind") == "semantic"
+        ]
+        self.assertEqual(len(semantic_calls), package._SEMANTIC_PROGRESS_PER_TURN)
+        self.assertEqual(package._pending_progress, [])
+
+    async def test_interim_text_is_redacted_capped_and_deduplicated_per_turn(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(
+                tool_name="terminal", turn_id="turn-1", session_id="main-hermes-session"
+            )
+            unsafe = "Checking API_TOKEN" + "=" + "fixture-sensitive-value " + ("x" * 1000)
+            package._on_interim_message(
+                text=unsafe, session_id="main-hermes-session", turn_id="turn-1",
+                args={"command": "must-not-appear"}, result="must-not-appear-either",
+                reasoning="private-chain-of-thought",
+            )
+            package._on_interim_message(
+                text=unsafe, session_id="main-hermes-session", turn_id="turn-1"
+            )
+
+        semantic = [
+            call for call in adapter.schedule_tool_progress.call_args_list
+            if call.kwargs.get("progress_kind") == "semantic"
+        ]
+        self.assertEqual(len(semantic), 1)
+        body = semantic[0].args[1]
+        self.assertLessEqual(len(body), package._SEMANTIC_PROGRESS_MAX_CHARS)
+        self.assertNotIn("super-secret-value", body)
+        self.assertNotIn("must-not-appear", body)
+        self.assertNotIn("private-chain-of-thought", body)
+
+    def test_interim_redaction_covers_quoted_and_url_credentials(self):
+        body = package._sanitize_interim_text(
+            'password' + '=\"two word fixture\" https://user:pass@example.test/?token' + '=fixture-value'
+        )
+
+        self.assertNotIn("two word fixture", body)
+        self.assertNotIn("user:pass", body)
+        self.assertNotIn("fixture-value", body)
+
+    async def test_semantic_rate_limit_and_state_are_thread_safe(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        package._bind_progress_route(
+            "main-hermes-session", "general", "agent-session-1", "turn-threaded"
+        )
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter):
+            threads = [
+                threading.Thread(
+                    target=package._on_interim_message,
+                    kwargs={
+                        "text": f"update {index}",
+                        "session_id": "main-hermes-session",
+                        "turn_id": "turn-threaded",
+                    },
+                )
+                for index in range(20)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(
+            len(adapter.schedule_tool_progress.call_args_list),
+            package._SEMANTIC_PROGRESS_PER_TURN,
+        )
+
+    async def test_terminal_fence_blocks_late_progress_until_new_trusted_turn(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(
+                tool_name="terminal", turn_id="turn-1", session_id="main-hermes-session"
+            )
+            package._fence_terminal_progress("agent-session-1", adapter=adapter)
+            adapter.schedule_tool_progress.reset_mock()
+            package._on_interim_message(
+                text="late semantic", session_id="main-hermes-session", turn_id="turn-1"
+            )
+            package._pre_tool_progress(
+                tool_name="read_file", turn_id="turn-1", session_id="main-hermes-session"
+            )
+            adapter.schedule_tool_progress.assert_not_called()
+
+            package._pre_tool_progress(
+                tool_name="read_file", turn_id="turn-2", session_id="main-hermes-session"
+            )
+            package._on_interim_message(
+                text="fresh semantic", session_id="main-hermes-session", turn_id="turn-2"
+            )
+
+        self.assertEqual(adapter.schedule_tool_progress.call_count, 2)
+
+    async def test_background_interim_session_mismatch_produces_no_activity(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        package._bind_progress_route(
+            "main-hermes-session", "general", "agent-session-1", "turn-1"
+        )
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter):
+            package._on_interim_message(
+                text="background review", session_id="background-session", turn_id="turn-bg"
+            )
+        adapter.schedule_tool_progress.assert_not_called()
+
     async def test_repeated_same_category_is_deduplicated_for_entire_turn(self):
         adapter = mock.Mock()
         adapter.schedule_tool_progress = mock.Mock()
@@ -1431,14 +1623,19 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
             "HERMES_SESSION_PLATFORM": "linear",
             "HERMES_SESSION_CHAT_ID": "agent-session-1",
             "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
         }
         with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
              mock.patch(
                  "gateway.session_context.get_session_env",
                  side_effect=lambda name, default="": session_values.get(name, default),
              ):
-            package._pre_tool_progress(tool_name="read_file", turn_id="turn-1")
-            package._pre_tool_progress(tool_name="search_files", turn_id="turn-1")
+            package._pre_tool_progress(
+                tool_name="read_file", turn_id="turn-1", session_id="main-hermes-session"
+            )
+            package._pre_tool_progress(
+                tool_name="search_files", turn_id="turn-1", session_id="main-hermes-session"
+            )
 
         adapter.schedule_tool_progress.assert_called_once()
 
@@ -1494,6 +1691,7 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
             "HERMES_SESSION_PLATFORM": "linear",
             "HERMES_SESSION_CHAT_ID": "agent-session-1",
             "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
         }
         with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
              mock.patch(
@@ -1501,7 +1699,9 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
                  side_effect=lambda name, default="": session_values.get(name, default),
              ):
             self.assertIsNone(
-                package._pre_tool_progress(tool_name="terminal", turn_id="turn-1")
+                package._pre_tool_progress(
+                    tool_name="terminal", turn_id="turn-1", session_id="main-hermes-session"
+                )
             )
 
         self.assertEqual(package._progress_seen, {})
@@ -1580,7 +1780,7 @@ class LedgerTests(unittest.TestCase):
                 self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
             ledger.close()
 
-    def test_populated_v5_database_migrates_to_v6_without_losing_rows(self):
+    def test_populated_v5_database_migrates_to_v7_without_losing_rows(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "v5.sqlite3"
             existing_at = int(time.time())
@@ -1622,7 +1822,7 @@ class LedgerTests(unittest.TestCase):
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 6
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 7
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -1675,7 +1875,7 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
             recovered.close()
 
     def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
@@ -1793,7 +1993,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -1910,7 +2110,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
@@ -5207,6 +5407,285 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(self.adapter._linear.activity_ephemeral, [True, True])
+
+    async def test_semantic_progress_replay_is_durably_idempotent(self):
+        metadata = {
+            "transient_progress": True,
+            "transient_progress_key": "turn-semantic",
+            "transient_progress_kind": "semantic",
+        }
+        first = await self.adapter.send("session-progress", "Reviewing the change", metadata=metadata)
+        replay = await self.adapter.send("session-progress", "Reviewing the change", metadata=metadata)
+
+        self.assertTrue(first.success)
+        self.assertTrue(replay.success)
+        self.assertEqual(first.message_id, replay.message_id)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [("session-progress", "thought", "Reviewing the change")],
+        )
+
+    async def test_terminal_response_notifies_progress_fence_once(self):
+        fence = mock.Mock()
+        self.adapter._terminal_progress_callback = fence
+        self.adapter.open_progress_turn("session-progress", "turn-semantic")
+
+        progress = await self.adapter.send(
+            "session-progress",
+            "Reviewing the change",
+            metadata={
+                "transient_progress": True,
+                "transient_progress_key": "turn-semantic",
+            },
+        )
+        final = await self.adapter.send("session-progress", "Final deliverable")
+
+        self.assertTrue(progress.success)
+        self.assertTrue(final.success)
+        fence.assert_called_once_with(
+            "session-progress", turn_key="turn-semantic", adapter=self.adapter
+        )
+        self.assertEqual(
+            [call[1] for call in self.adapter._linear.calls], ["thought", "response"]
+        )
+
+    async def test_terminal_fence_suppresses_late_queued_progress_until_new_turn(self):
+        self.adapter.open_progress_turn("session-progress", "turn-1")
+        final = await self.adapter.send("session-progress", "Final deliverable")
+        late = await self.adapter.send(
+            "session-progress",
+            "Late semantic update",
+            metadata={
+                "transient_progress": True,
+                "transient_progress_key": "turn-1",
+                "transient_progress_kind": "semantic",
+            },
+        )
+        self.adapter.open_progress_turn("session-progress", "turn-2")
+        fresh = await self.adapter.send(
+            "session-progress",
+            "Fresh follow-up update",
+            metadata={
+                "transient_progress": True,
+                "transient_progress_key": "turn-2",
+                "transient_progress_kind": "semantic",
+            },
+        )
+
+        self.assertTrue(final.success)
+        self.assertTrue(late.success)
+        self.assertTrue(fresh.success)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-progress", "response", "Final deliverable"),
+                ("session-progress", "thought", "Fresh follow-up update"),
+            ],
+        )
+
+    async def test_terminal_enqueue_does_not_fence_concurrently_opened_new_turn(self):
+        self.adapter.open_progress_turn("session-progress", "turn-1")
+        original_enqueue = self.adapter._ledger.enqueue_outbox
+
+        def enqueue_then_open_new_turn(*args, **kwargs):
+            inserted = original_enqueue(*args, **kwargs)
+            payload = args[3]
+            if payload.get("activity_type") == "response":
+                self.adapter.open_progress_turn("session-progress", "turn-2")
+            return inserted
+
+        with mock.patch.object(
+            self.adapter._ledger,
+            "enqueue_outbox",
+            side_effect=enqueue_then_open_new_turn,
+        ):
+            final = await self.adapter.send("session-progress", "Final deliverable")
+
+        self.assertTrue(final.success)
+        self.assertEqual(
+            self.adapter._ledger.latest_activity_progress_state("session-progress"),
+            {"activity_type": "response", "terminal_progress_key": "turn-1"},
+        )
+        self.assertEqual(
+            self.adapter._progress_turns["session-progress"], ("turn-2", False)
+        )
+        self.assertEqual(
+            self.adapter._ledger.current_progress_turn_key("session-progress"), "turn-2"
+        )
+        self.assertTrue(
+            self.adapter._ledger.progress_is_allowed("session-progress", "turn-2")
+        )
+
+    async def test_no_tool_terminal_and_fresh_turn_are_serialized_across_threads(self):
+        terminal_entered = threading.Event()
+        allow_terminal = threading.Event()
+        fresh_attempted = threading.Event()
+        original_current = self.adapter._current_progress_turn_key
+
+        def stalled_current(chat_id):
+            terminal_entered.set()
+            self.assertTrue(allow_terminal.wait(timeout=2))
+            return original_current(chat_id)
+
+        def enqueue_terminal():
+            self.adapter._enqueue_activity(
+                "session-thread-race",
+                "response",
+                "Final without tools",
+                item_key="thread-race-final",
+            )
+
+        def open_fresh():
+            fresh_attempted.set()
+            self.adapter.open_progress_turn("session-thread-race", "turn-fresh")
+
+        with mock.patch.object(
+            self.adapter,
+            "_current_progress_turn_key",
+            side_effect=stalled_current,
+        ):
+            terminal_thread = threading.Thread(target=enqueue_terminal)
+            terminal_thread.start()
+            self.assertTrue(terminal_entered.wait(timeout=2))
+            fresh_thread = threading.Thread(target=open_fresh)
+            fresh_thread.start()
+            self.assertTrue(fresh_attempted.wait(timeout=2))
+            allow_terminal.set()
+            terminal_thread.join(timeout=2)
+            fresh_thread.join(timeout=2)
+
+        self.assertFalse(terminal_thread.is_alive())
+        self.assertFalse(fresh_thread.is_alive())
+        self.assertEqual(
+            self.adapter._progress_turns["session-thread-race"],
+            ("turn-fresh", False),
+        )
+        self.assertTrue(
+            self.adapter._ledger.progress_is_allowed(
+                "session-thread-race", "turn-fresh"
+            )
+        )
+        durable = self.adapter._ledger.latest_activity_progress_state(
+            "session-thread-race"
+        )
+        self.assertEqual(durable["activity_type"], "response")
+        self.assertTrue(durable["terminal_progress_key"].startswith("terminal:"))
+
+    async def test_terminal_without_prior_tool_fences_late_heartbeat_until_fresh_turn(self):
+        late_heartbeat = "⏳ Working — 5 min — iteration 20/90, receiving stream response"
+        fresh_heartbeat = "⏳ Working — 6 min — iteration 21/90, receiving stream response"
+        final = await self.adapter.send("session-no-tool", "Final without tools")
+        late = await self.adapter.send("session-no-tool", late_heartbeat)
+        self.adapter.open_progress_turn("session-no-tool", "turn-fresh")
+        fresh = await self.adapter.send("session-no-tool", fresh_heartbeat)
+
+        self.assertTrue(final.success)
+        self.assertTrue(late.success)
+        self.assertTrue(fresh.success)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-no-tool", "response", "Final without tools"),
+                ("session-no-tool", "thought", fresh_heartbeat),
+            ],
+        )
+
+    async def test_terminal_fence_suppresses_late_heartbeat_until_new_turn(self):
+        late_heartbeat = "⏳ Working — 6 min — iteration 33/90, receiving stream response"
+        fresh_heartbeat = "⏳ Working — 7 min — iteration 34/90, receiving stream response"
+        self.adapter.open_progress_turn("session-progress", "turn-1")
+        final = await self.adapter.send("session-progress", "Final deliverable")
+        late = await self.adapter.send("session-progress", late_heartbeat)
+        self.adapter.open_progress_turn("session-progress", "turn-2")
+        fresh = await self.adapter.send("session-progress", fresh_heartbeat)
+
+        self.assertTrue(final.success)
+        self.assertTrue(late.success)
+        self.assertTrue(fresh.success)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-progress", "response", "Final deliverable"),
+                ("session-progress", "thought", fresh_heartbeat),
+            ],
+        )
+
+    def test_all_direct_terminal_activity_types_persist_turn_key_and_fence(self):
+        for activity_type in ("response", "error", "elicitation"):
+            with self.subTest(activity_type=activity_type):
+                chat_id = f"session-{activity_type}"
+                turn_key = f"turn-{activity_type}"
+                self.adapter.open_progress_turn(chat_id, turn_key)
+                self.adapter._enqueue_activity(
+                    chat_id,
+                    activity_type,
+                    f"{activity_type} body",
+                    item_key=f"direct-{activity_type}",
+                )
+
+                self.assertEqual(
+                    self.adapter._progress_turns[chat_id], (turn_key, True)
+                )
+                self.assertEqual(
+                    self.adapter._ledger.latest_activity_progress_state(chat_id),
+                    {
+                        "activity_type": activity_type,
+                        "terminal_progress_key": turn_key,
+                    },
+                )
+
+    def test_adapter_terminal_fence_state_is_bounded(self):
+        for index in range(adapter_mod._PROGRESS_TURN_STATE_LIMIT + 7):
+            self.adapter.open_progress_turn(f"session-{index}", f"turn-{index}")
+
+        self.assertEqual(
+            len(self.adapter._progress_turns), adapter_mod._PROGRESS_TURN_STATE_LIMIT
+        )
+        self.assertNotIn("session-0", self.adapter._progress_turns)
+
+    async def test_evicted_terminal_fence_falls_back_to_durable_ledger_until_new_turn(self):
+        late_heartbeat = "⏳ Working — 8 min — iteration 40/90, receiving stream response"
+        fresh_heartbeat = "⏳ Working — 9 min — iteration 41/90, receiving stream response"
+        self.adapter.open_progress_turn("session-progress", "turn-1")
+        for index in range(adapter_mod._PROGRESS_TURN_STATE_LIMIT + 7):
+            self.adapter.open_progress_turn(f"before-terminal-{index}", f"turn-{index}")
+        self.assertNotIn("session-progress", self.adapter._progress_turns)
+        final = await self.adapter.send("session-progress", "Final deliverable")
+        self.assertEqual(
+            self.adapter._ledger.latest_activity_progress_state("session-progress"),
+            {"activity_type": "response", "terminal_progress_key": "turn-1"},
+        )
+        for index in range(adapter_mod._PROGRESS_TURN_STATE_LIMIT + 7):
+            self.adapter.open_progress_turn(f"after-terminal-{index}", f"turn-{index}")
+        self.assertNotIn("session-progress", self.adapter._progress_turns)
+        self.adapter.open_progress_turn("session-progress", "turn-1")
+
+        late_semantic = await self.adapter.send(
+            "session-progress",
+            "Late semantic update",
+            metadata={
+                "transient_progress": True,
+                "transient_progress_key": "turn-1",
+                "transient_progress_kind": "semantic",
+            },
+        )
+        late_heartbeat_result = await self.adapter.send(
+            "session-progress", late_heartbeat
+        )
+        self.adapter.open_progress_turn("session-progress", "turn-2")
+        fresh = await self.adapter.send("session-progress", fresh_heartbeat)
+
+        self.assertTrue(final.success)
+        self.assertTrue(late_semantic.success)
+        self.assertTrue(late_heartbeat_result.success)
+        self.assertTrue(fresh.success)
+        self.assertEqual(
+            self.adapter._linear.calls,
+            [
+                ("session-progress", "response", "Final deliverable"),
+                ("session-progress", "thought", fresh_heartbeat),
+            ],
+        )
 
     async def test_transient_progress_requires_trusted_turn_key(self):
         result = await self.adapter.send(

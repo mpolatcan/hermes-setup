@@ -70,6 +70,7 @@ _OPEN_AGENT_SESSION_STATUSES = frozenset({"pending", "active", "awaitingInput"})
 _CHANNEL_ROUTE_BATCH_SIZE = 10
 _CHANNEL_ROUTE_MAX_ATTEMPTS = 5
 _CHANNEL_ROUTE_POLL_SECONDS = 1.0
+_PROGRESS_TURN_STATE_LIMIT = 256
 
 
 def _read_env_file(path: str) -> dict[str, str]:
@@ -347,6 +348,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         self._tool_progress_tasks: set[Any] = set()
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._accepting_tool_progress = False
+        self._terminal_progress_callback: Callable[..., None] | None = None
+        self._progress_transition_lock = threading.RLock()
+        self._progress_state_lock = threading.Lock()
+        self._progress_turns: dict[str, tuple[str, bool]] = {}
         self._channel_route_task: asyncio.Task | None = None
         self._channel_route_notice_tasks: set[asyncio.Task] = set()
         self._channel_route_wakeup = asyncio.Event()
@@ -537,7 +542,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         await self._cleanup()
 
     def schedule_tool_progress(
-        self, chat_id: str, content: str, *, turn_key: str
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        turn_key: str,
+        progress_kind: str = "tool",
     ) -> asyncio.Task:
         """Own transient progress delivery inside the adapter lifecycle."""
         loop = self._event_loop
@@ -570,6 +580,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     metadata={
                         "transient_progress": True,
                         "transient_progress_key": turn_key,
+                        "transient_progress_kind": progress_kind,
                     },
                 )
             )
@@ -609,6 +620,41 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             raise RuntimeError("Linear tool progress task could not be scheduled") from exc
         except Exception as exc:
             raise RuntimeError("Linear tool progress task could not be scheduled") from exc
+
+    def open_progress_turn(self, chat_id: str, turn_key: str) -> None:
+        """Open progress only when a trusted pre-tool hook proves a new turn."""
+        with self._progress_transition_lock:
+            ledger = self._ledger
+            allowed = bool(ledger and ledger.open_progress_turn(chat_id, turn_key))
+            with self._progress_state_lock:
+                self._progress_turns[chat_id] = (turn_key, not allowed)
+                while len(self._progress_turns) > _PROGRESS_TURN_STATE_LIMIT:
+                    self._progress_turns.pop(next(iter(self._progress_turns)))
+
+    def _progress_is_allowed(self, chat_id: str, turn_key: str) -> bool:
+        with self._progress_state_lock:
+            current = self._progress_turns.get(chat_id)
+            if current is not None:
+                return current[0] == turn_key and current[1] is False
+        ledger = self._ledger
+        return bool(ledger and ledger.progress_is_allowed(chat_id, turn_key))
+
+    def _progress_chat_is_allowed(self, chat_id: str) -> bool:
+        """Allow unkeyed heartbeat only before this chat's current turn is fenced."""
+        with self._progress_state_lock:
+            current = self._progress_turns.get(chat_id)
+            if current is not None:
+                return current[1] is False
+        ledger = self._ledger
+        return bool(ledger and ledger.progress_is_allowed(chat_id))
+
+    def _current_progress_turn_key(self, chat_id: str) -> str:
+        with self._progress_state_lock:
+            current = self._progress_turns.get(chat_id)
+            if current is not None:
+                return current[0]
+        ledger = self._ledger
+        return ledger.current_progress_turn_key(chat_id) if ledger is not None else ""
 
     async def _cleanup(self) -> None:
         self._accepting_tool_progress = False
@@ -673,7 +719,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.12",
+                "version": "0.8.13",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -2185,21 +2231,43 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 item_key,
             )
             return activity_id
+        terminal_activity = activity_type in {"response", "error", "elicitation"}
+        transition_locked = False
+        if terminal_activity:
+            self._progress_transition_lock.acquire()
+            transition_locked = True
         payload: dict[str, Any] = {
             "activity_id": activity_id,
             "agent_session_id": agent_session_id,
             "activity_type": activity_type,
             "body": body,
         }
-        if ephemeral:
-            payload["ephemeral"] = True
-        self._ledger.enqueue_outbox(
-            f"activity:{item_key}",
-            agent_session_id,
-            "activity.transient.create" if ephemeral else "activity.create",
-            payload,
-        )
-        self._outbox_wakeup.set()
+        turn_key = ""
+        try:
+            if terminal_activity:
+                turn_key = self._current_progress_turn_key(agent_session_id)
+                if not turn_key and self._ledger is not None:
+                    turn_key = self._ledger.ensure_progress_turn(
+                        agent_session_id, f"terminal:{activity_id}"
+                    )
+                if turn_key:
+                    payload["terminal_progress_key"] = turn_key
+            if ephemeral:
+                payload["ephemeral"] = True
+            self._ledger.enqueue_outbox(
+                f"activity:{item_key}",
+                agent_session_id,
+                "activity.transient.create" if ephemeral else "activity.create",
+                payload,
+            )
+            self._outbox_wakeup.set()
+            if terminal_activity:
+                self._notify_terminal_progress_fence(
+                    agent_session_id, expected_turn_key=turn_key
+                )
+        finally:
+            if transition_locked:
+                self._progress_transition_lock.release()
         return activity_id
 
     def _enqueue_status(
@@ -2397,6 +2465,14 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             long_running_heartbeat = bool(
                 _LINEAR_LONG_RUNNING_HEARTBEAT_RE.fullmatch(content)
             )
+            if long_running_heartbeat and not self._progress_chat_is_allowed(chat_id):
+                digest = hashlib.sha256(content.encode()).hexdigest()[:24]
+                return SendResult(
+                    success=True,
+                    message_id=self._activity_uuid(
+                        f"suppressed:terminal-heartbeat:{chat_id}:{digest}"
+                    ),
+                )
             nonterminal_progress = transient_progress or long_running_heartbeat
             transient_progress_key = ""
             if transient_progress:
@@ -2407,6 +2483,14 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     raise LinearAPIError(
                         "Transient Linear progress requires a trusted turn key",
                         retryable=False,
+                    )
+                if not self._progress_is_allowed(chat_id, transient_progress_key):
+                    digest = hashlib.sha256(content.encode()).hexdigest()[:24]
+                    return SendResult(
+                        success=True,
+                        message_id=self._activity_uuid(
+                            f"suppressed:terminal:{chat_id}:{transient_progress_key}:{digest}"
+                        ),
                     )
             activity_type = "thought" if (
                 nonterminal_progress
@@ -2426,6 +2510,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 item_key=item_key,
                 ephemeral=nonterminal_progress,
             )
+
             if nonterminal_progress and item_key is not None:
                 item = self._ledger.get_outbox_item(f"activity:{item_key}")
                 if item is None:
@@ -2453,6 +2538,28 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=False)
 
+    def _notify_terminal_progress_fence(
+        self, chat_id: str, *, expected_turn_key: str
+    ) -> None:
+        ledger = self._ledger
+        if ledger is not None:
+            ledger.fence_progress_turn(chat_id, expected_turn_key)
+        with self._progress_state_lock:
+            current = self._progress_turns.get(chat_id)
+            if current is None and expected_turn_key:
+                self._progress_turns[chat_id] = (expected_turn_key, True)
+            elif current is not None and current[0] == expected_turn_key:
+                self._progress_turns[chat_id] = (expected_turn_key, True)
+            while len(self._progress_turns) > _PROGRESS_TURN_STATE_LIMIT:
+                self._progress_turns.pop(next(iter(self._progress_turns)))
+        callback = self._terminal_progress_callback
+        if callback is None:
+            return
+        try:
+            callback(chat_id, turn_key=expected_turn_key, adapter=self)
+        except Exception:
+            logger.warning("[linear] Terminal progress fence callback failed", exc_info=True)
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if self._ledger is None or event.source is None:
             return
@@ -2471,6 +2578,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 "Hermes encountered an error while processing the task. The issue state was preserved for retry or human triage.",
                 item_key=f"error:{delivery_key}",
             )
+
         # SUCCESS preserves the issue state for the human final-acceptance gate.
         # The durable response activity carries the evidence Mutlu reviews before
         # moving the issue to Done/Completed. FAILURE and CANCELLED also preserve

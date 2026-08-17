@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sqlite3
@@ -176,8 +177,13 @@ class DeliveryLedger:
             "issue_id TEXT PRIMARY KEY, event_revision REAL NOT NULL, "
             "event_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 6:
-            self._db.execute("PRAGMA user_version=6")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS progress_turns ("
+            "aggregate_key TEXT PRIMARY KEY, turn_key TEXT NOT NULL, "
+            "fenced INTEGER NOT NULL CHECK(fenced IN (0, 1)), updated_at INTEGER NOT NULL)"
+        )
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 7:
+            self._db.execute("PRAGMA user_version=7")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Outbound-only clients may open this database while
         # the gateway is live, so they must not run process-start recovery.
@@ -1160,6 +1166,107 @@ class DeliveryLedger:
             "next_attempt_at": float(row[7]),
             "last_error": row[8],
         }
+
+    def latest_activity_progress_state(self, aggregate_key: str) -> dict[str, str]:
+        """Return durable terminal-fence metadata from the newest session activity."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload_json FROM outbox WHERE aggregate_key = ? "
+                "AND operation IN ('activity.create', 'activity.transient.create') "
+                "ORDER BY sequence DESC LIMIT 1",
+                (aggregate_key,),
+            ).fetchone()
+        if row is None:
+            return {"activity_type": "", "terminal_progress_key": ""}
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError):
+            return {"activity_type": "", "terminal_progress_key": ""}
+        return {
+            "activity_type": str(payload.get("activity_type") or "").strip().lower(),
+            "terminal_progress_key": str(
+                payload.get("terminal_progress_key") or ""
+            ).strip(),
+        }
+
+    def open_progress_turn(self, aggregate_key: str, turn_key: str) -> bool:
+        """Persist a trusted turn; replay of the same fenced key stays fenced."""
+        now = int(time.time())
+        with self._lock:
+            row = self._db.execute(
+                "SELECT turn_key, fenced FROM progress_turns WHERE aggregate_key = ?",
+                (aggregate_key,),
+            ).fetchone()
+            if row is None:
+                fenced = False
+                self._db.execute(
+                    "INSERT INTO progress_turns(aggregate_key, turn_key, fenced, updated_at) "
+                    "VALUES (?, ?, 0, ?)",
+                    (aggregate_key, turn_key, now),
+                )
+            elif hmac.compare_digest(str(row[0]), turn_key):
+                fenced = bool(row[1])
+            else:
+                fenced = False
+                self._db.execute(
+                    "UPDATE progress_turns SET turn_key = ?, fenced = 0, updated_at = ? "
+                    "WHERE aggregate_key = ?",
+                    (turn_key, now, aggregate_key),
+                )
+            self._db.commit()
+        return not fenced
+
+    def ensure_progress_turn(self, aggregate_key: str, fallback_turn_key: str) -> str:
+        """Atomically return the current key, inserting a terminal sentinel if absent."""
+        now = int(time.time())
+        with self._lock:
+            row = self._db.execute(
+                "SELECT turn_key FROM progress_turns WHERE aggregate_key = ?",
+                (aggregate_key,),
+            ).fetchone()
+            if row is not None:
+                return str(row[0])
+            self._db.execute(
+                "INSERT INTO progress_turns(aggregate_key, turn_key, fenced, updated_at) "
+                "VALUES (?, ?, 0, ?)",
+                (aggregate_key, fallback_turn_key, now),
+            )
+            self._db.commit()
+        return fallback_turn_key
+
+    def current_progress_turn_key(self, aggregate_key: str) -> str:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT turn_key FROM progress_turns WHERE aggregate_key = ?",
+                (aggregate_key,),
+            ).fetchone()
+        return str(row[0]) if row is not None else ""
+
+    def progress_is_allowed(self, aggregate_key: str, turn_key: str = "") -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT turn_key, fenced FROM progress_turns WHERE aggregate_key = ?",
+                (aggregate_key,),
+            ).fetchone()
+        if row is None:
+            return True
+        return (
+            (not turn_key or hmac.compare_digest(str(row[0]), turn_key))
+            and not bool(row[1])
+        )
+
+    def fence_progress_turn(self, aggregate_key: str, turn_key: str) -> None:
+        """Fence only the turn that produced the terminal activity."""
+        if not turn_key:
+            return
+        now = int(time.time())
+        with self._lock:
+            self._db.execute(
+                "UPDATE progress_turns SET fenced = 1, updated_at = ? "
+                "WHERE aggregate_key = ? AND turn_key = ?",
+                (now, aggregate_key, turn_key),
+            )
+            self._db.commit()
 
     def requeue_dead_outbox(self, item_id: str, *, now: int | None = None) -> bool:
         """Return one inspected dead letter to the delivery queue."""
