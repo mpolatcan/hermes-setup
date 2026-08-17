@@ -6,9 +6,9 @@
 
 The concern docs (01–16) explain *why*; this is the *what, in order*. Follow top-to-bottom.
 
-> **Current stack (re-verified 2026-07-24):** primary model = **GPT-5.6 via Codex OAuth on all nine agents + crons** (`sol`: general/coder/researcher/writer; `terra`: assistant/finance/health; `luna`: marketing/producer), **DeepSeek V4 Flash is the only profile-level fallback** ([docs/04](04-models.md)); Hermes v0.19.0 / v2026.7.20; all 9 gateways 24/7; approvals off fleet-wide. Dated checklist entries below are historical build-log evidence, not current model instructions.
+> **Current stack (re-verified 2026-08-17):** primary model = **GPT-5.6 via Codex OAuth on all nine agents + crons** (`sol`: general/coder/researcher/writer; `terra`: assistant/finance/health; `luna`: marketing/producer), **DeepSeek V4 Flash is the only profile-level fallback** ([docs/04](04-models.md)); official upstream-clean Hermes Agent `v0.20.2` / `2026.8.16`; all 9 gateways 24/7; approvals off fleet-wide. Linear is profile-plugin `0.8.9`; Honcho uses authenticated `honcho.localhost` loopback config. Dated checklist entries below are historical build-log evidence, not current instructions.
 
-> **Credential and knowledge policy (2026-07-19):** 1Password is canonical for all static service and integration credentials; Notion is canonical for durable cross-profile knowledge, decisions, tasks, and detailed reports. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md) and [docs/16](16-notion-knowledge-and-reporting.md). Bootstrap identity and writable OAuth stores are the only local `0600` credential exceptions.
+> **Credential, work, and knowledge policy:** 1Password is canonical for static service and integration credentials; Linear is canonical for tasks, owners, dependencies, checkpoints, acceptance, and closure; Notion is canonical for durable cross-profile knowledge, substantial plans, decisions, runbooks, and reports. The old `bot-tokens.env` / `setup-bots.sh` / profile-`.env` fan-out entries below are historical build-log evidence, not current instructions. Use [docs/15](15-credential-management.md) and [docs/16](16-notion-knowledge-and-reporting.md). Bootstrap identity and writable OAuth stores are the only local `0600` credential exceptions.
 
 > ⚠️ = a **verify-gate**: the plan makes an assumption about native Hermes that hasn't been tested against a live install. Confirm it before trusting it, and adjust the runbook if reality differs.
 
@@ -35,7 +35,7 @@ flowchart LR
 
 ## Step 1 — Install Hermes + verify the CLI ✅ DONE (2026-06-06)
 
-- [x] Originally installed `hermes-agent 2026.6.5` / Hermes v0.16.0; **current install re-verified as `hermes-agent v2026.7.20` / Hermes v0.19.0 on 2026-07-24**.
+- [x] Originally installed `hermes-agent 2026.6.5` / Hermes v0.16.0; **current install re-verified as official upstream-clean Hermes Agent `v0.20.2` / `2026.8.16` on 2026-08-17**.
 - [x] **CLI verbs verified** (gate resolved — plan corrected):
   - `hermes profile create <slug>` ✓ as assumed; also drops a wrapper at `~/.local/bin/<slug>` (`researcher setup` ≡ `hermes -p researcher setup`).
   - Profile selection is a **global `-p/--profile` flag**, not per-subcommand: `hermes -p <slug> setup`, `hermes -p <slug> gateway run`. (`setup --profile` / `gateway run --profile` don't exist.)

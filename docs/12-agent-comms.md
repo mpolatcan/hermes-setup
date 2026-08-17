@@ -47,7 +47,8 @@ When agents genuinely need to share state or work — beyond you relaying — th
 | Layer | Mechanism | Use it for | Status |
 |---|---|---|---|
 | **Shared conversational context** | **Honcho** ([Section 9](07-memory.md)) — shared user peer | A derived model of *you* and semantic conversation continuity. | **on** |
-| **Shared durable knowledge** | **Notion** ([knowledge/reporting plane](16-notion-knowledge-and-reporting.md)) | Research, candidates, decisions, tasks, and reports queried across profiles by domain. | **on** |
+| **Human work control** | **Linear** | Issue, assignee/delegate, dependency, execution state, checkpoint, acceptance, and closure. | **on** |
+| **Shared durable knowledge** | **Notion** ([knowledge/reporting plane](16-notion-knowledge-and-reporting.md)) | Research, candidates, decisions, substantial plans, runbooks, and reports queried across profiles by domain. | **on** |
 | **Local working artifact** | **`backlog.md`** | Producer's inspectable working copy for scoring; canonical cross-profile candidates and decisions live in Notion. | **on** when the scoring workflow is used ([Section 16](11-game-dev.md)) |
 | **Task orchestration** | **`kanban`** — single-host board, dispatcher spawns sibling profiles | Auto-promoting multi-stage pipelines with dependency chains, claims, crash recovery. | **off** — native-ready, flip when earned (17.3) |
 

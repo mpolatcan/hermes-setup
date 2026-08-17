@@ -132,6 +132,6 @@ Stops and disables every gateway (including the watchdog — fine, you're at the
 
 **Why Telegram tokens first:** the bot token *is* the front door — whoever holds it receives your messages and can impersonate the bot to you. `TELEGRAM_ALLOWED_USERS` stops others from commanding your agents, but not from reading what you send. Revoke kills the old token instantly.
 
-**External data planes are separate blast radii.** Honcho stores derived conversation/person memory locally, while Notion stores durable knowledge, tasks, decisions, and reports as SaaS state. A Notion OAuth compromise does not expose 1Password values, but it can expose or modify every Notion surface granted to that OAuth identity. Keep `home/.notion/auth.json` at `0600`, never print it, and revoke/reauthorize at Notion on suspicion. See [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
+**External data planes are separate blast radii.** Honcho stores derived conversation/person memory locally; Linear stores task ownership, execution state, checkpoints, acceptance, and closure; Notion stores durable knowledge, plans, decisions, runbooks, and reports as SaaS state. A Notion OAuth compromise does not expose 1Password values, but it can expose or modify every Notion surface granted to that OAuth identity. Keep `home/.notion/auth.json` at `0600`, never print it, and revoke/reauthorize at Notion on suspicion. See [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
 
 ---

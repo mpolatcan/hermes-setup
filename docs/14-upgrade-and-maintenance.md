@@ -8,11 +8,11 @@ Live procedures for keeping the fleet healthy across hermes-agent upgrades, plus
 
 ## 20. The upgrade checklist
 
-The production fleet does not execute Homebrew Hermes. Gateways, operational scripts, the shell CLI shim, and the dashboard use the stable managed runtime:
+The production fleet does not execute Homebrew Hermes. Gateways and the shell CLI resolve an updater-managed immutable release; discover the active release from the live process or `hermes --version`, never from a hard-coded hash:
 
 ```text
-/Users/mutlupolatcan/.hermes/runtime/hermes-agent
-└── venv/bin/hermes  # Python 3.13; stable launchd target
+/Users/mutlupolatcan/.local/bin/hermes
+└── ~/.hermes/runtime/releases/hermes-agent-<managed-hash>/venv/bin/hermes
 ```
 
 Do not upgrade the live directory in place and do not make Python `3.14` the production runtime. Stage the official candidate side by side, preserve the stable path for rollback, and keep the candidate and Honcho adapter in the same supported Python `major.minor` family (`3.13`). The adapter compatibility gate is documented in [`integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md`](../integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md).
@@ -20,11 +20,17 @@ Do not upgrade the live directory in place and do not make Python `3.14` the pro
 Full procedure, in order:
 
 ```bash
-# 1. Stage the official tagged candidate under a versioned sibling path.
-#    Use Python 3.13 and run package/import/pip-check plus adapter compatibility gates.
+set -euo pipefail
+
+# 1. Fetch official origin/main, record its exact commit, and stage that exact
+#    commit under a versioned sibling path. Use Python 3.13 and run
+#    package/import/pip-check plus adapter compatibility gates.
+git -C /absolute/path/to/official-hermes-checkout fetch origin
+TARGET_SHA=$(git -C /absolute/path/to/official-hermes-checkout rev-parse origin/main)
 CANDIDATE=/Users/mutlupolatcan/.hermes/runtime/hermes-agent-candidate-v<release>
 test -x "$CANDIDATE/venv/bin/hermes"
 "$CANDIDATE/venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 13)'
+test "$(git -C "$CANDIDATE" rev-parse HEAD)" = "$TARGET_SHA"
 
 # 2. Run a non-production gateway canary and the adapter compatibility suite.
 #    Do not modify the stable runtime or production launchd jobs yet.
@@ -37,8 +43,29 @@ env -u HERMES_WEB_DIST \
 # In terminal B, smoke-test it, then stop the terminal-A canary.
 curl -fsS http://127.0.0.1:9120/ >/dev/null
 
-# 4. After explicit approval, back up the stable runtime and promote the
-#    verified candidate so the stable path remains the launchd contract.
+# 4. Take an independent native quick backup and require its manifest. Then
+#    fetch again and require origin/main to be the same tested commit. If it
+#    moved, stop and restage/retest. After explicit approval, use the official
+#    updater with its additional backup. Do not carry local core commits.
+BACKUP="/Users/mutlupolatcan/.hermes/backups/pre-update-${TARGET_SHA}.zip"
+test ! -e "$BACKUP"
+hermes backup --quick --output "$BACKUP"
+test -s "$BACKUP"
+unzip -t "$BACKUP" >/dev/null
+git -C /absolute/path/to/official-hermes-checkout fetch origin
+test "$(git -C /absolute/path/to/official-hermes-checkout rev-parse origin/main)" = "$TARGET_SHA"
+hermes update --yes --backup
+
+# The updater performs its own fetch and cannot pin TARGET_SHA. Before any
+# gateway restart, fail closed unless the promoted checkout is exactly the
+# tested commit. On mismatch, serve nothing new: restore the previous managed
+# release/backup, then stage and test the new upstream target.
+PROMOTED_SHA=$(git -C /absolute/path/to/promoted-hermes-agent rev-parse HEAD)
+if [[ "$PROMOTED_SHA" != "$TARGET_SHA" ]]; then
+  echo "Promoted SHA differs from tested candidate; do not restart any gateway." >&2
+  echo "Restore the previous managed release/backup, then restage the new target." >&2
+  exit 1
+fi
 
 # 5. Migrate all nine configs, then restart the eight auxiliary gateways in
 #    sequence. Restart general separately only after explicit approval.
@@ -53,12 +80,12 @@ launchctl bootstrap gui/501 /Users/mutlupolatcan/Library/LaunchAgents/ai.hermes.
 # 7. Verify disk package, live processes, ports, HTTP, and the global CLI as
 #    separate surfaces. All nine gateway commands must resolve below the
 #    stable managed runtime and the dashboard must return HTTP 200.
-/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/hermes --version
+~/.local/bin/hermes --version
 command -v hermes && hermes --version
 curl -fsS http://127.0.0.1:9119/ >/dev/null
 ```
 
-The managed-runtime pattern was exercised for the `0.19.0` / `v2026.7.20` Quicksilver rollout on 2026-07-23–24. Homebrew `0.18.2` remains installed only as a rollback surface; no production gateway or dashboard executes it.
+The current accepted core is official Hermes Agent `v0.20.2` (`2026.8.16`) on Python `3.13.15`. Its checkout matches `NousResearch/hermes-agent` `origin/main` with zero local commits and zero behavioral source diff. Local capabilities belong in profile plugins/config, not updater-managed release directories.
 
 ### Preserve the 07:00 Telegram session boundary
 
@@ -93,9 +120,9 @@ Two bugs fixed 2026-07-05:
 - `grep -o '-*[0-9]*$'` — a dash-leading pattern is parsed as a grep **option**, so LastExitStatus parsing had been broken since the script was written; crash detection (nonzero-exit alerts) never actually worked. Fixed with `grep -o --`.
 - macOS has no `timeout(1)` — a `timeout 10 docker inspect …` guard silently failed and produced one false "all containers down" Telegram alert before removal.
 
-## 23. Honcho base URL — localhost, never a LAN IP
+## 23. Honcho base URL — authenticated loopback alias, never a LAN IP
 
-The Honcho API binds `127.0.0.1:8000`. Root `~/.hermes/honcho.json` once pointed at an OrbStack subnet IP (`192.168.107.5`) — those rotate (`.4` → `.5` → dead), and a LAN-IP target also trips macOS **Local Network** TCC prompts against Python. All profile-level honcho.json files and the root file now use `http://localhost:8000`. If memory misbehaves: `docker ps` first, then confirm no config regressed to a subnet IP.
+The Honcho API binds `127.0.0.1:8000`, but authenticated Hermes clients use `http://honcho.localhost:8000`. That hostname must resolve exclusively to `127.0.0.1` and/or `::1`. Literal `localhost`/`127.0.0.1` currently selects Hermes' unauthenticated SDK placeholder unless an API key is written explicitly to `honcho.json`; the loopback alias preserves the process-scoped `HONCHO_API_KEY` without persisting a JWT or disabling server auth. All nine profile-local files and the root fallback use the alias at mode `0600`. Acceptance requires container health, vault-root/server-secret hash parity, a fresh scoped-JWT workspace read, a real Hermes peer/card or search read, and zero post-restart `Invalid JWT` errors. `/health` alone is insufficient.
 
 ## 24. Session-store hygiene
 
@@ -134,81 +161,33 @@ June 2026 skill-curation merges renamed skills without updating cron job `skills
 
 All 23 affected job definitions repointed 2026-07-05. Also found and fixed a **double eviction**: general's jobs.json held central `mem-eviction-<profile>` copies for all 9 profiles while each profile also had a local twin — both ran nightly, 30–45 min apart (central copies now paused, locals canonical). After any future skill merge: sweep every profile's `cron/jobs.json` for the old name AND check profile-local `skills/` dirs before declaring a reference dead — health's medication skills live in `profiles/health/skills/`, not canonical.
 
-## 27. Runtime topology remediation and gated retirement (2026-07-25)
+## 27. Runtime topology and extension ownership
 
-The production installation remains intentionally split by responsibility, not by competing agent cores:
+Production is intentionally split by responsibility:
 
-- `~/.hermes/runtime/hermes-agent` is the only production Hermes code and Python environment.
-- `~/.hermes/profiles/<name>` owns profile state and configuration.
+- `~/.hermes/runtime/releases/hermes-agent-<hash>` is updater-owned immutable Hermes core.
+- `~/.local/bin/hermes` selects the active managed release.
+- `~/.hermes/profiles/<name>` owns profile state, configuration and installed plugins.
 - `~/Library/LaunchAgents` owns macOS service definitions.
-- `~/.hermes/scripts` owns machine-level deterministic cron scripts.
-- This repository is the canonical, reviewable source for deployment artifacts and local Hermes patches.
+- `~/.hermes/scripts` owns machine-level deterministic wrappers and maintenance scripts.
+- This repository owns reviewed local plugins, deployment helpers and durable documentation—not a fork of Hermes core.
 
-The July 25 audit removed the obsolete `ai.hermes.linear-bridge` LaunchAgent and its unused runtime. The native Linear plugin remains on `127.0.0.1:8787` and continues to own the existing credential, OAuth, and SQLite state files. Unsigned local Desktop `dist/` and `release/` artifacts were deleted; no Hermes Desktop app is installed in `/Applications`.
+The active Hermes checkout must match official `NousResearch/hermes-agent` `origin/main`: zero local commits and zero behavioral source diff. Old files under `patches/hermes-agent/` are historical migration artefacts only; the current updater does not apply or carry them.
 
-The dashboard CLI status detector did not recognize the machine dashboard command when `-p default` preceded `dashboard`. The verified local production commit is preserved as an applyable mail patch:
+Current local behavior is extension-first:
 
-```text
-patches/hermes-agent/0001-fix-cli-detect-profile-scoped-dashboard-processes.patch
-```
+- **Linear:** the ten-file profile-local plugin owns native AgentSession routing, durable channel-route reservation, lifecycle/closure policy, official-MCP outbound tools, and secret-safe tool-driven ephemeral `thought` progress. Gateway heartbeats are not used as Linear execution progress. Fresh human mentions are scoped by the new AgentSession ID, so an earlier completed manager session cannot poison a distinct new session.
+- **Honcho:** profile-local `honcho.json` plus the loopback-only `honcho.localhost` alias preserves process-scoped JWT authentication. Auth is never disabled and JWTs are never written to config.
+- **Credential bootstrap:** the external Keychain → official 1Password SDK wrapper remains a separately owned launcher contract. Revalidate it after every core update; do not modify upstream core merely to recognize the wrapper.
 
-Apply it only to a compatible Hermes Agent checkout and run the focused stale-dashboard, lifecycle, and Windows subprocess tests before promotion. The patch structurally validates supported launchers instead of substring-matching arbitrary process text; this is security-sensitive because the same detector is used by the update kill path.
+Upgrade acceptance therefore has four independent gates:
 
-Authenticated self-hosted Honcho instances on loopback/LAN need a separate explicit opt-in because upstream otherwise replaces every environment-owned API key with the unauthenticated `"local"` placeholder. General sets `hosts.hermes_general.authRequired=true`; the scoped JWT remains process-only. The verified compatibility patch is:
+1. Official core checkout equals `origin/main` and the updater backup exists.
+2. Reviewed local plugin commit is on private `hermes-setup` `origin/main`, then commit-pinned into each profile.
+3. Every restarted profile serves the expected plugin version and clean health/outbox state.
+4. Real canaries pass: Linear fresh-session + ephemeral-progress + human-Done closure, and Honcho authenticated profile/card/search reads.
 
-```text
-patches/hermes-agent/0002-fix-honcho-authenticated-local-env-credentials.patch
-```
-
-The fleet's macOS LaunchAgents intentionally use a Keychain → 1Password SDK bootstrap wrapper instead of Hermes' generated direct-Python `ProgramArguments`. Exact generated-plist comparison therefore reports a false stale definition and `gateway start` can overwrite the credential boundary. The owned compatibility patch adds an explicit, fail-closed plist opt-out:
-
-```text
-patches/hermes-agent/0003-fix-gateway-externally-managed-launchd-definitions.patch
-```
-
-Only a native plist boolean `HermesManagedExternally=true` together with an exact `Label == get_launchd_label()` match opts out. Valid XML and binary plist encodings are supported by macOS and preserve the same typed contract. Missing/wrong labels, missing/false/string-valued markers, typed-malformed XML, and invalid binary/non-plist bytes remain on the strict comparison/repair path without crashing status/install/start. With a valid marker, normal status/install/start paths report the definition as externally managed and do not rewrite it; an explicit forced install remains the operator-controlled escape hatch. Before adding the marker to a live plist, preserve its SHA-256 and rollback copy, verify the wrapper's fail-closed credential bootstrap, and use a separate plist/reload/restart approval gate.
-
-Hermes' shared send target parser recognizes platform-specific numeric and structured IDs but otherwise treats a target as a friendly channel name. Linear Agent Session UUIDs therefore fell through to directory/home resolution. The owned core patch adds a narrowly scoped Linear UUID target class, rejects malformed and cross-platform UUID-shaped aliases, and prevents cron from re-resolving already-explicit targets:
-
-```text
-patches/hermes-agent/0004-fix-send-preserve-opaque-uuid-delivery-targets.patch
-```
-
-Run the lightweight send target parser tests, cron delivery-target tests, and the complete send-message tool and CLI send suites before candidate promotion. A source-only acceptance must prove the exact UUID reaches the registered standalone sender without directory or home fallback; production acceptance additionally requires an approved non-stale Agent Session target and authoritative activity read-back.
-
-Periodic gateway heartbeats are transient UI, but append-only control-plane adapters map every `send()` to a terminal activity. A three-minute Linear canary proved the generic heartbeat fallback could therefore complete an active AgentSession with `Working — …` before the real final response. The owned core patch capability-gates heartbeat edit/send calls on `SUPPORTS_MESSAGE_EDITING` and preserves prior message IDs after failed/partial sends:
-
-```text
-patches/hermes-agent/0005-fix-gateway-suppress-heartbeats-on-noneditable-platforms.patch
-```
-
-Before promotion, run `tests/gateway/test_long_running_notifications.py`, Ruff, compile checks, and an independent diff review. Production acceptance requires a fresh human-triggered AgentSession that lasts beyond the configured heartbeat interval, remains active without a heartbeat `response`, then completes with exactly one real terminal `response`; pending/in-flight/dead outbox counts must remain zero.
-
-Linear later gained a vendor-native transient surface that does not share the terminal semantics of a normal append-only `send()`: ephemeral `thought` activities are replaced by the next activity. The follow-up compatibility patch preserves the append-only suppression by default while allowing adapters that explicitly declare `SUPPORTS_TRANSIENT_PROGRESS` to receive gateway heartbeats with typed metadata:
-
-```text
-patches/hermes-agent/0006-verified-feat-gateway-support-transient-progress-act.patch
-```
-
-The Linear adapter maps per-turn-keyed heartbeats to durable ephemeral `thought` activities; ordinary sends remain final `response` activities and generic tool-progress remains disabled. Acceptance must prove the first transient activity arrives after the configured interval, an identical heartbeat in a later follow-up gets a distinct durable activity, progress does not complete the AgentSession, final delivery replaces the ephemeral status, and no outbox row is pending, in-flight, or dead.
-
-A later semantic-progress patch keeps a per-turn, lock-protected summary of the last safe tool phase so transport states such as `receiving stream response` cannot erase useful context:
-
-```text
-patches/hermes-agent/0007-verified-feat-gateway-publish-meaningful-heartbeat-c.patch
-```
-
-The summary layer is allowlist-only: it emits fixed phrases such as `Running tests` or `Reading Linear work state`, never raw commands, paths, issue identifiers, arbitrary tool names, tool results, or model reasoning. Parallel and completion-only events degrade conservatively to aggregate wording. Run both `tests/gateway/test_meaningful_heartbeat_progress.py` and `tests/gateway/test_long_running_notifications.py`; verify callback wiring with long-running notifications as the sole progress consumer, then require a real Linear AgentSession canary whose ephemeral `thought` shows the safe phase before the iteration counter and remains non-terminal.
-
-After each Hermes Agent upgrade, classify all owned patches before promotion:
-
-```bash
-python3 scripts/manage_hermes_agent_patches.py \
-  --runtime-root /absolute/path/to/candidate-hermes-agent \
-  --mode check
-```
-
-Only `already-applied` and `upstreamed` pass. Use explicit `--mode apply` only against the side-by-side candidate; the manager rejects dirty worktrees and reports `applicable` versus `conflict` separately. `integrations/honcho-codex-adapter/scripts/stage_hermes_upgrade.sh` repeats this check fail-closed. For the local-auth patch, run the focused three local-auth tests and the full `tests/honcho_plugin/test_client.py` suite, then restart affected processes and require a real authenticated Honcho canary. For the externally-managed launchd patch, run the focused marker/rewrite/status regressions plus the complete gateway service and status suites; then validate one general-only marked plist canary without touching the other eight LaunchAgents. Roll back by restoring the previous immutable runtime pointer and the exact pre-marker plist copy, then restart only the approved profile and repeat PID, health, platform, and secret-boundary acceptance. Never replace the Honcho flag with a literal `apiKey` in profile files.
+If a future upstream regression cannot be solved by config, plugin, wrapper or supported sidecar, isolate a candidate core change in a separate worktree with RED/GREEN tests and independent review. Do not place it into a managed release or production updater chain until that necessity is proven.
 
 Quicksilver retirement is deliberately gated:
 

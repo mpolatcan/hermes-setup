@@ -14,7 +14,7 @@ flowchart TB
         user["user peer = YOU<br/>shared across all agents"]:::user
         peers["ai peers (= slugs): all 9 profiles<br/>studio/general shared · finance/health isolated"]:::infra
     end
-    notion[("Durable knowledge plane — Notion<br/>knowledge · decisions · tasks · reports")]:::knowledge
+    notion[("Durable knowledge plane — Notion<br/>knowledge · decisions · plans · reports")]:::knowledge
     per --> hon
     per <--> notion
     hon -. "promote durable conclusions" .-> notion
@@ -60,14 +60,15 @@ For a nine-agent setup with shared user identity, **Honcho is the right memory p
 
 **Durable knowledge plane — Notion (external, cross-profile).**
 
-Stable research, decisions, tasks, capability candidates, and detailed cron reports belong in structured Notion surfaces. They are searchable and reusable across profiles without pretending that a derived conversational observation is a project artifact. Honcho may promote durable conclusions into Notion through the scheduled bridge, but it does not become the canonical store for documents or pipeline state. Full ownership, auth, dedup, schema-read, and verification rules: [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
+Stable research, decisions, substantial visible plans, capability candidates, runbooks, and detailed reports belong in structured Notion surfaces. Linear remains canonical for tasks, owners, dependencies, checkpoints, acceptance, and closure. Honcho may promote durable conclusions into Notion through the scheduled bridge, but it does not become the canonical store for documents or execution state. Full ownership, auth, dedup, schema-read, and verification rules: [Notion — Knowledge & Reporting](16-notion-knowledge-and-reporting.md).
 
 | Need | Correct system |
 |---|---|
 | Fact required in every turn | `MEMORY.md` / `USER.md` |
 | Exact earlier discussion | Per-profile session search |
 | User/peer model or semantic conversation context | Honcho |
-| Durable reusable knowledge, decision, task, or report | Notion |
+| Task, owner, dependency, checkpoint, acceptance, or closure | Linear |
+| Durable reusable knowledge, decision, visible plan, runbook, or report | Notion |
 | Static credential | 1Password, never any memory layer |
 
 ### 9.2 Why Honcho fits a nine-agent setup specifically
@@ -116,7 +117,7 @@ flowchart TB
             end
         end
     end
-    ag -. "Honcho over loopback<br/>http://127.0.0.1:8000" .-> api
+    ag -. "authenticated Honcho over loopback alias<br/>http://honcho.localhost:8000" .-> api
     classDef codex fill:#FFCC80,stroke:#EF6C00,color:#E65100
     classDef svc fill:#00838F,stroke:#006064,color:#fff
     classDef infra fill:#7B1FA2,stroke:#4A148C,color:#fff
@@ -167,13 +168,14 @@ docker compose up -d
 docker compose logs -f api deriver   # confirm clean startup
 ```
 
-Verify the API is responding:
+Verify transport health through the loopback alias, then perform an authenticated workspace read with a freshly derived scoped JWT. Health alone is not authentication acceptance:
 
 ```bash
-curl -s http://localhost:8000/openapi.json | head -1
+curl -fsS http://honcho.localhost:8000/health
+# Then use the Hermes Honcho client/tool path for a known peer/card or workspace read.
 ```
 
-The compose file binds port 8000 to `127.0.0.1` by default — which is correct, because the agents now run natively on the same Mini and reach Honcho over loopback, not the LAN or the internet. Leave the binding as-is and verify with `lsof`:
+The compose file binds port 8000 to `127.0.0.1` by default. The agent-facing hostname `honcho.localhost` must resolve only to `127.0.0.1` and/or `::1`; the DNS alias preserves the process-scoped authenticated credential instead of triggering Hermes' unauthenticated literal-localhost placeholder path. Leave the bind as-is and verify both address resolution and the listener:
 
 ```bash
 sudo lsof -iTCP -sTCP:LISTEN -P -n | grep 8000
@@ -205,18 +207,20 @@ Not every agent needs the full memory stack. Match the configuration to what the
 | `writer` | Yes | Yes | Yes (peer: `writer`) | Voice, edits accepted, tone calibration |
 | `producer` | Yes | Yes | Yes (peer: `producer`) | Your taste profile across game ideas; canonical pipeline rows in Notion |
 
-All nine use Honcho. The fleet configuration lives once in shared `~/.hermes/honcho.json`; per-profile duplicates are unnecessary. Host-key resolution and peer separation were re-verified operationally on v0.19.0.
+All nine use Honcho. Each profile has its own mode-`0600` `~/.hermes/profiles/<profile>/honcho.json`, plus a root fallback. Every file uses the same loopback alias, while the host block `hermes_<profile>` pins that profile's AI peer, the `mutlu` user peer, and the correct sensitivity-tier workspace. This is deliberate profile-local identity/config isolation, not duplicate drift.
 
 Create one per agent. Example for `coder`:
 
 ```json
 {
-  "baseUrl": "http://127.0.0.1:8000",
+  "baseUrl": "http://honcho.localhost:8000",
+  "workspace": "polatcan-gaming",
   "hosts": {
-    "hermes": {
+    "hermes_coder": {
       "enabled": true,
       "aiPeer": "coder",
-      "peerName": "your-name",
+      "peerName": "mutlu",
+      "pinPeerName": true,
       "workspace": "polatcan-gaming",
       "recallMode": "hybrid",
       "writeFrequency": "turn",
@@ -228,7 +232,7 @@ Create one per agent. Example for `coder`:
 
 Key fields:
 
-- `baseUrl` — Honcho server on the Mini, reached over loopback (`127.0.0.1`).
+- `baseUrl` — authenticated self-hosted Honcho over the loopback-only `honcho.localhost` alias. Do not regress to a LAN IP or literal `localhost`/`127.0.0.1` while auth is enabled.
 - `aiPeer` — **unique per agent** (`coder`, `writer`, `researcher`, `assistant`). This is the identity Honcho uses to build per-agent observations.
 - `peerName` — your name. **Same value across all agent configs.** This is what makes the user peer shared.
 - `workspace` — what binds agents into one shared user model. **Tiered (current, §9.2):** `polatcan-gaming` for the seven studio agents, `polatcan-finance` for `finance`, `polatcan-health` for `health`. Agents in the *same* workspace share the user peer; different workspaces are fully isolated.

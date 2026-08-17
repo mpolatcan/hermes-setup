@@ -100,13 +100,19 @@ class HermesPatchManagerTests(unittest.TestCase):
 
     def test_stage_script_defaults_are_root_anchored(self) -> None:
         text = STAGE_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('config_path="${2:-$root/config/adapter.toml}"', text)
-        self.assertIn('adapter_python="${3:-$root/.venv/bin/python}"', text)
+        self.assertIn('[[ $# -eq 4 ]] || usage', text)
+        self.assertIn('config_path="$2"', text)
+        self.assertIn('adapter_python="$3"', text)
 
-    def test_stage_script_has_fail_closed_patch_gate(self) -> None:
+    def test_stage_script_has_fail_closed_clean_official_sha_gate(self) -> None:
         text = STAGE_SCRIPT.read_text()
-        self.assertIn("manage_hermes_agent_patches.py", text)
-        self.assertIn("--mode check", text)
+        self.assertIn('expected_sha="$4"', text)
+        self.assertIn('candidate_head="$(git -C "$candidate_root" rev-parse HEAD)"', text)
+        self.assertIn('[[ "$candidate_head" == "$expected_sha" ]]', text)
+        self.assertIn("NousResearch/hermes-agent.git", text)
+        self.assertIn('git -C "$candidate_root" diff --quiet --', text)
+        self.assertIn('status --porcelain --untracked-files=all', text)
+        self.assertNotIn("manage_hermes_agent_patches.py", text)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ Fail-closed 1Password SDK bootstrap for Hermes Telegram gateways on the macOS fl
 
 ## Why this exists
 
-Hermes 0.19.0's built-in 1Password source calls the `op` CLI before applying environment precedence. Supplying already-resolved environment variables with `override_existing: false` therefore does **not** prevent `op read` child processes. That path is unsuitable for unattended launchd gateways on this host.
+The fleet adopted this bootstrap when Hermes' built-in 1Password source called the `op` CLI before applying environment precedence. The current production release is revalidated against this boundary rather than assumed to preserve it. The requirement remains: unattended launchd gateways use the official 1Password SDK path and never spawn persistent `op read` children.
 
 This component resolves the configured `ENV_VAR -> op://...` map through the official Python SDK before starting Hermes. The built-in Hermes 1Password source must be disabled for every promoted profile.
 
@@ -18,7 +18,7 @@ This component resolves the configured `ENV_VAR -> op://...` map through the off
 - Resolved values exist briefly in bootstrap memory and only the selected target child environment. Gateway mode resolves the full configured map; general-only `serve` mode resolves the same map and binds a fixed Desktop backend to `127.0.0.1:9120`; general-only `desktop` mode resolves only `HERMES_DASHBOARD_SESSION_TOKEN`, renames it to the Desktop remote-token variable, fixes the URL to `http://127.0.0.1:9120`, and never gives Desktop the bootstrap token, Honcho root/JWT, or unrelated credentials; maintenance `send` is restricted to the configured Telegram home target, resolves only `TELEGRAM_*` references, rejects local-file/media delivery, and builds the bootstrap and child from small non-secret environment allowlists rather than inheriting the caller environment.
 - In strict/promoted mode, `secrets.onepassword.enabled` must be exactly `false`; otherwise startup is rejected.
 - The temporary rollout launcher may pass one explicit absolute legacy executable; only profiles still carrying `enabled: true` are dispatched there, without SDK resolution.
-- Hermes starts through the managed `v0.19.0` console executable.
+- Hermes starts through the active managed release selected by `~/.local/bin/hermes`; read the version and release directory live instead of pinning an old path in this document.
 
 ## Runtime layout
 
@@ -49,7 +49,7 @@ The canonical fleet restart helper is:
 ## Test
 
 ```bash
-HERMES_PY=~/.hermes/runtime/hermes-agent/venv/bin/python
+HERMES_PY="$(dirname "$(readlink /Users/mutlupolatcan/.local/bin/hermes)")/python"
 "$HERMES_PY" -m unittest discover \
   -s integrations/hermes-gateway-sdk-bootstrap/tests \
   -p 'test_*.py' -v
@@ -120,7 +120,7 @@ The installer requires the signed, notarized Python.org 3.13 runtime at `/Librar
 Production is strict across all nine profiles:
 
 - `secrets.onepassword.enabled: false` in every profile.
-- `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the managed Hermes `v0.19.0` runtime.
+- `~/.hermes/scripts/hermes-gateway-keychain.sh` resolves configured references through the 1Password SDK and execs the active managed Hermes release. Production currently reports Hermes Agent `v0.20.2` on Python `3.13.15`; this is a live acceptance fact, not a hard-coded launcher dependency.
 - The production launcher carries no `--legacy-hermes` argument. An accidental re-enable therefore fails closed.
 - `~/.hermes/scripts/hermes-send-keychain.sh` re-execs itself with a clean environment before Keychain lookup, then uses the same resolution boundary for the narrow Telegram-home `hermes send` command used by maintenance notifications. The bootstrap token is removed before Hermes executes.
 - `~/.hermes/scripts/hermes-serve-keychain.sh` does the same for a general-only, argument-free `hermes serve --isolated --host 127.0.0.1 --port 9120` backend used by Hermes Desktop remote-backend mode.

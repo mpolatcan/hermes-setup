@@ -46,6 +46,8 @@ flowchart LR
 
 An Agent Session and a Hermes execution are different objects. Linear creates the native Agent Session when a human delegates or explicitly mentions an app-user; this adapter never calls an `agentSessionCreate` mutation. The adapter may bind an accepted vendor session to an issue, but binding alone is not permission to run a model.
 
+A completed manager activation is scoped to its exact Agent Session ID. Re-delivery of that same session remains a duplicate, but a later human mention that creates a distinct Agent Session ID proceeds through the normal fresh-session path. A stale `manager_activation=session_started` record therefore cannot poison future human mentions on the same still-open issue.
+
 | Incoming signal | Session behavior | Hermes execution behavior |
 |---|---|---|
 | `AgentSessionEvent.created` from a human delegate/mention or an authorized different app-user handoff | Accept and durably bind the vendor-created session | Start only when lifecycle, dependency, dedup, and terminal-fence guards allow it. A blocked/parked issue waits; a fenced terminal issue reconciles closure and dispatches nothing. |
@@ -194,12 +196,7 @@ gateway:
         planned_owner_ids: []                 # authoritative human assignee UUIDs; general uses Mutlu only
         closure_reconciliation_enabled: false # separate general-only canary/config gate
         closure_allowed_team_ids: []           # authoritative team UUIDs; empty fails closed
-        issue_status_writeback_enabled: true
-        issue_status_mapping:
-          queued: Todo
-          running: In Progress
-          blocked: Blocked
-          done: Done
+        issue_status_writeback_enabled: false # fleet policy: human owns workflow state
         outbound_mcp:
           enabled: false                    # Gate B: register no outbound tools by default
           mutations_enabled: false          # Gate C/D: read-only before any writes
@@ -224,7 +221,7 @@ The plugin source is deployed to each profile-local runtime directory:
 /Users/mutlupolatcan/.hermes/profiles/<profile>/plugins/linear/
 ```
 
-The 0.8.5 tracked deployment allowlist is exactly `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, `oauth_store.py`, `mcp_client.py`, `outbound_policy.py`, `outbound_ledger.py`, `linear_tools.py`, and `plugin.yaml`. Copy only those ten files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. Earlier runtime acceptances are historical evidence, not proof that 0.8.5 is deployed. Exact entry sets, symlink status, directory/file modes, and source/runtime hashes must be established by a fresh live audit for each target.
+The tracked deployment allowlist is exactly `__init__.py`, `adapter.py`, `ledger.py`, `linear_client.py`, `oauth_store.py`, `mcp_client.py`, `outbound_policy.py`, `outbound_ledger.py`, `linear_tools.py`, and `plugin.yaml`. Copy only those ten files from `integrations/linear-hermes-platform/`; never copy tests, caches, credentials, OAuth stores, or SQLite state. The current accepted production baseline is `0.8.9`; earlier versioned acceptances are historical evidence, not proof of what is serving now. Exact entry sets, symlink status, directory/file modes, source/runtime hashes, process restart, and `/health` version must be established by a fresh live audit for each target.
 
 Deployment is an approval-gated operation, not a blind fleet copy. There is intentionally no partial shell recipe here: source review, promotion, rollback and runtime restart must remain one fail-closed procedure. For one named profile:
 
@@ -270,7 +267,7 @@ The helper writes and prints the immutable rollback path and tree digest before 
 
 Runtime promotion, config mutation and `/restart` remain separate approval gates. Runtime extras are preserved inside the exact rollback tree rather than copied into the new ten-file target.
 
-The read-only fleet audit must report four dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, and directory/file modes. A 0.8.5 deployment must produce a new reviewed manifest for the named target rather than inheriting an older acceptance count.
+The read-only fleet audit must report five dimensions separately: allowlisted source/runtime hashes, exact entry sets, symlink status, directory/file modes, and the version served by the restarted process. A deployment must produce a new reviewed manifest for the named target rather than inheriting an older acceptance count.
 
 | Persona | Profile | Loopback | Public hostname |
 |---|---|---:|---|
@@ -284,7 +281,7 @@ The read-only fleet audit must report four dimensions separately: allowlisted so
 | Defne | `health` | `127.0.0.1:8796` | `defne-linear.mutlupolatcan.com` |
 | Murat | `finance` | `127.0.0.1:8797` | `murat-linear.mutlupolatcan.com` |
 
-`data_change_events_enabled` and `dependency_wait_enabled` are live for standard profiles. Defne and Murat keep both flags `false` to preserve the sensitive-profile execution boundary; their explicit Agent Session lifecycle may write only non-terminal `Todo`, `Blocked`, and `In Progress` states. Successful completion preserves the issue state for Mutlu's final acceptance.
+`data_change_events_enabled` and `dependency_wait_enabled` are live on all nine profiles; data events remain control/context signals rather than free-form execution triggers. Planned activation and human-Done closure reconciliation are explicit on `general`; other profiles use their normal Direct/session lifecycle. Issue status writeback is disabled fleet-wide, so successful execution preserves issue state for Mutlu's final acceptance. Sensitive-profile content policy remains independently fail-closed.
 
 ## Official Linear MCP outbound tools
 
@@ -330,25 +327,15 @@ A gateway restart is required after configuration or plugin changes. Restart onl
 
 The normal acknowledgment uses the installed Linear app actor name (`Derya`, `Doruk`, etc.); persona text is never hard-coded. To suppress Hermes' one-time “No home channel is set” notice, configure a dedicated long-lived operational-inbox Agent Session as `gateway.platforms.linear.home_channel.chat_id`. Do not use a disposable task session or an issue ID. Terminal operational-inbox sessions remain valid transport anchors: issue workflow state does not determine whether the Agent Session can receive an activity. Before any normal direct or cron delivery is queued, and again before every outbox transport attempt, the adapter reads that exact Agent Session authoritatively and verifies it belongs to the installed app-user. Closure reconciliation uses its separately verified ordered outbox path.
 
-## Persistent outbox and issue status writeback
+## Persistent activity outbox
 
-All outbound `agentActivityCreate` and `issueUpdate` operations are inserted into the same SQLite database before network delivery. The outbox row contains a stable ID, Agent Session aggregate key, per-session sequence, operation, JSON payload, state (`pending`, `in_flight`, `delivered`, or `dead`), attempt count, next-attempt time, and delivery/error timestamps.
+All outbound `agentActivityCreate` operations are inserted into SQLite before network delivery. The outbox row contains a stable ID, Agent Session aggregate key, per-session sequence, operation, JSON payload, state (`pending`, `in_flight`, `delivered`, or `dead`), attempt count, next-attempt time, and delivery/error timestamps.
 
 Delivery is ordered per Agent Session. The response activity containing completion evidence is persisted before the human review gate. Stale `in_flight` rows are reclaimed after restart. Retryable failures use exponential backoff capped by `outbox_max_delay_seconds`; Linear `retry_after` wins when supplied. Non-retryable failures become dead letters and appear in `/health` as `status: degraded` without turning the liveness endpoint into a restart loop.
 
-Activity creates use the client-generated `AgentActivityCreateInput.id`, so replay after an ambiguous timeout reuses the same Linear entity ID. Issue state assignment is naturally idempotent. Producer retries use stable outbox IDs for thought, error, and status operations; normal responses receive one persisted UUID when accepted.
+Activity creates use the client-generated `AgentActivityCreateInput.id`, so replay after an ambiguous timeout reuses the same Linear entity ID. Producer retries use stable outbox IDs for thought, error, transient progress and response operations; normal responses receive one persisted UUID when accepted.
 
-Execution-to-issue mapping:
-
-| Execution state | Default Linear state | Trigger |
-|---|---|---|
-| `queued` | `Todo` | Accepted `created` Agent Session event |
-| `running` | `In Progress` | Thought acknowledgement persisted |
-| `blocked` | `Blocked` | An unresolved Linear `blocks` relation is durably recorded |
-
-`ProcessingOutcome.SUCCESS`, `ProcessingOutcome.FAILURE`, and `ProcessingOutcome.CANCELLED` preserve the current issue state. A successful run produces durable response evidence for Mutlu's review but is not itself authority to close the issue. Terminal human states (`completed` or `canceled`) and custom human workflow states are never overwritten. Bridge-owned transitions are limited to `Todo(10) -> Blocked(15) -> In Progress(20)`, allowing automatic `Blocked -> In Progress` resume. State names are resolved against the issue team at delivery time; IDs are not hard-coded. The resolved target's authoritative Linear type must be `backlog`, `unstarted`, or `started`; `completed`, `canceled`, missing, and unknown types fail closed before `issueUpdate`.
-
-The code default for `issue_status_writeback_enabled` remains fail-closed `false`; production explicitly enables it after the completed OPS-21 approval and fleet rollout. The outbox code can still be deployed and tested with writeback disabled in a canary configuration.
+`issue_status_writeback_enabled` remains fail-closed `false` in production. `ProcessingOutcome.SUCCESS`, `FAILURE`, and `CANCELLED` all preserve the current issue workflow state. Queued, running, blocked and completed visibility lives in AgentSession activities and durable wait/closure state; Mutlu owns the issue's workflow transitions. The dormant `issueUpdate` implementation is not a production fallback and cannot be enabled merely by documenting a state mapping.
 
 
 ## Data-change events and dependency waiting

@@ -42,7 +42,7 @@ Notion is the fleet's **durable knowledge and reporting plane**. It is external 
 - Honcho derives conversational context and models the user/AI peers.
 - **Notion stores structured, reusable, cross-profile knowledge and durable operational records.**
 
-These systems are not interchangeable. Honcho is not the canonical store for project artifacts, research rows, decisions, tasks, or cron reports. Notion is not a credential store and must never contain tokens, API keys, signing secrets, or OAuth material.
+These systems are not interchangeable. Honcho is not the canonical store for project artifacts, research rows, decisions, plans, or cron reports. Linear is canonical for tasks, owners, dependencies, checkpoints, tests, acceptance, and closure. Notion is not a task-status mirror or credential store and must never contain Linear activity streams, tokens, API keys, signing secrets, or OAuth material.
 
 ## Live scope
 

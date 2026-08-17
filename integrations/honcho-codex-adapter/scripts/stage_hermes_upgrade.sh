@@ -2,15 +2,17 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 /absolute/path/to/candidate-python [adapter-config] [adapter-python]" >&2
+  echo "usage: $0 /absolute/path/to/candidate-python /absolute/path/to/adapter-config /absolute/path/to/adapter-python expected-official-sha" >&2
   exit 64
 }
 
-[[ $# -ge 1 && $# -le 3 ]] || usage
+[[ $# -eq 4 ]] || usage
 root="$(cd "$(dirname "$0")/.." && pwd)"
 candidate_python="$1"
-config_path="${2:-$root/config/adapter.toml}"
-adapter_python="${3:-$root/.venv/bin/python}"
+config_path="$2"
+adapter_python="$3"
+expected_sha="$4"
+[[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$candidate_python" = /* && -x "$candidate_python" ]] || {
   echo "candidate Python must be an absolute executable path" >&2
   exit 65
@@ -30,10 +32,22 @@ adapter_abi="$($adapter_python -c 'import sys; print(f"{sys.version_info.major}.
 cd "$root"
 candidate_site="$($candidate_python -c 'import site; print(site.getsitepackages()[0])')"
 candidate_root="$($candidate_python -c 'from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).resolve().parents[1])')"
-setup_root="$(cd "$root/../.." && pwd)"
-patch_manager="$setup_root/scripts/manage_hermes_agent_patches.py"
-[[ -f "$patch_manager" ]] || { echo "missing Hermes patch manager: $patch_manager" >&2; exit 66; }
-"$adapter_python" "$patch_manager" --runtime-root "$candidate_root" --mode check
+candidate_head="$(git -C "$candidate_root" rev-parse HEAD)"
+[[ "$candidate_head" == "$expected_sha" ]] || {
+  echo "candidate HEAD does not match the reviewed official target" >&2
+  exit 67
+}
+origin_url="$(git -C "$candidate_root" remote get-url origin)"
+case "$origin_url" in
+  git@github.com:NousResearch/hermes-agent.git|https://github.com/NousResearch/hermes-agent.git) ;;
+  *) echo "candidate origin is not official NousResearch/hermes-agent" >&2; exit 67 ;;
+esac
+git -C "$candidate_root" diff --quiet --
+git -C "$candidate_root" diff --cached --quiet --
+[[ -z "$(git -C "$candidate_root" status --porcelain --untracked-files=all)" ]] || {
+  echo "candidate worktree is not clean" >&2
+  exit 67
+}
 export PYTHONPATH="$root/src:$candidate_root:$candidate_site"
 
 "$adapter_python" -m honcho_codex_adapter.cli --config "$config_path" --check-config

@@ -33,33 +33,21 @@ flowchart LR
 
 ## Candidate gate
 
-1. Install the candidate side by side using a currently supported Hermes installation
-   path. Do not run an in-place update against the live runtime.
-2. Check the candidate's locally owned Hermes patches before the adapter gate:
-
-   ```bash
-   python3 scripts/manage_hermes_agent_patches.py \
-     --runtime-root /absolute/path/to/candidate-hermes-agent \
-     --mode check
-   ```
-
-   `already-applied` and `upstreamed` pass. `applicable` means the candidate still
-   needs the local patch; `conflict` requires source review. Apply only to the
-   side-by-side candidate with an explicit command:
-
-   ```bash
-   python3 scripts/manage_hermes_agent_patches.py \
-     --runtime-root /absolute/path/to/candidate-hermes-agent \
-     --mode apply
-   ```
-
-3. Run `scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python`.
-   The stage script repeats the patch check and fails closed before compatibility
-   or adapter tests if any patch remains applicable or conflicts.
-   When the externally-managed launchd patch is locally owned, also run its
-   focused marker/rewrite/status regressions and the complete gateway service
-   and status suites. A candidate gate does not authorize adding
-   `HermesManagedExternally=true` to a live plist.
+1. Fetch official `origin/main`, record its exact commit, and install that same
+   commit side by side using a supported Hermes installation path. Do not run
+   an in-place update against the live runtime. Immediately before official
+   updater promotion, fetch again and stop if `origin/main` moved; a changed
+   target must be restaged and retested.
+2. Require the candidate checkout to match official `NousResearch/hermes-agent`
+   `origin/main` with zero local commits and zero behavioral source diff. Local
+   plugin/config/wrapper behavior is verified separately and is never applied to
+   the candidate core.
+3. Run `scripts/stage_hermes_upgrade.sh /absolute/path/to/candidate-python
+   /absolute/path/to/adapter-config /absolute/path/to/adapter-python
+   <expected-official-sha>`.
+   The stage script runs adapter config, compatibility, test and deterministic
+   probe gates directly against the clean candidate. Historical files under
+   `patches/hermes-agent/` are not an upgrade input.
 4. Review every manifest mismatch. Never regenerate the manifest merely to make the
    gate green; first inspect source and behavior changes.
 5. If the mismatch is understood and the adapter has been updated, run the test suite
@@ -70,10 +58,15 @@ flowchart LR
 7. Run the authenticated deterministic probe, all Dream envelope checks, the
    disposable effect canary, full Dream E2E, and the 11 Honcho completion-guard tests.
 8. Require zero fixture residue and preserve logs without credentials.
-9. Show the exact production runtime pointer, launcher/plist diff, rollback coordinates,
-   and restart command. Runtime promotion, plist marker insertion, and restart are
-   separate explicit operator approvals.
-10. After promotion, verify one listener, both health endpoints, the four-route
+9. Require an independent successful `hermes backup --quick --output <exact-path>`;
+   the archive must be non-empty and pass `unzip -t` before updater mutation.
+   Show the official updater command, backup/rollback coordinates, any launcher diff,
+   and restart command. Runtime promotion, launcher changes and restart are separate
+   explicit operator approvals.
+10. After the updater returns but before any gateway restart, require promoted core
+   `HEAD == expected-official-sha`. A mismatch is never served: restore the previous
+   managed release/backup and restage the new upstream target.
+11. After promotion, verify one listener, both health endpoints, the four-route
    catalog, all nine Honcho routes, recent logs, and the deterministic probe.
 
 ## Rollback boundary

@@ -232,11 +232,12 @@ non-production gate is:
 ```bash
 scripts/stage_hermes_upgrade.sh \
   /absolute/path/to/candidate-python \
-  config/adapter.toml \
-  /absolute/path/to/adapter-python
+  /absolute/path/to/adapter-config \
+  /absolute/path/to/adapter-python \
+  <expected-official-sha>
 ```
 
-It validates the typed config, exact eight-symbol compatibility manifest, the complete adapter
+It first requires the candidate's exact reviewed official SHA, official origin and clean tracked worktree; then validates the typed config, exact eight-symbol compatibility manifest, the complete adapter
 and contract suite, and Python compilation without editing the production launcher.
 Authenticated `:18081` probes, Dream effect/E2E canaries, the 11 Honcho guard tests,
 production promotion, and restart remain separate approval gates.

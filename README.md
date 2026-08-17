@@ -1,8 +1,8 @@
 # Hermes Setup
 
-A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots as the main interface, self-hosted Honcho for conversational memory, Notion for durable knowledge/reporting, and 1Password as the canonical static-credential plane. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
+A personal fleet of **nine [Hermes Agent](https://hermes-agent.nousresearch.com/) instances** running **native on a single Mac Mini M4** — one Hermes install, one profile per agent, Telegram bots and Linear Agent Sessions as the human interfaces, self-hosted Honcho for conversational memory, Notion for durable knowledge/reporting, and 1Password as the canonical static-credential plane. No containers for the agents; Docker is kept only for the Honcho and SearXNG services. Host monitoring needs no agent — a dumb launchd **watchdog** covers it ([docs/10 §14.5](docs/10-operations.md)).
 
-**Status: fully deployed — 9/9 agents live** under launchd on the Mini, all answering from Telegram, all connected to the fleet's Honcho, Notion, and 1Password-backed operating planes.
+**Status: fully deployed — 9/9 agents live** under launchd on the Mini. The fleet runs official upstream-clean Hermes Agent `v0.20.2`; Linear is a reviewed profile-local plugin (`0.8.9` at the current production baseline), while Honcho local authentication is config-only and keeps scoped JWTs in process memory.
 
 The fleet is **not** game-studio-only. It's a **general-purpose personal assistant layer** (works for your whole life) **plus** a **game-studio pipeline** layered on top. The studio names are flavor; the capabilities underneath are general.
 
@@ -55,7 +55,7 @@ flowchart TB
     personal -. "search fallback" .-> SearXNG
     wd -. "down/crash alert<br/>(bypasses agents)" .-> tg
 
-    Notion[("Notion<br/>knowledge · tasks · decisions · reports")]:::knowledge
+    Notion[("Notion<br/>knowledge · plans · decisions · reports")]:::knowledge
     OnePassword["1Password<br/>canonical static credentials"]:::secret
     ext["☁️ Codex · GPT-5.6 primary<br/>DeepSeek · fallback<br/>TinyFish · OpenRouter"]:::ext
     hermes --> ext
@@ -89,7 +89,8 @@ flowchart TB
 |---|---|---|
 | Hot/local context | `MEMORY.md`, `USER.md`, session SQLite | Compact prompt facts and exact per-profile conversation recall |
 | Conversational memory | Honcho | Derived user/peer models and semantic conversation context |
-| Durable knowledge/reporting | Notion | Bilgi Kütüphanesi, decisions, tasks, candidate pools, and cron reports |
+| Human work control | Linear | Issues, assignee/delegate, dependency, execution state, checkpoints, acceptance, and closure |
+| Durable knowledge/reporting | Notion | Bilgi Kütüphanesi, plans, decisions, candidate pools, runbooks, and reports |
 | Credentials | 1Password | Static provider, bot, webhook, and integration secrets resolved at startup |
 
 ---
@@ -166,7 +167,7 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 Linear is the human-visible command and discussion surface; Hermes remains the conversation and execution engine. Nine profile-local native platform instances receive signed Agent Session webhooks on dedicated `127.0.0.1` ports, convert them to Hermes `MessageEvent`s, and write activities and lifecycle state back through Linear GraphQL. Cloudflare Named Tunnel is the narrow public ingress and routes only each profile's exact `/linear/webhook` path to loopback. Tailscale remains private/admin mesh and Remote Desktop transport; the retired Funnel sidecar is not a fallback.
 
-The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`; optional human `started -> completed` closure reconciliation uses live actor/team/delegate read-back and a durable exactly-once final-activity ledger without rerunning the deliverable or mutating terminal state. Delegation, typed follow-up prompts, responses, and Stop hard-cancel are live-tested. Source, deployment, security, rollback, and test instructions: [`integrations/linear-hermes-platform/README.md`](integrations/linear-hermes-platform/README.md).
+The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`; human `started -> completed` closure reconciliation uses live actor/team/delegate read-back and a durable exactly-once final-activity ledger without rerunning the deliverable or mutating terminal state. Explicit OPS commands arriving on another channel are durably reserved and routed only to an active native AgentSession; otherwise the source channel fails closed and asks for a real Linear mention. A fresh human mention after an earlier manager session is accepted when Linear creates a distinct session ID. Tool calls publish secret-safe ephemeral `thought` progress from the plugin's `pre_tool_call` hook; no gateway-heartbeat core patch is required. Source, deployment, security, rollback, and test instructions: [`integrations/linear-hermes-platform/README.md`](integrations/linear-hermes-platform/README.md).
 
 ---
 
@@ -249,7 +250,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
 17. [Honcho Codex OAuth adapter](integrations/honcho-codex-adapter/README.md) — local OpenAI-compatible transport from Honcho inference routes to Hermes Codex OAuth, with tests, probes and rollback
 18. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
-19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, tasks, decisions, reports, auth boundary, and hygiene
+19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, plans, decisions, reports, auth boundary, and hygiene
 
 ---
 

@@ -83,7 +83,7 @@ Names are short (first-name only) for the chat list; the comic SOULs are in Sect
   security:
     tirith_enabled: true  # pre-exec command scanning (the remaining gate on her shell)
   ```
-- **Memory and knowledge:** full built-in + **Honcho** for Derya's rich user/conversation model; **Notion** for durable knowledge, tasks, decisions, and reports. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config. Notion records use their canonical source/domain fields instead of duplicating local profile memory.
+- **Memory, work, and knowledge:** full built-in + **Honcho** for Derya's rich user/conversation model; **Linear** for tasks, ownership, dependencies, checkpoints, acceptance, and closure; **Notion** for durable knowledge, substantial plans, decisions, runbooks, and reports. Peer IDs use the **slug** (ASCII-safe), not the display name — so renaming a persona never touches Honcho config. Notion records use their canonical source/domain fields instead of duplicating local profile memory.
   ```json
   // ~/.hermes/profiles/general/honcho.json  → "aiPeer": "general", "peerName": "<your-name>", "workspace": "polatcan-gaming"  (studio tier; finance/health use their own workspaces — docs/07 §9.2)
   ```
