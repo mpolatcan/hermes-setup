@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -343,6 +344,12 @@ def _pre_tool_progress(**kwargs: Any) -> None:
             return None
         chat_id = str(get_session_env("HERMES_SESSION_CHAT_ID", "")).strip()
         profile = str(get_session_env("HERMES_SESSION_PROFILE", "")).strip()
+        bound_session_id = str(get_session_env("HERMES_SESSION_ID", "")).strip()
+        hook_session_id = str(kwargs.get("session_id") or "").strip()
+        if bound_session_id and hook_session_id and not hmac.compare_digest(
+            bound_session_id, hook_session_id
+        ):
+            return None
         turn_key = str(kwargs.get("turn_id") or kwargs.get("api_request_id") or "").strip()
         adapter = _progress_adapter(profile)
         if not chat_id or not turn_key or adapter is None:

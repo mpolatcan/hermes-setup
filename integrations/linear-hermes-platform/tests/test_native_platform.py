@@ -1402,6 +1402,28 @@ class ToolProgressHookTests(unittest.IsolatedAsyncioTestCase):
             "sensitive-command-value", adapter.schedule_tool_progress.call_args.args[1]
         )
 
+    async def test_background_review_session_mismatch_never_sends_progress(self):
+        adapter = mock.Mock()
+        adapter.schedule_tool_progress = mock.Mock()
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "linear",
+            "HERMES_SESSION_CHAT_ID": "agent-session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_SESSION_ID": "main-hermes-session",
+        }
+        with mock.patch.object(package, "_progress_adapter", return_value=adapter), \
+             mock.patch(
+                 "gateway.session_context.get_session_env",
+                 side_effect=lambda name, default="": session_values.get(name, default),
+             ):
+            package._pre_tool_progress(
+                tool_name="skill_manage",
+                turn_id="background-turn",
+                session_id="background-review-session",
+            )
+
+        adapter.schedule_tool_progress.assert_not_called()
+
     async def test_repeated_same_category_is_deduplicated_for_entire_turn(self):
         adapter = mock.Mock()
         adapter.schedule_tool_progress = mock.Mock()
