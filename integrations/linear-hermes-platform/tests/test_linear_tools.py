@@ -20,9 +20,13 @@ from linear_tools import (  # noqa: E402
     execute_with_clients,
     register_outbound_tools,
 )
-from mcp_client import LinearMCPToolError  # noqa: E402
+from mcp_client import MCPOutcomeUnknown, LinearMCPToolError  # noqa: E402
 from oauth_store import LinearAPIError  # noqa: E402
-from outbound_ledger import OperationReservation, OutboundLedger  # noqa: E402
+from outbound_ledger import (  # noqa: E402
+    FleetGlobalLock,
+    OperationReservation,
+    OutboundLedger,
+)
 from outbound_policy import OutboundPolicy  # noqa: E402
 
 
@@ -63,6 +67,11 @@ class RegistrationTests(unittest.TestCase):
                 "mutations_enabled": mutations,
                 "allowed_mutation_tools": allowed_mutation_tools,
                 "ledger_path": str(self.root / "outbound-linear-mcp.sqlite3"),
+                "quota_admission_lock_path": str(
+                    Path.home() / ".hermes" / "state" / "locks" / "linear-quota-admission.lock"
+                ),
+                "quota_team_id": "ops-1",
+                "quota_team_key": "OPS",
                 "endpoint": "https://mcp.linear.app/mcp",
                 "expected_actor_id": "actor-1",
                 "expected_organization_id": "org-1",
@@ -360,6 +369,47 @@ class RegistrationTests(unittest.TestCase):
         )
         mcp.call_tool.assert_not_called()
 
+    def test_runtime_create_handler_passes_configured_fleet_lock(self):
+        extra = self.extra(mutations=True)
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        handler = ctx.tools["linear_save_issue"]["handler"]
+        graphql = mock.MagicMock(actor_id="actor-1", organization_id="org-1")
+        graphql.connect = mock.AsyncMock()
+        graphql.close = mock.AsyncMock()
+        mcp = mock.MagicMock()
+        mcp.connect = mock.AsyncMock()
+        mcp.close = mock.AsyncMock()
+        fleet_lock = mock.MagicMock()
+        expected = {"status": "success"}
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+            mock.patch("linear_tools.FleetGlobalLock", return_value=fleet_lock) as lock_cls,
+            mock.patch(
+                "linear_tools.execute_with_clients",
+                new=mock.AsyncMock(return_value=expected),
+            ) as execute,
+        ):
+            result = json.loads(
+                asyncio.run(
+                    handler(
+                        {
+                            "operation_key": "runtime-create-lock",
+                            "target_team_id": "ops-1",
+                            "team": "ops-1",
+                            "title": "Task",
+                        }
+                    )
+                )
+            )
+        self.assertEqual(result, expected)
+        lock_cls.assert_called_once_with(extra["outbound_mcp"]["quota_admission_lock_path"])
+        self.assertIs(execute.await_args.kwargs["quota_admission_lock"], fleet_lock)
+        self.assertEqual(execute.await_args.kwargs["quota_team_id"], "ops-1")
+        self.assertEqual(execute.await_args.kwargs["quota_team_key"], "OPS")
+
 
 class FakeGraphQL:
     actor_id = "actor-1"
@@ -385,6 +435,20 @@ class FakeGraphQL:
         self.agent_session_reads = list(agent_session_reads or [])
         self.last_agent_sessions = list(self.agent_sessions)
         self.mention_users = dict(mention_users or {})
+        self.quota_reads = 0
+
+    async def graphql(self, _query, variables):
+        self.quota_reads += 1
+        return {
+            "team": {
+                "id": variables["teamId"],
+                "key": "OPS",
+                "issues": {
+                    "nodes": [],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                },
+            }
+        }
 
     async def get_issue_team_id(self, issue_id):
         return self.issue_teams.get(issue_id, self.issue_team)
@@ -473,7 +537,15 @@ class ThreadRecordingLedger:
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.ledger = OutboundLedger(str(Path(self.tempdir.name) / "db.sqlite3"))
+        root = Path(self.tempdir.name)
+        self.ledger = OutboundLedger(str(root / "db.sqlite3"))
+        locks_root = root / "locks"
+        locks_root.mkdir(mode=0o700)
+        lock_path = locks_root / "linear-quota-admission.lock"
+        lock_path.touch(mode=0o600)
+        self.quota_admission_lock = FleetGlobalLock(
+            str(lock_path), canonical_locks_root=locks_root
+        )
         self.policy = OutboundPolicy(
             expected_actor_id="actor-1",
             expected_organization_id="org-1",
@@ -483,6 +555,584 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.ledger.close()
         self.tempdir.cleanup()
+
+    async def run_create(
+        self,
+        *,
+        operation_key: str,
+        current_count: int | Exception,
+        ledger: OutboundLedger | None = None,
+        profile_id: str = "general",
+        target_team_id: str = "ops-1",
+        quota_team_id: str = "ops-1",
+        quota_team_key: str = "OPS",
+        mcp: FakeMCP | None = None,
+    ) -> tuple[dict, FakeMCP, mock.AsyncMock]:
+        mcp = mcp or FakeMCP()
+        counter = mock.AsyncMock(
+            side_effect=current_count
+            if isinstance(current_count, Exception)
+            else None,
+            return_value=None
+            if isinstance(current_count, Exception)
+            else current_count,
+        )
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id=profile_id,
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": operation_key,
+                    "target_team_id": target_team_id,
+                    "team": target_team_id,
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=ledger or self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id=quota_team_id,
+                quota_team_key=quota_team_key,
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
+        return result, mcp, counter
+
+    async def test_matching_non_ops_quota_team_is_counted_without_hard_coding(self):
+        policy = OutboundPolicy(
+            expected_actor_id="actor-1",
+            expected_organization_id="org-1",
+            allowed_team_ids={"eng-1"},
+        )
+        counter = mock.AsyncMock(return_value=12)
+        mcp = FakeMCP()
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="coder",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "eng-create",
+                    "target_team_id": "eng-1",
+                    "team": "eng-1",
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=policy,
+                ledger=self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id="eng-1",
+                quota_team_key="ENG",
+                graphql_client=FakeGraphQL(issue_team="eng-1"),
+                mcp_client=mcp,
+            )
+        self.assertEqual(result["status"], "success")
+        counter.assert_awaited_once_with(mock.ANY, "eng-1", "ENG")
+
+    async def test_create_target_team_mismatch_is_denied_before_lock_count_or_vendor(self):
+        counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
+        mcp = FakeMCP()
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "wrong-quota-team",
+                    "target_team_id": "other-1",
+                    "team": "other-1",
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id="ops-1",
+                quota_team_key="OPS",
+                graphql_client=FakeGraphQL(issue_team="other-1"),
+                mcp_client=mcp,
+            )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "team_not_allowed"},
+        )
+        counter.assert_not_awaited()
+        self.assertEqual(mcp.calls, [])
+
+    async def test_missing_or_unsafe_quota_team_config_fails_create_closed(self):
+        for team_id, team_key in (("", "OPS"), ("ops-1", ""), ("ops-1", "OPS\nBAD")):
+            with self.subTest(team_id=team_id, team_key=team_key):
+                result, mcp, counter = await self.run_create(
+                    operation_key=f"bad-config-{len(team_id)}-{len(team_key)}",
+                    current_count=AssertionError("quota count called"),
+                    quota_team_id=team_id,
+                    quota_team_key=team_key,
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "error": "linear_policy_denied",
+                        "reason": "quota_team_config_invalid",
+                    },
+                )
+                counter.assert_not_awaited()
+                self.assertEqual(mcp.calls, [])
+
+    async def test_create_without_quota_admission_lock_fails_before_count_or_mutation(self):
+        mcp = FakeMCP()
+        counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "missing-admission-lock",
+                    "target_team_id": "ops-1",
+                    "team": "ops-1",
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                quota_admission_lock=None,
+                quota_team_id="ops-1",
+                quota_team_key="OPS",
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "quota_admission_lock_unavailable"},
+        )
+        counter.assert_not_awaited()
+        self.assertEqual(mcp.calls, [])
+
+    async def test_create_with_unsafe_quota_admission_lock_fails_before_count_or_mutation(self):
+        self.quota_admission_lock.path.chmod(0o644)
+        mcp = FakeMCP()
+        counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "unsafe-admission-lock",
+                    "target_team_id": "ops-1",
+                    "team": "ops-1",
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id="ops-1",
+                quota_team_key="OPS",
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "quota_admission_lock_unavailable"},
+        )
+        counter.assert_not_awaited()
+        self.assertEqual(mcp.calls, [])
+
+    async def test_cancelled_create_waiter_does_not_orphan_fleet_lock(self):
+        held_fd = self.quota_admission_lock.acquire()
+        assert held_fd is not None
+        counter = mock.AsyncMock(side_effect=AssertionError("count ran before lock"))
+        mcp = FakeMCP()
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            waiter = asyncio.create_task(
+                execute_with_clients(
+                    profile_id="general",
+                    vendor_tool="save_issue",
+                    arguments={
+                        "operation_key": "cancelled-lock-waiter",
+                        "target_team_id": "ops-1",
+                        "team": "ops-1",
+                        "title": "Task",
+                    },
+                    mutation=True,
+                    policy=self.policy,
+                    ledger=self.ledger,
+                    quota_admission_lock=self.quota_admission_lock,
+                    quota_team_id="ops-1",
+                    quota_team_key="OPS",
+                    graphql_client=FakeGraphQL(),
+                    mcp_client=mcp,
+                )
+            )
+            await asyncio.sleep(0.06)
+            waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+        self.quota_admission_lock.release(held_fd)
+
+        recovered_fd = self.quota_admission_lock.acquire(blocking=False)
+        assert recovered_fd is not None
+        self.quota_admission_lock.release(recovered_fd)
+        counter.assert_not_awaited()
+        self.assertEqual(mcp.calls, [])
+        self.assertEqual(
+            self.quota_admission_lock.inspect()["unresolved_create_fences"],
+            [],
+        )
+
+    async def test_create_quota_admission_boundaries(self):
+        cases = (
+            (238, 239, False),
+            (239, 240, True),
+            (248, 249, True),
+        )
+        for current, projected, immediate in cases:
+            with self.subTest(current=current):
+                result, mcp, counter = await self.run_create(
+                    operation_key=f"create-at-{current}",
+                    current_count=current,
+                )
+                self.assertEqual(result["status"], "success")
+                counter.assert_awaited_once_with(mock.ANY, "ops-1", "OPS")
+                self.assertEqual(
+                    [call[0] for call in mcp.calls],
+                    ["get_user", "save_issue"],
+                )
+                if immediate:
+                    self.assertEqual(
+                        result["quota_admission"],
+                        {
+                            "severity": "critical",
+                            "current_count": current,
+                            "projected_count": projected,
+                            "capacity": 250,
+                            "buffer_after": 250 - projected,
+                        },
+                    )
+                    self.assertIs(result["immediate_retention_required"], True)
+                else:
+                    self.assertNotIn("quota_admission", result)
+                    self.assertNotIn("immediate_retention_required", result)
+
+    async def test_create_quota_capacity_denials_precede_reservation_and_dispatch(self):
+        for current in (249, 250):
+            with self.subTest(current=current):
+                operation_key = f"create-denied-at-{current}"
+                result, mcp, counter = await self.run_create(
+                    operation_key=operation_key,
+                    current_count=current,
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "error": "linear_policy_denied",
+                        "reason": "quota_capacity_reserved_or_exhausted",
+                        "quota_admission": {
+                            "severity": "critical",
+                            "current_count": current,
+                            "projected_count": current + 1,
+                            "capacity": 250,
+                            "buffer_after": 250 - (current + 1),
+                        },
+                    },
+                )
+                counter.assert_awaited_once()
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+                self.assertIsNone(
+                    self.ledger.lookup(
+                        operation_key=operation_key,
+                        tool_name="save_issue",
+                        payload={"team": "ops-1", "title": "Task"},
+                        profile_id="general",
+                        actor_id="actor-1",
+                        team_id="ops-1",
+                    )
+                )
+
+    async def test_create_quota_count_drift_or_api_error_fails_before_mutation(self):
+        for failure in (
+            LinearAPIError("Operations issue inventory changed during revalidation"),
+            LinearAPIError("Linear API unavailable"),
+        ):
+            with self.subTest(failure=str(failure)):
+                operation_key = "create-count-failed-" + str(len(str(failure)))
+                result, mcp, _counter = await self.run_create(
+                    operation_key=operation_key,
+                    current_count=failure,
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "error": "linear_policy_denied",
+                        "reason": "quota_count_unavailable",
+                    },
+                )
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+                self.assertIsNone(
+                    self.ledger.lookup(
+                        operation_key=operation_key,
+                        tool_name="save_issue",
+                        payload={"team": "ops-1", "title": "Task"},
+                        profile_id="general",
+                        actor_id="actor-1",
+                        team_id="ops-1",
+                    )
+                )
+
+    async def test_create_replay_bypasses_fresh_quota_count_and_preserves_signal(self):
+        first, first_mcp, first_counter = await self.run_create(
+            operation_key="create-critical-replay",
+            current_count=239,
+        )
+        replay, replay_mcp, replay_counter = await self.run_create(
+            operation_key="create-critical-replay",
+            current_count=LinearAPIError("fresh count must not run"),
+        )
+
+        self.assertEqual(first["status"], "success")
+        first_counter.assert_awaited_once()
+        self.assertEqual(replay["status"], "success")
+        self.assertIs(replay["replayed"], True)
+        self.assertEqual(replay["result_id"], first["result_id"])
+        self.assertEqual(replay["quota_admission"], first["quota_admission"])
+        self.assertIs(replay["immediate_retention_required"], True)
+        replay_counter.assert_not_awaited()
+        self.assertEqual([call[0] for call in first_mcp.calls], ["get_user", "save_issue"])
+        self.assertEqual([call[0] for call in replay_mcp.calls], ["get_user"])
+
+    async def test_two_profile_ledgers_serialize_248_plus_two_creates_without_overshoot(self):
+        root = Path(self.tempdir.name)
+        second_ledger = OutboundLedger(str(root / "second-profile.sqlite3"))
+        shared = {"count": 248}
+
+        class CountingMCP(FakeMCP):
+            async def call_tool(inner_self, name, arguments, *, mutation=False):
+                result = await super().call_tool(name, arguments, mutation=mutation)
+                if name == "save_issue":
+                    shared["count"] += 1
+                return result
+
+        async def counter(*_args):
+            await asyncio.sleep(0.01)
+            return shared["count"]
+
+        async def create(profile_id, operation_key, ledger):
+            return await execute_with_clients(
+                profile_id=profile_id,
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": operation_key,
+                    "target_team_id": "ops-1",
+                    "team": "ops-1",
+                    "title": operation_key,
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id="ops-1",
+                quota_team_key="OPS",
+                graphql_client=FakeGraphQL(),
+                mcp_client=CountingMCP(),
+            )
+
+        try:
+            with mock.patch("linear_tools.count_operations_issues", new=counter):
+                results = await asyncio.gather(
+                    create("general", "fleet-create-general", self.ledger),
+                    create("coder", "fleet-create-coder", second_ledger),
+                )
+        finally:
+            second_ledger.close()
+
+        self.assertEqual(shared["count"], 249)
+        self.assertEqual(sum(result.get("status") == "success" for result in results), 1)
+        self.assertEqual(
+            sum(result.get("reason") == "quota_capacity_reserved_or_exhausted" for result in results),
+            1,
+        )
+
+    async def test_create_pending_and_unknown_replays_bypass_fresh_quota_count(self):
+        arguments = {
+            "operation_key": "create-state-replay",
+            "target_team_id": "ops-1",
+            "team": "ops-1",
+            "title": "Task",
+        }
+        payload = {"team": "ops-1", "title": "Task"}
+        for status in ("pending", "outcome_unknown"):
+            with self.subTest(status=status):
+                operation_key = f"create-{status}-replay"
+                self.ledger.reserve(
+                    operation_key=operation_key,
+                    tool_name="save_issue",
+                    payload=payload,
+                    profile_id="general",
+                    actor_id="actor-1",
+                    team_id="ops-1",
+                )
+                if status == "outcome_unknown":
+                    self.ledger.mark_unknown(operation_key, error_code="mcp_outcome_unknown")
+                counter = mock.AsyncMock(side_effect=AssertionError("fresh count called"))
+                mcp = FakeMCP()
+                with mock.patch("linear_tools.count_operations_issues", new=counter):
+                    result = await execute_with_clients(
+                        profile_id="general",
+                        vendor_tool="save_issue",
+                        arguments={**arguments, "operation_key": operation_key},
+                        mutation=True,
+                        policy=self.policy,
+                        ledger=self.ledger,
+                        quota_admission_lock=self.quota_admission_lock,
+                        quota_team_id="ops-1",
+                        quota_team_key="OPS",
+                        graphql_client=FakeGraphQL(),
+                        mcp_client=mcp,
+                    )
+                self.assertEqual(result["status"], status)
+                self.assertIs(result["replayed"], True)
+                counter.assert_not_awaited()
+                self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_ambiguous_create_writes_global_fence_and_blocks_distinct_profile(self):
+        class AmbiguousMCP(FakeMCP):
+            async def call_tool(inner_self, name, arguments, *, mutation=False):
+                if name == "save_issue":
+                    inner_self.calls.append((name, arguments, mutation))
+                    raise MCPOutcomeUnknown("session lost after dispatch")
+                return await super().call_tool(name, arguments, mutation=mutation)
+
+        first, _mcp, first_counter = await self.run_create(
+            operation_key="ambiguous-create-secret",
+            current_count=23,
+            mcp=AmbiguousMCP(),
+        )
+        self.assertEqual(first["error"], "linear_outcome_unknown")
+        first_counter.assert_awaited_once()
+        state = self.quota_admission_lock.inspect()
+        self.assertEqual(len(state["unresolved_create_fences"]), 1)
+        fence = state["unresolved_create_fences"][0]
+        self.assertEqual(fence["observed_current_count"], 23)
+        self.assertEqual(fence["profile_id"], "general")
+        self.assertNotIn(
+            "ambiguous-create-secret",
+            self.quota_admission_lock.state_path.read_text(),
+        )
+
+        second_ledger = OutboundLedger(
+            str(Path(self.tempdir.name) / "second-fenced-profile.sqlite3")
+        )
+        try:
+            second, second_mcp, second_counter = await self.run_create(
+                operation_key="distinct-second-profile",
+                current_count=0,
+                profile_id="coder",
+                ledger=second_ledger,
+            )
+        finally:
+            second_ledger.close()
+        self.assertEqual(
+            second,
+            {
+                "error": "linear_policy_denied",
+                "reason": "quota_create_outcome_unresolved",
+            },
+        )
+        second_counter.assert_not_awaited()
+        self.assertEqual([call[0] for call in second_mcp.calls], ["get_user"])
+
+    async def test_same_operation_replay_bypasses_existing_global_fence_and_count(self):
+        operation_key = "same-operation-fenced-replay"
+        payload = {"team": "ops-1", "title": "Task"}
+        self.ledger.reserve(
+            operation_key=operation_key,
+            tool_name="save_issue",
+            payload=payload,
+            profile_id="general",
+            actor_id="actor-1",
+            team_id="ops-1",
+        )
+        self.ledger.mark_unknown(operation_key, error_code="mcp_outcome_unknown")
+        fd = self.quota_admission_lock.acquire()
+        self.quota_admission_lock.add_unresolved_create_fence(
+            fd,
+            operation_key=operation_key,
+            observed_current_count=15,
+            profile_id="general",
+            timestamp=1_787_000_001,
+        )
+        self.quota_admission_lock.release(fd)
+
+        result, mcp, counter = await self.run_create(
+            operation_key=operation_key,
+            current_count=AssertionError("fresh count called"),
+        )
+        self.assertEqual(result["status"], "outcome_unknown")
+        self.assertIs(result["replayed"], True)
+        counter.assert_not_awaited()
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
+    async def test_cancellation_after_reservation_persists_fence_before_unlock(self):
+        dispatched = asyncio.Event()
+
+        class BlockingMCP(FakeMCP):
+            async def call_tool(inner_self, name, arguments, *, mutation=False):
+                if name == "save_issue":
+                    inner_self.calls.append((name, arguments, mutation))
+                    dispatched.set()
+                    await asyncio.Future()
+                return await super().call_tool(name, arguments, mutation=mutation)
+
+        counter = mock.AsyncMock(return_value=31)
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            task = asyncio.create_task(
+                execute_with_clients(
+                    profile_id="general",
+                    vendor_tool="save_issue",
+                    arguments={
+                        "operation_key": "cancel-after-reservation",
+                        "target_team_id": "ops-1",
+                        "team": "ops-1",
+                        "title": "Task",
+                    },
+                    mutation=True,
+                    policy=self.policy,
+                    ledger=self.ledger,
+                    quota_admission_lock=self.quota_admission_lock,
+                    quota_team_id="ops-1",
+                    quota_team_key="OPS",
+                    graphql_client=FakeGraphQL(),
+                    mcp_client=BlockingMCP(),
+                )
+            )
+            await asyncio.wait_for(dispatched.wait(), timeout=2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        fences = self.quota_admission_lock.inspect()["unresolved_create_fences"]
+        self.assertEqual(len(fences), 1)
+        self.assertEqual(fences[0]["observed_current_count"], 31)
+        self.assertEqual(fences[0]["profile_id"], "general")
+
+    async def test_save_issue_update_is_unaffected_by_create_quota_gate(self):
+        mcp = FakeMCP()
+        counter = mock.AsyncMock(side_effect=AssertionError("create counter called"))
+        with mock.patch("linear_tools.count_operations_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "update-unaffected",
+                    "target_team_id": "ops-1",
+                    "id": "OPS-1",
+                    "priority": 2,
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
+        self.assertEqual(result["status"], "success")
+        counter.assert_not_awaited()
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user", "save_issue"])
 
     @staticmethod
     def plan_context(*, updated_at="2026-08-09T18:00:00.000Z", description="Short brief"):
@@ -1088,11 +1738,12 @@ payload
             mutation=True,
             policy=self.policy,
             ledger=self.ledger,
+            quota_admission_lock=self.quota_admission_lock,
             graphql_client=FakeGraphQL(),
             mcp_client=mcp,
         )
         self.assertEqual(result, {"error": "linear_policy_denied", "reason": "team_not_allowed"})
-        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+        self.assertEqual([call[0] for call in mcp.calls], [])
 
     async def test_mutation_classification_mismatch_fails_before_identity_or_dispatch(self):
         mcp = FakeMCP()
@@ -1134,6 +1785,7 @@ payload
             mutation=True,
             policy=self.policy,
             ledger=self.ledger,
+            quota_admission_lock=self.quota_admission_lock,
             graphql_client=FakeGraphQL(),
             mcp_client=mcp,
         )
@@ -1157,22 +1809,29 @@ payload
 
     async def test_save_issue_forwards_explicit_project_null(self):
         mcp = FakeMCP()
-        result = await execute_with_clients(
-            profile_id="general",
-            vendor_tool="save_issue",
-            arguments={
-                "operation_key": "clear-project-null",
-                "target_team_id": "ops-1",
-                "team": "ops-1",
-                "title": "Task",
-                "project": None,
-            },
-            mutation=True,
-            policy=self.policy,
-            ledger=self.ledger,
-            graphql_client=FakeGraphQL(),
-            mcp_client=mcp,
-        )
+        with mock.patch(
+            "linear_tools.count_operations_issues",
+            new=mock.AsyncMock(return_value=0),
+        ):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": "clear-project-null",
+                    "target_team_id": "ops-1",
+                    "team": "ops-1",
+                    "title": "Task",
+                    "project": None,
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                quota_team_id="ops-1",
+                quota_team_key="OPS",
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
         self.assertEqual(result["status"], "success")
         forwarded = next(call[1] for call in mcp.calls if call[0] == "save_issue")
         self.assertIn("project", forwarded)

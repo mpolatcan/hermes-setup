@@ -115,6 +115,22 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 
 ## Operations issue-quota watchdog
 
+Weekly watchdog is secondary only; create-time gate is primary; no automatic deletion and blocked creates must reuse/dedup an existing issue/session/comment until approved retention frees capacity.
+
+Every model-facing `linear_save_issue` create admitted by a profile-local mutation
+allowlist takes the same fleet-global POSIX admission lock across all nine profiles,
+then first resolves an existing exact operation-key replay through that profile's
+outbound ledger and uses the watchdog's same complete, cursor-paginated, double-read
+Operations inventory counter. The lock remains held through ledger reservation,
+vendor create, and the terminal ledger write. A projected total below 240 proceeds normally. A
+projected total from 240 through 249 proceeds with structured `quota_admission`
+counts and `immediate_retention_required=true` in the tool response. A projected
+total of 250 or more fails closed before ledger reservation or vendor mutation with
+`linear_policy_denied` / `quota_capacity_reserved_or_exhausted`. Inventory drift,
+team-identity mismatch, malformed pagination, and Linear API errors likewise fail
+closed before reservation. Issue updates, lifecycle actions, and comments do not
+take this lock or enter this create-time gate.
+
 The watchdog reads every Operations issue through complete cursor pagination,
 including archived issues, then repeats the inventory read and fails closed if
 membership or ordering drifted. It has no Linear mutation operation. Severity is
@@ -251,6 +267,9 @@ gateway:
           enabled: false                    # Gate B: register no outbound tools by default
           mutations_enabled: false          # Gate C/D: read-only before any writes
           ledger_path: /Users/mutlupolatcan/.hermes/profiles/general/state/linear-outbound-mcp.sqlite3
+          quota_admission_lock_path: /Users/mutlupolatcan/.hermes/state/locks/linear-quota-admission.lock
+          quota_team_id: <operations-team-uuid>
+          quota_team_key: OPS
           endpoint: https://mcp.linear.app/mcp
           expected_actor_id: <profile-app-user-uuid>
           expected_organization_id: <installed-organization-uuid>
@@ -364,6 +383,16 @@ Every call performs fail-closed profile checks:
 Mutation authorization is capability-based rather than prompt-based. Registration preflights the complete tool-name set so a collision exposes no partial outbound surface, then applies the profile-local mutation allowlist. Derya may create issues, add same-team relations, delegate work, and write coordination comments without per-operation approval. Specialists report follow-up needs in their issue activity; Derya owns cross-agent task routing. The model-facing `linear_save_issue` schema does not expose `state`, and local policy rejects every attempted state transition even if a caller bypasses schema validation. It does preserve an explicit JSON `null` for `project`, matching the official `save_issue` contract and allowing a caller to clear project membership without conflating null with omission. No project lifecycle mutation is model-exposed: `linear_complete_project` is unknown to the registration allowlist and therefore fails closed. No agent tool can move an issue or project to `Done` or `Completed`; Mutlu performs final review and terminal transitions in Linear. Team, actor, organization, sensitive-data, authoritative relation, and idempotency gates remain fail-closed.
 
 The mutation ledger is a dedicated `outbound_mcp.ledger_path`; both it and the inbound adapter's WAL-backed `database_path` must be present and absolute, and their canonical paths must be distinct. Before `mutations_enabled: true`, the ledger parent must already exist as an owner-controlled `0700` directory; it is never created or permission-widened by the plugin. A missing/non-`0700` parent, final-component symlink, existing non-`0600` file, or zero-byte placeholder leaves mutation tools unregistered while preserving read-only tools. Operators must quarantine an accidental empty placeholder rather than treating it as SQLite. If startup preflight already omitted the mutation tools, correct the filesystem and restart only that profile so registration reruns; the first approved mutation then creates the canonical `0600` database atomically. Registration is only an early availability gate: `OutboundLedger` repeats descriptor-based owner, mode, symlink, identity and schema checks on every call, so a post-registration filesystem change fails before vendor dispatch. Invalid or missing separation leaves mutation tools unregistered, while read tools do not instantiate a ledger. It stores no issue title, description, comment body, or raw operation key. It persists only SHA-256 of the operation key, canonical payload SHA-256, profile/actor/team IDs, status, result ID/error code, and timestamps. Reusing a key with a different payload or identity is denied. A completed, proven terminal failure, or `outcome_unknown` operation is never automatically dispatched again. Mutation success requires one JSON text result containing a non-empty authoritative `id`; timeouts, lost sessions, malformed/id-less success responses, MCP/JSON-RPC errors, and HTTP `429`/`5xx` responses are outcome-unknown because the vendor may have committed before the response was lost. Business/transport mutation retries are prohibited. HTTP `401` may refresh the shared credential store for future operations, but the current mutation is not redispatched and is recorded as `outcome_unknown`. The ledger never calls `sqlite3.connect()` with a pathname: a pinned private parent-directory descriptor and cross-process flock protect secure `openat(O_NOFOLLOW)` reads, SQLite is deserialized in memory, and complete bytes are persisted with private temp creation, `fsync`, and same-directory `renameat`. Exact canonical SQL, `table_xinfo`, PK index/xinfo, foreign keys, triggers, status semantics, integrity, owner, and modes fail closed.
+
+Create admission additionally requires an explicit absolute
+`outbound_mcp.quota_admission_lock_path` directly under the canonical
+`~/.hermes/state/locks` root. Operators pre-provision that root as a runtime-user-owned
+directory with exact mode `0700` and the regular lock file with exact mode `0600`;
+the plugin never creates, replaces, chmods, or removes either. Every acquisition uses
+a pinned directory descriptor, `O_NOFOLLOW`, `fstat`, and before/after inode identity
+checks. A missing, moved, symlinked, wrongly owned, wrongly permissioned, or otherwise
+unsafe lock fails a create closed before quota counting, ledger mutation, or vendor
+mutation. It does not affect issue updates, lifecycle actions, or comments.
 
 The official endpoint and vendor schemas remain vendor-owned. Hermes exposes only the reviewed four-tool subset, accepts only the reviewed `2025-03-26` and `2025-06-18` protocol revisions, exhausts bounded `tools/list` cursor pagination, pins the exact current 52-name vendor tool set, and pins exact property sets, required-key omission semantics, primitive/array schemas, requiredness, and accepted forwarded-field constraints for the five required vendor contracts. The exposed `priority` schema is numeric, while local policy narrows it to Linear's integer `0..4` semantics and rejects strings, booleans, fractions, and out-of-range values. JSON-RPC IDs require exact integer type/value. Responses are streamed under explicit byte, nesting, node, SSE-event, content-item, and text-length bounds; exactly one matching SSE envelope is required. Mutation ambiguity remains `outcome_unknown`. Schema or protocol drift fails closed before any business operation. OAuth, GraphQL, MCP POST, and MCP session DELETE requests do not follow redirects while carrying bearer credentials.
 

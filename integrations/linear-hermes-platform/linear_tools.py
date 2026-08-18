@@ -19,7 +19,12 @@ from typing import Any
 from markdown_it import MarkdownIt
 
 try:
-    from .linear_client import LinearClient
+    from .linear_client import (
+        LINEAR_ISSUE_CAPACITY,
+        LINEAR_ISSUE_CRITICAL_THRESHOLD,
+        LinearClient,
+        count_operations_issues,
+    )
     from .mcp_client import (
         OFFICIAL_LINEAR_MCP_ENDPOINT,
         LinearMCPClient,
@@ -28,10 +33,20 @@ try:
         MCPOutcomeUnknown,
     )
     from .oauth_store import LinearOAuthStore
-    from .outbound_ledger import OutboundLedger, OutboundLedgerError
+    from .outbound_ledger import (
+        FleetGlobalLock,
+        FleetGlobalLockError,
+        OutboundLedger,
+        OutboundLedgerError,
+    )
     from .outbound_policy import OutboundPolicy, extract_linear_profile_url
 except ImportError:  # Direct module loading in standalone tests/scripts.
-    from linear_client import LinearClient
+    from linear_client import (
+        LINEAR_ISSUE_CAPACITY,
+        LINEAR_ISSUE_CRITICAL_THRESHOLD,
+        LinearClient,
+        count_operations_issues,
+    )
     from mcp_client import (
         OFFICIAL_LINEAR_MCP_ENDPOINT,
         LinearMCPClient,
@@ -40,8 +55,16 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
         MCPOutcomeUnknown,
     )
     from oauth_store import LinearOAuthStore
-    from outbound_ledger import OutboundLedger, OutboundLedgerError
+    from outbound_ledger import (
+        FleetGlobalLock,
+        FleetGlobalLockError,
+        OutboundLedger,
+        OutboundLedgerError,
+    )
     from outbound_policy import OutboundPolicy, extract_linear_profile_url
+
+CAPACITY = LINEAR_ISSUE_CAPACITY
+CRITICAL_THRESHOLD = LINEAR_ISSUE_CRITICAL_THRESHOLD
 
 WRAPPER_FIELDS = frozenset(
     {
@@ -59,6 +82,7 @@ VENDOR_MUTATION_TOOLS = frozenset(
     vendor_tool for vendor_tool, is_mutation in TOOL_MAP.values() if is_mutation
 )
 LIFECYCLE_NOOP_LEDGER_PREFIX = "lifecycle-noop:"
+QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v1:"
 LIFECYCLE_NOOP_STATUSES = frozenset(
     {"already_started", "already_completed", "already_canceled", "already_enriched"}
 )
@@ -76,6 +100,73 @@ def _decode_lifecycle_noop_result(value: str | None) -> tuple[str, str] | None:
     if not separator or status not in LIFECYCLE_NOOP_STATUSES or not result_id:
         return None
     return status, result_id
+
+
+def _quota_admission(current_count: int) -> dict[str, Any]:
+    projected_count = current_count + 1
+    return {
+        "severity": "critical",
+        "current_count": current_count,
+        "projected_count": projected_count,
+        "capacity": CAPACITY,
+        "buffer_after": CAPACITY - projected_count,
+    }
+
+
+def _encode_quota_admission_result(result_id: str, current_count: int) -> str:
+    return f"{QUOTA_ADMISSION_LEDGER_PREFIX}{current_count}:{result_id}"
+
+
+def _decode_quota_admission_result(
+    value: str | None,
+) -> tuple[str, dict[str, Any]] | None:
+    if not isinstance(value, str) or not value.startswith(QUOTA_ADMISSION_LEDGER_PREFIX):
+        return None
+    payload = value[len(QUOTA_ADMISSION_LEDGER_PREFIX):]
+    raw_count, separator, result_id = payload.partition(":")
+    if not separator or not result_id:
+        return None
+    try:
+        current_count = int(raw_count)
+    except ValueError:
+        return None
+    projected_count = current_count + 1
+    if not CRITICAL_THRESHOLD <= projected_count < CAPACITY:
+        return None
+    return result_id, _quota_admission(current_count)
+
+
+def _replay_response(
+    reservation: Any, *, include_quota_admission: bool = False
+) -> dict[str, Any]:
+    lifecycle_noop_replay = _decode_lifecycle_noop_result(reservation.result_id)
+    if lifecycle_noop_replay is not None:
+        noop_status, noop_result_id = lifecycle_noop_replay
+        return {
+            "status": noop_status,
+            "replayed": True,
+            "result_id": noop_result_id,
+        }
+    quota_replay = (
+        _decode_quota_admission_result(reservation.result_id)
+        if include_quota_admission
+        else None
+    )
+    if quota_replay is not None:
+        result_id, admission = quota_replay
+        return {
+            "status": reservation.status,
+            "replayed": True,
+            "result_id": result_id,
+            "quota_admission": admission,
+            "immediate_retention_required": True,
+        }
+    return {
+        "status": reservation.status,
+        "replayed": True,
+        "result_id": reservation.result_id,
+        **({"error_code": reservation.error_code} if reservation.error_code else {}),
+    }
 
 
 READ_ISSUE_SCHEMA = {
@@ -810,6 +901,12 @@ async def execute_with_clients(
     ledger: OutboundLedger | None,
     graphql_client: LinearClient,
     mcp_client: LinearMCPClient,
+    quota_admission_lock: FleetGlobalLock | None = None,
+    quota_team_id: str = "",
+    quota_team_key: str = "",
+    _quota_admission_lock_held: bool = False,
+    _quota_admission_fd: int | None = None,
+    _quota_create_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     derived_mutation = vendor_tool in VENDOR_MUTATION_TOOLS
     if mutation != derived_mutation:
@@ -818,6 +915,80 @@ async def execute_with_clients(
             "reason": "mutation_classification_mismatch",
         }
     mutation = derived_mutation
+    is_issue_create = vendor_tool == "save_issue" and not arguments.get("id")
+    if is_issue_create:
+        local_preflight = policy.preflight(vendor_tool, arguments)
+        if local_preflight.action != "allow":
+            return {
+                "error": "linear_policy_denied",
+                "reason": local_preflight.reason,
+            }
+        quota_config_valid = bool(
+            quota_team_id == quota_team_id.strip()
+            and 0 < len(quota_team_id) <= 200
+            and not any(ord(character) < 0x20 for character in quota_team_id)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,49}", quota_team_key)
+        )
+        if not quota_config_valid:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_team_config_invalid",
+            }
+        if str(arguments.get("target_team_id") or "") != quota_team_id:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_team_mismatch",
+            }
+    if is_issue_create and not _quota_admission_lock_held:
+        if quota_admission_lock is None:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_admission_lock_unavailable",
+            }
+        lock_fd: int | None = None
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while lock_fd is None:
+            try:
+                # Nonblocking acquisition is intentionally synchronous: it performs
+                # only bounded local descriptor checks and prevents a cancelled
+                # to_thread worker from later acquiring an orphaned fleet lock.
+                lock_fd = quota_admission_lock.acquire(blocking=False)
+            except FleetGlobalLockError:
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "quota_admission_lock_unavailable",
+                }
+            if lock_fd is None:
+                if asyncio.get_running_loop().time() >= deadline:
+                    return {
+                        "error": "linear_policy_denied",
+                        "reason": "quota_admission_lock_busy",
+                    }
+                await asyncio.sleep(0.05)
+        create_context: dict[str, Any] = {
+            "operation_key": str(arguments.get("operation_key") or ""),
+            "profile_id": profile_id,
+            "observed_current_count": None,
+        }
+        try:
+            return await execute_with_clients(
+                profile_id=profile_id,
+                vendor_tool=vendor_tool,
+                arguments=arguments,
+                mutation=mutation,
+                policy=policy,
+                ledger=ledger,
+                quota_admission_lock=quota_admission_lock,
+                quota_team_id=quota_team_id,
+                quota_team_key=quota_team_key,
+                graphql_client=graphql_client,
+                mcp_client=mcp_client,
+                _quota_admission_lock_held=True,
+                _quota_admission_fd=lock_fd,
+                _quota_create_context=create_context,
+            )
+        finally:
+            quota_admission_lock.release(lock_fd)
     mcp_identity = _extract_first_json(
         await mcp_client.call_tool("get_user", {"query": "me"})
     )
@@ -983,6 +1154,86 @@ async def execute_with_clients(
 
     operation_key = str(arguments.get("operation_key") or "")
     team_id = str(arguments.get("target_team_id") or "")
+    quota_admission: dict[str, Any] | None = None
+    if is_issue_create:
+        try:
+            existing = await asyncio.to_thread(
+                ledger.lookup,
+                operation_key=operation_key,
+                tool_name=vendor_tool,
+                payload=ledger_payload,
+                profile_id=profile_id,
+                actor_id=graph_actor,
+                team_id=team_id,
+            )
+            if existing is not None:
+                if existing.status == "pending":
+                    existing = await asyncio.to_thread(
+                        ledger.reserve,
+                        operation_key=operation_key,
+                        tool_name=vendor_tool,
+                        payload=ledger_payload,
+                        profile_id=profile_id,
+                        actor_id=graph_actor,
+                        team_id=team_id,
+                    )
+                if (
+                    existing.status == "success"
+                    and quota_admission_lock is not None
+                    and _quota_admission_fd is not None
+                ):
+                    quota_admission_lock.resolve_own_create_fence(
+                        _quota_admission_fd,
+                        operation_key=operation_key,
+                        profile_id=profile_id,
+                    )
+                return _replay_response(existing, include_quota_admission=True)
+        except OutboundLedgerError as exc:
+            return {"error": "linear_idempotency_rejected", "reason": str(exc)}
+
+        if (
+            quota_admission_lock is None
+            or _quota_admission_fd is None
+            or _quota_create_context is None
+        ):
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_admission_lock_unavailable",
+            }
+        try:
+            if quota_admission_lock.has_unresolved_create_fences(_quota_admission_fd):
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "quota_create_outcome_unresolved",
+                }
+        except FleetGlobalLockError:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_admission_lock_unavailable",
+            }
+
+        try:
+            current_count = await count_operations_issues(
+                graphql_client,
+                quota_team_id,
+                quota_team_key,
+            )
+        except Exception:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_count_unavailable",
+            }
+        _quota_create_context["observed_current_count"] = current_count
+        projected_count = current_count + 1
+        if projected_count >= CAPACITY:
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_capacity_reserved_or_exhausted",
+                "quota_admission": _quota_admission(current_count),
+            }
+        if projected_count >= CRITICAL_THRESHOLD:
+            quota_admission = _quota_admission(current_count)
+
     try:
         reservation = await asyncio.to_thread(
             ledger.reserve,
@@ -1015,20 +1266,10 @@ async def execute_with_clients(
             }
         reservation = legacy_reservation
     if not reservation.dispatch:
-        lifecycle_noop_replay = _decode_lifecycle_noop_result(reservation.result_id)
-        if lifecycle_noop_replay is not None:
-            noop_status, noop_result_id = lifecycle_noop_replay
-            return {
-                "status": noop_status,
-                "replayed": True,
-                "result_id": noop_result_id,
-            }
-        return {
-            "status": reservation.status,
-            "replayed": True,
-            "result_id": reservation.result_id,
-            **({"error_code": reservation.error_code} if reservation.error_code else {}),
-        }
+        return _replay_response(
+            reservation,
+            include_quota_admission=is_issue_create,
+        )
     if lifecycle_noop_result is not None:
         noop_status = str(lifecycle_noop_result.get("status") or "")
         noop_result_id = str(lifecycle_noop_result.get("result_id") or "")
@@ -1125,9 +1366,27 @@ async def execute_with_clients(
                 "reason": "session_activity_required",
             }
 
+    def persist_ambiguous_create_fence() -> None:
+        if (
+            is_issue_create
+            and quota_admission_lock is not None
+            and _quota_admission_fd is not None
+            and _quota_create_context is not None
+        ):
+            quota_admission_lock.add_unresolved_create_fence(
+                _quota_admission_fd,
+                operation_key=_quota_create_context["operation_key"],
+                observed_current_count=_quota_create_context["observed_current_count"],
+                profile_id=_quota_create_context["profile_id"],
+            )
+
+    # Persist before dispatch so process death, cancellation, or transport loss
+    # cannot release fleet capacity without a durable unresolved reservation.
+    persist_ambiguous_create_fence()
     try:
         result = await mcp_client.call_tool(vendor_tool, forwarded, mutation=True)
     except MCPOutcomeUnknown as exc:
+        persist_ambiguous_create_fence()
         await asyncio.to_thread(
             ledger.mark_unknown,
             operation_key,
@@ -1135,6 +1394,7 @@ async def execute_with_clients(
         )
         return {"error": "linear_outcome_unknown", "reason": str(exc)}
     except LinearMCPToolError:
+        persist_ambiguous_create_fence()
         await asyncio.to_thread(
             ledger.mark_unknown,
             operation_key,
@@ -1142,6 +1402,7 @@ async def execute_with_clients(
         )
         return {"error": "linear_mutation_outcome_unknown", "reason": "vendor_is_error"}
     except LinearMCPError:
+        persist_ambiguous_create_fence()
         await asyncio.to_thread(
             ledger.mark_unknown,
             operation_key,
@@ -1220,8 +1481,28 @@ async def execute_with_clients(
 
     parsed = _extract_first_json(result)
     result_id = str(parsed.get("id") or parsed.get("identifier") or "") or None
-    await asyncio.to_thread(ledger.mark_success, operation_key, result_id=result_id)
-    return {"status": "success", "result_id": result_id, "result": result}
+    ledger_result_id = result_id
+    if quota_admission is not None and result_id is not None:
+        ledger_result_id = _encode_quota_admission_result(
+            result_id,
+            quota_admission["current_count"],
+        )
+    await asyncio.to_thread(ledger.mark_success, operation_key, result_id=ledger_result_id)
+    if (
+        is_issue_create
+        and quota_admission_lock is not None
+        and _quota_admission_fd is not None
+    ):
+        quota_admission_lock.resolve_own_create_fence(
+            _quota_admission_fd,
+            operation_key=operation_key,
+            profile_id=profile_id,
+        )
+    response = {"status": "success", "result_id": result_id, "result": result}
+    if quota_admission is not None:
+        response["quota_admission"] = quota_admission
+        response["immediate_retention_required"] = True
+    return response
 
 
 def _load_linear_extra() -> dict[str, Any]:
@@ -1311,6 +1592,9 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
     oauth_file = str(extra.get("oauth_file") or "")
     inbound_database_path = str(extra.get("database_path") or "")
     outbound_ledger_path = str(outbound.get("ledger_path") or "")
+    quota_admission_lock_path = str(outbound.get("quota_admission_lock_path") or "")
+    quota_team_id = str(outbound.get("quota_team_id") or "")
+    quota_team_key = str(outbound.get("quota_team_key") or "")
     ledger_path_safe = bool(
         inbound_database_path
         and Path(inbound_database_path).is_absolute()
@@ -1349,9 +1633,15 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
             graphql = LinearClient(oauth_store=store)
             mcp = LinearMCPClient(store, endpoint=endpoint)
             ledger: OutboundLedger | None = None
+            quota_admission_lock: FleetGlobalLock | None = None
             try:
                 if mutation:
                     ledger = await asyncio.to_thread(OutboundLedger, outbound_ledger_path)
+                if vendor_tool == "save_issue" and not safe_args.get("id"):
+                    try:
+                        quota_admission_lock = FleetGlobalLock(quota_admission_lock_path)
+                    except FleetGlobalLockError:
+                        quota_admission_lock = None
                 await graphql.connect()
                 await mcp.connect()
                 return await execute_with_clients(
@@ -1361,6 +1651,9 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                     mutation=mutation,
                     policy=policy,
                     ledger=ledger,
+                    quota_admission_lock=quota_admission_lock,
+                    quota_team_id=quota_team_id,
+                    quota_team_key=quota_team_key,
                     graphql_client=graphql,
                     mcp_client=mcp,
                 )

@@ -18,21 +18,28 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 try:
-    from .linear_client import LinearClient
-    from .oauth_store import LinearAPIError
+    from .linear_client import (
+        LINEAR_ISSUE_CAPACITY,
+        LINEAR_ISSUE_CRITICAL_THRESHOLD,
+        LinearClient,
+        count_operations_issues,
+    )
 except ImportError:  # Direct module loading in tests and profile-local scripts.
-    from linear_client import LinearClient
-    from oauth_store import LinearAPIError
+    from linear_client import (
+        LINEAR_ISSUE_CAPACITY,
+        LINEAR_ISSUE_CRITICAL_THRESHOLD,
+        LinearClient,
+        count_operations_issues,
+    )
 
 
-CAPACITY = 250
+CAPACITY = LINEAR_ISSUE_CAPACITY
 WARNING_THRESHOLD = 200
 HIGH_THRESHOLD = 225
-CRITICAL_THRESHOLD = 240
+CRITICAL_THRESHOLD = LINEAR_ISSUE_CRITICAL_THRESHOLD
 MATERIAL_TOTAL_CHANGE = 5
 MEANINGFUL_EXHAUSTION_MOVE_DAYS = 7
 ROLLING_SAMPLE_LIMIT = 7
-MAX_PAGES = 100
 STATE_SCHEMA = "linear-operations-quota-watchdog/v1"
 DRY_RUN_SCHEMA = "linear-operations-quota-watchdog-dry-run/v1"
 STATE_FILENAME = "linear-operations-quota-watchdog.json"
@@ -329,77 +336,6 @@ class QuotaWatchdog:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-
-
-async def _read_issue_ids(
-    client: LinearClient, team_id: str, expected_team_key: str
-) -> list[str]:
-    query = """
-query LinearOperationsQuota($teamId: String!, $after: String) {
-  team(id: $teamId) {
-    id key
-    issues(first: 50, after: $after, includeArchived: true) {
-      nodes { id }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-    issue_ids: list[str] = []
-    seen_ids: set[str] = set()
-    seen_cursors: set[str] = set()
-    after: str | None = None
-    for _ in range(MAX_PAGES):
-        data = await client.graphql(query, {"teamId": team_id, "after": after})
-        team = data.get("team")
-        if (
-            not isinstance(team, dict)
-            or team.get("id") != team_id
-            or team.get("key") != expected_team_key
-        ):
-            raise LinearAPIError("Operations team identity could not be verified")
-        connection = team.get("issues")
-        if not isinstance(connection, dict) or not isinstance(
-            connection.get("nodes"), list
-        ):
-            raise LinearAPIError("Operations issue pagination was incomplete")
-        page_info = connection.get("pageInfo")
-        if not isinstance(page_info, dict) or not isinstance(
-            page_info.get("hasNextPage"), bool
-        ):
-            raise LinearAPIError("Operations issue pagination was incomplete")
-        cursor = page_info.get("endCursor")
-        if cursor is not None and not isinstance(cursor, str):
-            raise LinearAPIError("Operations issue pagination was incomplete")
-        for node in connection["nodes"]:
-            issue_id = node.get("id") if isinstance(node, dict) else None
-            if not isinstance(issue_id, str) or not issue_id:
-                raise LinearAPIError("Operations issue identity was malformed")
-            if issue_id in seen_ids:
-                raise LinearAPIError(
-                    "Operations issue inventory contained duplicate identity"
-                )
-            seen_ids.add(issue_id)
-            issue_ids.append(issue_id)
-        if not page_info["hasNextPage"]:
-            return issue_ids
-        if not cursor or cursor in seen_cursors:
-            raise LinearAPIError("Operations issue pagination did not advance")
-        seen_cursors.add(cursor)
-        after = cursor
-    raise LinearAPIError("Operations issue pagination exceeded the page limit")
-
-
-async def count_operations_issues(
-    client: LinearClient, team_id: str, expected_team_key: str
-) -> int:
-    """Return an exact, drift-checked count across complete cursor pagination."""
-
-    first = await _read_issue_ids(client, team_id, expected_team_key)
-    second = await _read_issue_ids(client, team_id, expected_team_key)
-    if first != second:
-        raise LinearAPIError("Operations issue inventory changed during revalidation")
-    return len(first)
 
 
 async def _run(

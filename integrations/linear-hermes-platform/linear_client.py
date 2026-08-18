@@ -14,6 +14,8 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
     from oauth_store import LINEAR_TOKEN_URL, LinearAPIError, LinearOAuthStore
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
+LINEAR_ISSUE_CAPACITY = 250
+LINEAR_ISSUE_CRITICAL_THRESHOLD = 240
 AGENT_SESSION_STATUSES = frozenset(
     {"pending", "active", "complete", "awaitingInput", "error", "stale"}
 )
@@ -21,6 +23,7 @@ MAX_AGENT_SESSION_PAGES = 100
 MAX_AGENT_ACTIVITY_PAGES = 100
 MAX_USER_PAGES = 100
 MAX_CHILD_RELATION_PAGES = 100
+MAX_ISSUE_QUOTA_PAGES = 100
 
 
 class LinearClient:
@@ -949,3 +952,74 @@ mutation LinearNativeIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
         if not result.get("success"):
             raise LinearAPIError("issueUpdate did not report success")
         return str((((result.get("issue") or {}).get("state") or {}).get("id")) or target["id"])
+
+
+async def _read_issue_ids_for_quota(
+    client: LinearClient, team_id: str, expected_team_key: str
+) -> list[str]:
+    query = """
+query LinearOperationsQuota($teamId: String!, $after: String) {
+  team(id: $teamId) {
+    id key
+    issues(first: 50, after: $after, includeArchived: true) {
+      nodes { id }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+    issue_ids: list[str] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    after: str | None = None
+    for _ in range(MAX_ISSUE_QUOTA_PAGES):
+        data = await client.graphql(query, {"teamId": team_id, "after": after})
+        team = data.get("team")
+        if (
+            not isinstance(team, dict)
+            or team.get("id") != team_id
+            or team.get("key") != expected_team_key
+        ):
+            raise LinearAPIError("Operations team identity could not be verified")
+        connection = team.get("issues")
+        if not isinstance(connection, dict) or not isinstance(
+            connection.get("nodes"), list
+        ):
+            raise LinearAPIError("Operations issue pagination was incomplete")
+        page_info = connection.get("pageInfo")
+        if not isinstance(page_info, dict) or not isinstance(
+            page_info.get("hasNextPage"), bool
+        ):
+            raise LinearAPIError("Operations issue pagination was incomplete")
+        cursor = page_info.get("endCursor")
+        if cursor is not None and not isinstance(cursor, str):
+            raise LinearAPIError("Operations issue pagination was incomplete")
+        for node in connection["nodes"]:
+            issue_id = node.get("id") if isinstance(node, dict) else None
+            if not isinstance(issue_id, str) or not issue_id:
+                raise LinearAPIError("Operations issue identity was malformed")
+            if issue_id in seen_ids:
+                raise LinearAPIError(
+                    "Operations issue inventory contained duplicate identity"
+                )
+            seen_ids.add(issue_id)
+            issue_ids.append(issue_id)
+        if not page_info["hasNextPage"]:
+            return issue_ids
+        if not cursor or cursor in seen_cursors:
+            raise LinearAPIError("Operations issue pagination did not advance")
+        seen_cursors.add(cursor)
+        after = cursor
+    raise LinearAPIError("Operations issue pagination exceeded the page limit")
+
+
+async def count_operations_issues(
+    client: LinearClient, team_id: str, expected_team_key: str
+) -> int:
+    """Return an exact, drift-checked count across complete cursor pagination."""
+
+    first = await _read_issue_ids_for_quota(client, team_id, expected_team_key)
+    second = await _read_issue_ids_for_quota(client, team_id, expected_team_key)
+    if first != second:
+        raise LinearAPIError("Operations issue inventory changed during revalidation")
+    return len(first)

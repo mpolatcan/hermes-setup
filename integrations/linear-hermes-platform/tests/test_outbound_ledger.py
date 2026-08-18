@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import os
 import subprocess
@@ -15,7 +16,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from outbound_ledger import OutboundLedger, OutboundLedgerError  # noqa: E402
+from outbound_ledger import (  # noqa: E402
+    FleetGlobalLock,
+    FleetGlobalLockError,
+    OutboundLedger,
+    OutboundLedgerError,
+)
 from ledger import DeliveryLedger  # noqa: E402
 
 
@@ -45,7 +51,6 @@ class OutboundLedgerTests(unittest.TestCase):
             actor_id="actor-1",
             team_id="ops-1",
         )
-
     def test_lookup_is_read_only_and_identity_bound(self):
         payload = {"issueId": "OPS-1", "body": "private body"}
         missing = self.ledger.lookup(
@@ -401,6 +406,144 @@ finally:
         self.reserve(key=sensitive_key)
         self.ledger.close()
         self.assertNotIn(sensitive_key.encode(), self.path.read_bytes())
+
+
+class FleetGlobalLockTests(unittest.TestCase):
+    def test_profile_scoped_hermes_home_resolves_shared_fleet_root(self):
+        shared_root = self.root / ".hermes"
+        profile_root = shared_root / "profiles" / "general"
+        locks_root = shared_root / "state" / "locks"
+        profile_root.mkdir(parents=True)
+        locks_root.mkdir(parents=True, mode=0o700)
+        os.chmod(locks_root, 0o700)
+        lock_path = locks_root / "linear-quota-admission.lock"
+        lock_path.write_bytes(b"")
+        os.chmod(lock_path, 0o600)
+
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(profile_root)}):
+            lock = FleetGlobalLock(str(lock_path))
+            fd = lock.acquire()
+            lock.release(fd)
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name) / "locks"
+        self.root.mkdir(mode=0o700)
+        self.path = self.root / "linear-quota-admission.lock"
+        self.state_path = self.root / "linear-quota-admission-state.json"
+        self.path.touch(mode=0o600)
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def test_preprovisioned_private_regular_file_can_be_locked(self):
+        lock = FleetGlobalLock(str(self.path), canonical_locks_root=self.root)
+        inode = self.path.stat().st_ino
+        fd = lock.acquire()
+        lock.release(fd)
+        self.assertEqual(self.path.stat().st_ino, inode)
+        self.assertEqual(
+            lock.inspect(),
+            {"version": 1, "unresolved_create_fences": []},
+        )
+
+    def test_unresolved_create_fence_is_secret_free_and_atomically_persisted(self):
+        lock = FleetGlobalLock(str(self.path), canonical_locks_root=self.root)
+        inode = self.path.stat().st_ino
+        operation_key = "profile-secret-operation-key"
+        fd = lock.acquire()
+        lock.add_unresolved_create_fence(
+            fd,
+            operation_key=operation_key,
+            observed_current_count=17,
+            profile_id="coder",
+            timestamp=1_787_000_000,
+        )
+        lock.release(fd)
+
+        self.assertEqual(self.path.stat().st_ino, inode)
+        self.assertEqual(
+            lock.inspect(),
+            {
+                "version": 1,
+                "unresolved_create_fences": [
+                    {
+                        "operation_key_sha256": hashlib.sha256(
+                            operation_key.encode("utf-8")
+                        ).hexdigest(),
+                        "observed_current_count": 17,
+                        "profile_id": "coder",
+                        "timestamp": 1_787_000_000,
+                    }
+                ],
+            },
+        )
+        raw = self.state_path.read_bytes()
+        self.assertNotIn(operation_key.encode(), raw)
+        for secret in (b"title", b"body", b"token", b"issue"):
+            self.assertNotIn(secret, raw.lower())
+
+    def test_corrupt_or_unknown_admission_state_fails_closed(self):
+        for payload in (
+            b"not-json",
+            b'{"version":2,"unresolved_create_fences":[]}',
+            b'{"version":1,"unresolved_create_fences":[{"profile_id":"general"}]}',
+        ):
+            with self.subTest(payload=payload):
+                self.state_path.write_bytes(payload)
+                self.state_path.chmod(0o600)
+                lock = FleetGlobalLock(str(self.path), canonical_locks_root=self.root)
+                try:
+                    fd = lock.acquire()
+                except FleetGlobalLockError:
+                    continue
+                assert fd is not None
+                lock.release(fd)
+                self.fail("corrupt admission state was accepted")
+
+    def test_inspection_api_is_read_only_and_exposes_no_clear(self):
+        lock = FleetGlobalLock(str(self.path), canonical_locks_root=self.root)
+        fd = lock.acquire()
+        lock.release(fd)
+        before = self.state_path.read_bytes()
+        self.assertEqual(lock.inspect()["version"], 1)
+        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertFalse(hasattr(lock, "clear"))
+        self.assertFalse(hasattr(lock, "delete"))
+
+    def test_missing_symlinked_or_non_private_lock_fails_closed(self):
+        cases = ("missing", "symlink", "public")
+        for case in cases:
+            with self.subTest(case=case):
+                target = self.path
+                target.unlink(missing_ok=True)
+                if case == "symlink":
+                    real = self.root / "real.lock"
+                    real.touch(mode=0o600)
+                    target.symlink_to(real)
+                elif case == "public":
+                    target.touch(mode=0o600)
+                    target.chmod(0o644)
+                lock = FleetGlobalLock(str(target), canonical_locks_root=self.root)
+                with self.assertRaises(FleetGlobalLockError):
+                    lock.acquire()
+                target.unlink(missing_ok=True)
+                (self.root / "real.lock").unlink(missing_ok=True)
+                target.touch(mode=0o600)
+                target.chmod(0o600)
+
+    def test_path_must_be_absolute_and_directly_under_private_canonical_root(self):
+        with self.assertRaisesRegex(FleetGlobalLockError, "absolute"):
+            FleetGlobalLock("linear-quota-admission.lock", canonical_locks_root=self.root)
+        nested = self.root / "nested"
+        nested.mkdir(mode=0o700)
+        nested_lock = nested / "linear-quota-admission.lock"
+        nested_lock.touch(mode=0o600)
+        with self.assertRaisesRegex(FleetGlobalLockError, "canonical locks root"):
+            FleetGlobalLock(str(nested_lock), canonical_locks_root=self.root)
+        self.root.chmod(0o755)
+        with self.assertRaisesRegex(FleetGlobalLockError, "canonical locks root"):
+            FleetGlobalLock(str(self.path), canonical_locks_root=self.root)
 
 
 if __name__ == "__main__":
