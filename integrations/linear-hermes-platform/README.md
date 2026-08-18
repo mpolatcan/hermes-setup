@@ -102,9 +102,11 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 | `outbound_ledger.py` | Content-minimizing operation-key ledger for mutation replay and ambiguous outcomes |
 | `linear_tools.py` | Approval-compatible Hermes model-tool registration and policy/transport orchestration |
 | `ledger.py` | Persistent semantic-dedup ledger |
+| `retention.py` | Standalone read-only Operations retention inventory, classifier, and manifest writer |
 | `plugin.yaml` | Hermes plugin manifest |
 | `scripts/install_linear_oauth.py` | Attended localhost PKCE installer (legacy/interactive only) |
 | `scripts/linear_mobile_pkce_once.py` | One-shot mobile PKCE installer using 1Password exact-field resolution |
+| `scripts/linear_retention_dry_run.py` | Explicit-output retention dry-run CLI; it has no mutation path |
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 | `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
 
@@ -399,6 +401,34 @@ done
 ```
 
 Unsigned webhook requests must return `401`; webhook `GET` must return `405`; hostname root paths must return `404`. Cloudflare Access is not placed in front of Linear webhooks because vendor delivery cannot complete an interactive Access challenge.
+
+## Operations retention dry run
+
+The standalone retention command reuses the selected profile's `LinearOAuthStore` and `LinearClient`, issues GraphQL queries only, and is intentionally excluded from the deployed gateway plugin allowlist. It cannot archive, delete, update, or otherwise mutate Linear. It fails closed on incomplete or drifting inventory evidence and produces only aggregate JSON on stdout; issue candidates are written to the explicit output file at mode `0600`.
+
+Prepare an operator-reviewed successor attestation file. Each source must name a distinct issue in the same complete Operations inventory and must carry an explicit boolean verification:
+
+```json
+{
+  "OPS-123": {"successor": "OPS-456", "verified": true}
+}
+```
+
+Run with an immutable cutoff so repeated runs over the same validated evidence envelope are byte-identical. The cutoff may equal, but must never be later than, the command's actual UTC run clock; there is no future-time tolerance:
+
+```bash
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
+  integrations/linear-hermes-platform/scripts/linear_retention_dry_run.py \
+  --oauth-file /Users/mutlupolatcan/.hermes/profiles/general/credentials/linear-oauth.json \
+  --team-id '<operations-team-uuid>' \
+  --team-key OPS \
+  --successors /private/path/verified-successors.json \
+  --minimum-age-days 180 \
+  --as-of 2026-08-18T12:00:00Z \
+  --output /private/path/operations-retention-manifest.json
+```
+
+The two complete issue-and-comment evidence passes and the final ordered team-membership pass must match exactly; any identity, revision, comment, relation, attachment, ordering, membership, or other evidence drift aborts before classification and manifest writing. Each comment must have an ID, body, app-authorship classification, creation timestamp, and update timestamp. Missing, malformed, future, or pre-issue comment timestamps fail closed. Linear may report a comment `updatedAt` a fraction of a second before its `createdAt`, so those two vendor timestamps are validated independently and activity uses their maximum. Issue activity is the latest issue creation, update, completion/cancellation, comment creation, or comment update timestamp. Validation freezes all issue, comment, successor, cutoff, age, and team evidence into one immutable envelope; classification owns that envelope, and manifest construction accepts only the immutable classification result, never the mutable API inventory. The manifest sorts candidates by identifier and ID, and its `sha256` is computed from canonical JSON for every other manifest field. Terminal state, a coherent matching terminal timestamp no later than the immutable cutoff, minimum age, the verified successor, and an empty relationship graph are all required. Every issue referenced as a valid verified successor is retained, including in successor chains and cycles. Active/nonterminal issues, Operations inbox markers, human or ambiguous comment authorship, decision/security/incident terms, any parent/child/relation, attachment, document, HTTP or non-HTTP canonical pointers, young records, and malformed evidence are protected. Review the manifest; it is evidence only and is never input to an automatic deletion or archive workflow.
 
 ## Tests
 
