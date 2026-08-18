@@ -103,12 +103,56 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 | `linear_tools.py` | Approval-compatible Hermes model-tool registration and policy/transport orchestration |
 | `ledger.py` | Persistent semantic-dedup ledger |
 | `retention.py` | Standalone read-only Operations retention inventory, classifier, and manifest writer |
+| `quota_watchdog.py` | Read-only, drift-checked Operations issue-quota counter and continuity policy |
 | `plugin.yaml` | Hermes plugin manifest |
 | `scripts/install_linear_oauth.py` | Attended localhost PKCE installer (legacy/interactive only) |
 | `scripts/linear_mobile_pkce_once.py` | One-shot mobile PKCE installer using 1Password exact-field resolution |
 | `scripts/linear_retention_dry_run.py` | Explicit-output retention dry-run CLI; it has no mutation path |
+| `scripts/linear_quota_watchdog.py` | Standalone quota-watchdog CLI using the shared OAuth/client stack |
+| `scripts/linear_quota_watchdog.sh` | `no_agent=true` Hermes cron wrapper |
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 | `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
+
+## Operations issue-quota watchdog
+
+The watchdog reads every Operations issue through complete cursor pagination,
+including archived issues, then repeats the inventory read and fails closed if
+membership or ordering drifted. It has no Linear mutation operation. Severity is
+`warning` at 200, `high` at 225, and `critical` at 240 of the 250-issue capacity.
+The buffer is `250 - total`.
+
+Continuity uses the latest seven dated samples. Rolling net growth is the net
+issue delta from the oldest to newest retained sample divided by elapsed days;
+an exhaustion date exists only for positive growth. Alerts are emitted on the
+first non-OK result, severity change, a cumulative five-issue movement since the
+last alert, a change among unknown/growing/nonpositive trends, or an exhaustion
+date movement of at least seven days. Repeated unchanged evaluations are silent.
+
+Create a dedicated, already-existing directory owned by the runtime user at
+exactly mode `0700`; pass it explicitly rather than placing continuity beside
+OAuth credentials. The sole durable watchdog file is secret-free JSON at mode
+`0600`. A corrupt file, unsafe permissions, team mismatch, incomplete page, or
+inventory drift aborts without replacing state or emitting an alert.
+
+```bash
+install -d -m 0700 /absolute/profile/state/linear-quota-watchdog
+/Users/mutlupolatcan/.hermes/runtime/hermes-agent/venv/bin/python \
+  integrations/linear-hermes-platform/scripts/linear_quota_watchdog.py \
+  --oauth-file /absolute/profile/credentials/linear-oauth.json \
+  --state-dir /absolute/profile/state/linear-quota-watchdog \
+  --team-id '<operations-team-uuid>' \
+  --expected-team-key OPS \
+  --dry-run
+```
+
+`--dry-run` emits one canonical JSON summary and does not write watchdog state.
+Normal stdout is either the exact user-facing alert plus a newline or zero bytes.
+For Hermes cron with `no_agent=true`, configure the wrapper's
+`LINEAR_OAUTH_FILE`, `LINEAR_QUOTA_STATE_DIR`, and
+`LINEAR_OPERATIONS_TEAM_ID` environment values and execute
+`scripts/linear_quota_watchdog.sh`. The optional
+`LINEAR_OPERATIONS_TEAM_KEY` defaults to `OPS`; the wrapper forwards `--dry-run`
+when supplied. Do not place tokens in the cron definition or wrapper.
 
 ## Semantic lifecycle actions
 
