@@ -1,4 +1,4 @@
-"""Deterministic, read-only Linear Operations issue-quota watchdog."""
+"""Deterministic, read-only Linear workspace issue-quota watchdog."""
 
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ try:
         LINEAR_ISSUE_CAPACITY,
         LINEAR_ISSUE_CRITICAL_THRESHOLD,
         LinearClient,
-        count_operations_issues,
+        count_workspace_issues,
     )
 except ImportError:  # Direct module loading in tests and profile-local scripts.
     from linear_client import (
         LINEAR_ISSUE_CAPACITY,
         LINEAR_ISSUE_CRITICAL_THRESHOLD,
         LinearClient,
-        count_operations_issues,
+        count_workspace_issues,
     )
 
 
@@ -40,9 +40,9 @@ CRITICAL_THRESHOLD = LINEAR_ISSUE_CRITICAL_THRESHOLD
 MATERIAL_TOTAL_CHANGE = 5
 MEANINGFUL_EXHAUSTION_MOVE_DAYS = 7
 ROLLING_SAMPLE_LIMIT = 7
-STATE_SCHEMA = "linear-operations-quota-watchdog/v1"
-DRY_RUN_SCHEMA = "linear-operations-quota-watchdog-dry-run/v1"
-STATE_FILENAME = "linear-operations-quota-watchdog.json"
+STATE_SCHEMA = "linear-workspace-quota-watchdog/v2"
+DRY_RUN_SCHEMA = "linear-workspace-quota-watchdog-dry-run/v2"
+STATE_FILENAME = "linear-workspace-quota-watchdog.json"
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ class QuotaWatchdog:
             growth_text = "unavailable" if growth is None else f"{growth:g} issues/day"
             exhaustion_text = exhaustion or "unavailable"
             alert = (
-                f"Linear Operations quota {severity.upper()}: {total}/{CAPACITY} issues "
+                f"Linear workspace quota {severity.upper()}: {total}/{CAPACITY} issues "
                 f"({buffer} remaining). Rolling net growth: {growth_text}. "
                 f"Estimated exhaustion: {exhaustion_text}."
             )
@@ -350,8 +350,8 @@ async def _run(
     with watchdog.locked():
         try:
             await client.connect()
-            total = await count_operations_issues(
-                client, args.team_id, args.expected_team_key
+            total = await count_workspace_issues(
+                client, frozenset(args.expected_team_id)
             )
         finally:
             await client.close()
@@ -365,12 +365,13 @@ async def _run(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read-only Linear Operations quota watchdog"
+        description="Read-only Linear workspace quota watchdog"
     )
     parser.add_argument("--oauth-file", required=True)
     parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--team-id", required=True)
-    parser.add_argument("--expected-team-key", required=True)
+    parser.add_argument("--expected-team-id", action="append", required=True)
+    parser.add_argument("--team-id", help=argparse.SUPPRESS)
+    parser.add_argument("--expected-team-key", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
     return parser
 

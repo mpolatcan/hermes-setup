@@ -103,7 +103,7 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 | `linear_tools.py` | Approval-compatible Hermes model-tool registration and policy/transport orchestration |
 | `ledger.py` | Persistent semantic-dedup ledger |
 | `retention.py` | Standalone read-only Operations retention inventory, classifier, and manifest writer |
-| `quota_watchdog.py` | Read-only, drift-checked Operations issue-quota counter and continuity policy |
+| `quota_watchdog.py` | Read-only, drift-checked workspace issue-quota counter and continuity policy |
 | `plugin.yaml` | Hermes plugin manifest |
 | `scripts/install_linear_oauth.py` | Attended localhost PKCE installer (legacy/interactive only) |
 | `scripts/linear_mobile_pkce_once.py` | One-shot mobile PKCE installer using 1Password exact-field resolution |
@@ -113,7 +113,7 @@ The final activity cannot overtake the indicator, retries reuse deterministic ac
 | `tests/test_native_platform.py` | Security, OAuth, prompt, stop, and dedup tests |
 | `tests/test_mobile_pkce.py` | Mobile callback, capability, path, no-clobber, and redaction tests |
 
-## Operations issue-quota watchdog
+## Workspace issue-quota watchdog
 
 Weekly watchdog is secondary only; create-time gate is primary; no automatic deletion and blocked creates must reuse/dedup an existing issue/session/comment until approved retention frees capacity.
 
@@ -121,19 +121,35 @@ Every model-facing `linear_save_issue` create admitted by a profile-local mutati
 allowlist takes the same fleet-global POSIX admission lock across all nine profiles,
 then first resolves an existing exact operation-key replay through that profile's
 outbound ledger and uses the watchdog's same complete, cursor-paginated, double-read
-Operations inventory counter. The lock remains held through ledger reservation,
+workspace inventory counter. Issues from every team, including OPS and GAME, count
+toward the same Linear Free workspace limit. Every profile carries the same reviewed
+workspace-team UUID manifest; both `organization.teams` and `administrableTeams`
+must match that manifest exactly, with archived teams included. The organization
+`createdIssueCount` field is deliberately not used because Linear documents it as
+approximate. The lock remains held through ledger reservation,
 vendor create, and the terminal ledger write. A projected total below 240 proceeds normally. A
 projected total from 240 through 249 proceeds with structured `quota_admission`
 counts and `immediate_retention_required=true` in the tool response. A projected
 total of 250 or more fails closed before ledger reservation or vendor mutation with
 `linear_policy_denied` / `quota_capacity_reserved_or_exhausted`. Inventory drift,
-team-identity mismatch, malformed pagination, and Linear API errors likewise fail
+malformed issue/team identity, malformed pagination, and Linear API errors likewise fail
 closed before reservation. Issue updates, lifecycle actions, and comments do not
 take this lock or enter this create-time gate.
 
-The watchdog reads every Operations issue through complete cursor pagination,
-including archived issues, then repeats the inventory read and fails closed if
-membership or ordering drifted. It has no Linear mutation operation. Severity is
+After ledger reservation, the complete workspace inventory is read again immediately
+before vendor dispatch. Any count drift or inability to revalidate marks the reservation
+failed and returns `quota_pre_dispatch_changed` without sending the create. This narrows
+human/third-party writer races; Linear exposes no atomic quota-CAS mutation, so a residual
+call-boundary race remains and the vendor's own capacity rejection is still authoritative.
+Ambiguous vendor outcomes retain the durable fleet fence and never blind-retry.
+
+The watchdog reads every workspace issue through root `issues` cursor pagination,
+including archived issues from all teams, then repeats the inventory read and fails
+closed unless the validated issue/team bytes and ordering are identical under the
+same reviewed, fully administrable team manifest. A newly created or inaccessible
+team is a governance/config drift and must be added to the reviewed manifest before
+admission resumes. It has no
+Linear mutation operation. Severity is
 `warning` at 200, `high` at 225, and `critical` at 240 of the 250-issue capacity.
 The buffer is `250 - total`.
 
@@ -147,7 +163,7 @@ date movement of at least seven days. Repeated unchanged evaluations are silent.
 Create a dedicated, already-existing directory owned by the runtime user at
 exactly mode `0700`; pass it explicitly rather than placing continuity beside
 OAuth credentials. The sole durable watchdog file is secret-free JSON at mode
-`0600`. A corrupt file, unsafe permissions, team mismatch, incomplete page, or
+`0600`. A corrupt file, unsafe permissions, malformed identity, incomplete page, or
 inventory drift aborts without replacing state or emitting an alert.
 
 ```bash
@@ -156,19 +172,20 @@ install -d -m 0700 /absolute/profile/state/linear-quota-watchdog
   integrations/linear-hermes-platform/scripts/linear_quota_watchdog.py \
   --oauth-file /absolute/profile/credentials/linear-oauth.json \
   --state-dir /absolute/profile/state/linear-quota-watchdog \
-  --team-id '<operations-team-uuid>' \
-  --expected-team-key OPS \
+  --expected-team-id 772a55a0-9914-4a36-a0c2-d026ef421324 \
+  --expected-team-id 01f1c4eb-8bca-4d5b-aa70-ef2abfb099c4 \
   --dry-run
 ```
 
 `--dry-run` emits one canonical JSON summary and does not write watchdog state.
 Normal stdout is either the exact user-facing alert plus a newline or zero bytes.
-For Hermes cron with `no_agent=true`, configure the wrapper's
-`LINEAR_OAUTH_FILE`, `LINEAR_QUOTA_STATE_DIR`, and
-`LINEAR_OPERATIONS_TEAM_ID` environment values and execute
-`scripts/linear_quota_watchdog.sh`. The optional
-`LINEAR_OPERATIONS_TEAM_KEY` defaults to `OPS`; the wrapper forwards `--dry-run`
-when supplied. Do not place tokens in the cron definition or wrapper.
+For Hermes cron with `no_agent=true`, configure the wrapper's `LINEAR_OAUTH_FILE`,
+`LINEAR_QUOTA_STATE_DIR`, `LINEAR_QUOTA_OPERATIONS_TEAM_ID`, and
+`LINEAR_QUOTA_GAME_TEAM_ID` values and execute `scripts/linear_quota_watchdog.sh`.
+The CLI still accepts deprecated `--team-id` and `--expected-team-key` flags for
+external wrapper compatibility, but ignores them: they never scope or filter the
+workspace-wide count. The wrapper forwards `--dry-run` when supplied. Do not place
+tokens in the cron definition or wrapper.
 
 ## Semantic lifecycle actions
 
@@ -268,8 +285,9 @@ gateway:
           mutations_enabled: false          # Gate C/D: read-only before any writes
           ledger_path: /Users/mutlupolatcan/.hermes/profiles/general/state/linear-outbound-mcp.sqlite3
           quota_admission_lock_path: /Users/mutlupolatcan/.hermes/state/locks/linear-quota-admission.lock
-          quota_team_id: <operations-team-uuid>
-          quota_team_key: OPS
+          quota_team_ids:
+            - 772a55a0-9914-4a36-a0c2-d026ef421324  # OPS
+            - 01f1c4eb-8bca-4d5b-aa70-ef2abfb099c4  # GAME
           endpoint: https://mcp.linear.app/mcp
           expected_actor_id: <profile-app-user-uuid>
           expected_organization_id: <installed-organization-uuid>

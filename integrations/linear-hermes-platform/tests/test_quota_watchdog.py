@@ -21,25 +21,57 @@ from oauth_store import LinearAPIError  # noqa: E402
 from quota_watchdog import (  # noqa: E402
     STATE_FILENAME,
     QuotaWatchdog,
-    count_operations_issues,
+    count_workspace_issues,
     main,
 )
 
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+EXPECTED_TEAM_IDS = frozenset({"team-ops", "team-game"})
 
 
-def page(nodes: list[dict], *, more: bool = False, cursor: str | None = None) -> dict:
+def page(
+    nodes: list[dict],
+    *,
+    more: bool = False,
+    cursor: str | None = None,
+    created_count: int | None = None,
+) -> dict:
     return {
-        "team": {
-            "id": "team-ops",
-            "key": "OPS",
-            "issues": {
-                "nodes": nodes,
-                "pageInfo": {"hasNextPage": more, "endCursor": cursor},
+        "organization": {
+            "id": "org-1",
+            "createdIssueCount": len(nodes) if created_count is None else created_count,
+            "teams": {
+                "nodes": [
+                    {"id": "team-ops", "key": "OPS", "private": False},
+                    {"id": "team-game", "key": "GAME", "private": False},
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": "team-game"},
             },
-        }
+        },
+        "administrableTeams": {
+            "nodes": [
+                {"id": "team-ops", "key": "OPS", "private": False},
+                {"id": "team-game", "key": "GAME", "private": False},
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": "team-game"},
+        },
+        "issues": {
+            "nodes": [
+                {**node, "team": node.get("team", {"id": "team-ops", "key": "OPS"})}
+                for node in nodes
+            ],
+            "pageInfo": {"hasNextPage": more, "endCursor": cursor},
+        },
     }
+
+
+def quota_client(responses: list[dict]) -> mock.MagicMock:
+    client = mock.MagicMock()
+    client.actor_id = "actor-1"
+    client.organization_id = "org-1"
+    client.graphql = mock.AsyncMock(side_effect=responses)
+    return client
 
 
 class QuotaPolicyTests(unittest.TestCase):
@@ -58,15 +90,15 @@ class QuotaPolicyTests(unittest.TestCase):
             199: ("ok", ""),
             200: (
                 "warning",
-                "Linear Operations quota WARNING: 200/250 issues (50 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
+                "Linear workspace quota WARNING: 200/250 issues (50 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
             ),
             225: (
                 "high",
-                "Linear Operations quota HIGH: 225/250 issues (25 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
+                "Linear workspace quota HIGH: 225/250 issues (25 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
             ),
             240: (
                 "critical",
-                "Linear Operations quota CRITICAL: 240/250 issues (10 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
+                "Linear workspace quota CRITICAL: 240/250 issues (10 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.",
             ),
         }
         for total, (severity, alert) in expected.items():
@@ -208,29 +240,56 @@ class QuotaPolicyTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_complete_cursor_pagination_is_revalidated_for_exact_count(
+    async def test_complete_workspace_pagination_counts_ops_and_game_and_is_revalidated(
         self,
     ) -> None:
         client = mock.MagicMock()
+        client.actor_id = "actor-1"
+        client.organization_id = "org-1"
         client.graphql = mock.AsyncMock(
             side_effect=[
-                page([{"id": "1"}, {"id": "2"}], more=True, cursor="next"),
-                page([{"id": "3"}]),
-                page([{"id": "1"}, {"id": "2"}], more=True, cursor="next"),
-                page([{"id": "3"}]),
+                page(
+                    [
+                        {"id": "1"},
+                        {"id": "2", "team": {"id": "team-game", "key": "GAME"}},
+                    ],
+                    more=True,
+                    cursor="next",
+                    created_count=3,
+                ),
+                page([{"id": "3"}], created_count=3),
+                page(
+                    [
+                        {"id": "1"},
+                        {"id": "2", "team": {"id": "team-game", "key": "GAME"}},
+                    ],
+                    more=True,
+                    cursor="next",
+                    created_count=3,
+                ),
+                page([{"id": "3"}], created_count=3),
             ]
         )
 
-        total = await count_operations_issues(client, "team-ops", "OPS")
+        total = await count_workspace_issues(client, EXPECTED_TEAM_IDS)
 
         self.assertEqual(total, 3)
         self.assertEqual(
             [call.args[1]["after"] for call in client.graphql.await_args_list],
             [None, "next", None, "next"],
         )
+        query = client.graphql.await_args_list[0].args[0]
+        self.assertIn("issues(first: 50, after: $after, includeArchived: true)", query)
+        self.assertIn("teams(first: 250, includeArchived: true)", query)
+        self.assertIn("administrableTeams(first: 250, includeArchived: true)", query)
+        self.assertNotIn("createdIssueCount", query)
+        self.assertNotIn("team(id:", query)
+        self.assertNotIn("viewer {", query)
 
     async def test_pagination_drift_fails_closed(self) -> None:
         client = mock.MagicMock()
+        client.actor_id = "actor-1"
+        client.organization_id = "org-1"
         client.graphql = mock.AsyncMock(
             side_effect=[
                 page([{"id": "1"}, {"id": "2"}]),
@@ -239,7 +298,46 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(LinearAPIError, "changed during revalidation"):
-            await count_operations_issues(client, "team-ops", "OPS")
+            await count_workspace_issues(client, EXPECTED_TEAM_IDS)
+
+    async def test_reviewed_team_manifest_mismatch_fails_closed(self) -> None:
+        payload = page([{"id": "1"}])
+        payload["administrableTeams"]["nodes"].pop()
+        client = quota_client([payload])
+        with self.assertRaisesRegex(LinearAPIError, "reviewed team manifest"):
+            await count_workspace_issues(client, EXPECTED_TEAM_IDS)
+
+    async def test_team_or_issue_identity_shape_fails_closed(self) -> None:
+        malformed_nodes = (
+            {"id": "", "team": {"id": "team-ops", "key": "OPS"}},
+            {"id": "1", "team": None},
+            {"id": "1", "team": {"id": "", "key": "OPS"}},
+            {"id": "1", "team": {"id": "team-ops", "key": ""}},
+        )
+        for node in malformed_nodes:
+            with self.subTest(node=node):
+                client = quota_client([page([node])])
+                with self.assertRaisesRegex(LinearAPIError, "identity was malformed"):
+                    await count_workspace_issues(client, EXPECTED_TEAM_IDS)
+
+    async def test_second_pass_requires_team_bytes_and_order_to_match(self) -> None:
+        first = [
+            {"id": "1", "team": {"id": "team-ops", "key": "OPS"}},
+            {"id": "2", "team": {"id": "team-game", "key": "GAME"}},
+        ]
+        for second in (
+            [
+                {"id": "1", "team": {"id": "team-game", "key": "GAME"}},
+                {"id": "2", "team": {"id": "team-game", "key": "GAME"}},
+            ],
+            list(reversed(first)),
+        ):
+            with self.subTest(second=second):
+                client = quota_client([page(first), page(second)])
+                with self.assertRaisesRegex(
+                    LinearAPIError, "changed during revalidation"
+                ):
+                    await count_workspace_issues(client, EXPECTED_TEAM_IDS)
 
     async def test_repeated_cursor_and_duplicate_identity_fail_closed(self) -> None:
         for responses, message in (
@@ -253,10 +351,25 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             ([page([{"id": "1"}, {"id": "1"}])], "duplicate"),
         ):
             with self.subTest(message=message):
-                client = mock.MagicMock()
-                client.graphql = mock.AsyncMock(side_effect=responses)
+                client = quota_client(responses)
                 with self.assertRaisesRegex(LinearAPIError, message):
-                    await count_operations_issues(client, "team-ops", "OPS")
+                    await count_workspace_issues(client, EXPECTED_TEAM_IDS)
+
+    async def test_page_size_and_page_count_are_bounded(self) -> None:
+        oversized = quota_client(
+            [page([{"id": str(index)} for index in range(51)])]
+        )
+        with self.assertRaisesRegex(LinearAPIError, "page limit"):
+            await count_workspace_issues(oversized, EXPECTED_TEAM_IDS)
+
+        endless = quota_client(
+            [
+                page([{"id": str(index)}], more=True, cursor=f"cursor-{index}")
+                for index in range(100)
+            ]
+        )
+        with self.assertRaisesRegex(LinearAPIError, "page limit"):
+            await count_workspace_issues(endless, EXPECTED_TEAM_IDS)
 
 
 class CliTests(unittest.TestCase):
@@ -272,12 +385,20 @@ class CliTests(unittest.TestCase):
     def client_factory(self, *, oauth_file: str):
         self.assertEqual(oauth_file, str(self.oauth_file))
         client = mock.MagicMock()
+        client.actor_id = "actor-1"
+        client.organization_id = "org-1"
         client.connect = mock.AsyncMock()
         client.close = mock.AsyncMock()
         client.graphql = mock.AsyncMock(
             side_effect=[
-                page([{"id": str(index)} for index in range(200)]),
-                page([{"id": str(index)} for index in range(200)]),
+                page(
+                    [{"id": str(index)} for index in range(start, start + 50)],
+                    more=start < 150,
+                    cursor=f"cursor-{start + 50}" if start < 150 else None,
+                    created_count=200,
+                )
+                for _pass in range(2)
+                for start in range(0, 200, 50)
             ]
         )
         return client
@@ -288,10 +409,10 @@ class CliTests(unittest.TestCase):
             str(self.oauth_file),
             "--state-dir",
             str(self.state_dir),
-            "--team-id",
+            "--expected-team-id",
             "team-ops",
-            "--expected-team-key",
-            "OPS",
+            "--expected-team-id",
+            "team-game",
         ]
         return args + (["--dry-run"] if dry_run else [])
 
@@ -313,7 +434,7 @@ class CliTests(unittest.TestCase):
         self.assertFalse((self.state_dir / STATE_FILENAME).exists())
         summary = json.loads(stdout)
         self.assertEqual(
-            summary["schema"], "linear-operations-quota-watchdog-dry-run/v1"
+            summary["schema"], "linear-workspace-quota-watchdog-dry-run/v2"
         )
         self.assertEqual(summary["as_of"], "2026-08-18T12:00:00Z")
         self.assertEqual(summary["total"], 200)
@@ -329,7 +450,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, ""))
         self.assertEqual(
             stdout,
-            "Linear Operations quota WARNING: 200/250 issues (50 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.\n",
+            "Linear workspace quota WARNING: 200/250 issues (50 remaining). Rolling net growth: unavailable. Estimated exhaustion: unavailable.\n",
         )
 
         code, stdout, stderr = self.invoke()
@@ -379,6 +500,7 @@ class WrapperTests(unittest.TestCase):
         )
         self.assertIn("no_agent=true", wrapper)
         self.assertIn("linear_quota_watchdog.py", wrapper)
+        self.assertNotIn("LINEAR_OPERATIONS_TEAM", wrapper)
         self.assertNotIn("access_token", wrapper)
         self.assertNotIn("refresh_token", wrapper)
 

@@ -115,7 +115,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             if (tool_name, field) == ("get_issue", "includeRelations"):
                 result["default"] = False
             elif (tool_name, field) == ("list_issues", "includeArchived"):
-                result["default"] = True
+                result["default"] = False
             elif (tool_name, field) == ("list_issues", "limit"):
                 result.update({"default": 50, "maximum": 250})
             elif (tool_name, field) == ("list_issues", "orderBy"):
@@ -661,6 +661,11 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                     await client.close()
                 await self.asyncTearDown()
                 await self.asyncSetUp()
+
+    def test_vendor_tool_contract_tracks_2026_08_27_live_set(self):
+        self.assertEqual(len(EXPECTED_VENDOR_TOOL_NAMES), 55)
+        self.assertIn("share_issue", EXPECTED_VENDOR_TOOL_NAMES)
+        self.assertIn("unshare_issue", EXPECTED_VENDOR_TOOL_NAMES)
 
     async def test_duplicate_or_oversized_tool_contract_fails_closed(self):
         self.tools.append(dict(self.tools[0]))

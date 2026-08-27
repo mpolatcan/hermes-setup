@@ -1,14 +1,14 @@
-# Linear official MCP contract matrix — 2026-08-06
+# Linear official MCP contract matrix — 2026-08-06, live revalidated 2026-08-27
 
 - Negotiated Linear protocol: `2025-03-26`.
 - Transport: the initialization-era Streamable HTTP + JSON-RPC contract. Linear's live initialize response advertises a `tools` capability with `listChanged: true`; `capabilities`, the tools capability, `listChanged`, and string-valued `serverInfo.name/version` are validated before protocol/session state is committed, while optional vendor metadata remains accepted under the global response limits. Linear's live initialize response did not issue a session ID; the client nevertheless supports the negotiated-era optional session contract with bounded validation.
 - Current public MCP specification: `2026-07-28`. It removes protocol-level sessions and changes request metadata/transport semantics. Those behaviors are not enabled speculatively because Linear currently negotiates `2025-03-26`; an unsupported negotiation fails closed.
-- Live inventory: **52 tools**. The exact name set and draft-2020-12 URI are enforced for all 52. Exact root keys, property sets and requiredness are enforced for the five locally required vendor tools; type/nullability/format checks cover every locally forwarded field in those contracts.
+- Live inventory: **55 tools**. The 2026-08-27 probe added `share_issue` and `unshare_issue` to the prior 53-name pin and changed `list_issues.includeArchived` default from `true` to `false`. The exact name set and draft-2020-12 URI are enforced for all 55. Exact root keys, property sets and requiredness are enforced for the five locally required vendor tools; type/nullability/format checks cover every locally forwarded field in those contracts. The local facade explicitly forwards `includeArchived=true` to preserve its established archived-inventory behavior.
 - Local model surface: `linear_get_issue`, `linear_list_issues`, `linear_save_issue`, `linear_save_comment`.
 - Terminal project mutation: **not exposed**. `linear_complete_project` is rejected fail-closed.
 - Sources: [negotiated-era MCP spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports), [current MCP spec](https://modelcontextprotocol.io/specification/2026-07-28), [Linear MCP](https://linear.app/docs/mcp), [Linear OAuth](https://linear.app/developers/oauth-2-0-authentication), [Linear webhooks](https://linear.app/developers/webhooks).
 
-## Live 52-tool inventory
+## Live 55-tool inventory
 
 | # | Vendor tool | Required input | Local semantic use |
 |---:|---|---|---|
@@ -64,6 +64,9 @@
 | 50 | `save_status_update` | `type` | Not model-exposed; drift validation only |
 | 51 | `search_documentation` | `query` | Not model-exposed; drift validation only |
 | 52 | `submit_diff_review` | `urlOrId, decision` | Not model-exposed; drift validation only |
+| 53 | `get_workspace` | `—` | Internal workspace identity capability; not model-exposed |
+| 54 | `share_issue` | vendor-defined | Not model-exposed; drift validation only |
+| 55 | `unshare_issue` | vendor-defined | Not model-exposed; drift validation only |
 
 ## Local contract decisions
 
@@ -73,7 +76,7 @@
 | Project completion | No semantic tool is registered; unknown allowlist entry fails closed. Completion remains human-controlled. | `test_project_completion_capability_is_not_model_exposed` |
 | Execution allowlist | Discovery does not confer execution authority. `call_tool` rejects every vendor tool outside the five required local contracts, including raw `save_project`. | `test_non_required_vendor_tool_cannot_be_called` |
 | Explicit nulls | Only top-level `save_issue.project` may be explicitly null on the model surface; every other top-level or nested explicit null fails local policy before forwarding. | `test_only_project_accepts_explicit_null_on_model_surface`, `test_nested_explicit_null_is_rejected` |
-| Schema drift | All 52 tool names and schema dialects are pinned. Exact property sets, requiredness and `additionalProperties` are pinned for the five required vendor contracts; type/nullability/format checks cover every locally forwarded field. | `test_mcp_client.py` |
+| Schema drift | All 55 tool names and schema dialects are pinned. Exact property sets, requiredness and `additionalProperties` are pinned for the five required vendor contracts; type/nullability/format checks cover every locally forwarded field. | `test_mcp_client.py` |
 | Initialize and tool discovery | The negotiated protocol must be supported; the server must advertise an object-valued tools capability and string-valued required server identity fields before `notifications/initialized` or `tools/list`. Invalid initialize branches leave protocol/session state uncommitted; optional and additional vendor metadata remains compatible. Tool discovery follows bounded cursor pagination with duplicate/loop/size guards. Each semantic operation creates a fresh MCP connection and re-runs discovery, so no persistent tool-list cache can outlive a vendor change; `listChanged` is type-checked but no redundant long-lived notification subscription is retained. | `test_missing_tools_capability_fails_before_initialized_notification`, `test_non_object_tools_capability_fails_closed`, `test_non_boolean_list_changed_capability_fails_closed`, `test_invalid_server_info_fails_closed`, `test_initialize_accepts_optional_and_additional_vendor_metadata`, `test_tools_list_pagination_collects_required_contract`, cursor limit tests |
 | HTTP response media type | Only one well-formed `application/json` or `text/event-stream` header is accepted, optionally with exact quoted or unquoted `charset=utf-8`. A mutation response with invalid metadata is outcome-unknown. | `test_unexpected_response_content_type_fails_closed`, `test_malformed_content_type_parameter_fails_closed`, `test_asymmetrically_quoted_charset_fails_closed` |
 | Session identifier | Negotiated-era `Mcp-Session-Id` values are accepted only from fully validated initialize responses, bounded to 1024 visible-ASCII bytes, and never replaced by subsequent responses. Empty, duplicate, invalid or unexpected mutation metadata is outcome-unknown. | `test_session_id_with_non_visible_ascii_fails_closed`, `test_oversized_session_id_fails_closed`, `test_invalid_initialize_envelope_does_not_commit_session_id`, `test_non_initialization_session_id_header_fails_closed`, `test_mutation_session_id_header_is_outcome_unknown`, `test_empty_mutation_session_header_is_outcome_unknown` |
@@ -84,8 +87,8 @@
 
 ## Normalized live schema snapshot
 
-- Read-only snapshot SHA-256: `61fb5ed96b1883d08438ed5f8d23c26dac03d093e77bd617cfa55f9a8454e9b6`.
-- Tool count: `52`; tools publishing `outputSchema`: `0`.
+- The 2026-08-06 read-only snapshot SHA-256 `61fb5ed96b1883d08438ed5f8d23c26dac03d093e77bd617cfa55f9a8454e9b6` is historical and superseded by the 2026-08-27 live contract probe.
+- Tool count: `55`; added names are `share_issue` and `unshare_issue` relative to the source's previous 53-name pin. A fresh normalized full-schema hash will be recorded with the 0.8.14 runtime acceptance rather than reusing the historical digest.
 - Input-schema root shapes: with or without `required`; both include `$schema`, `type`, `properties`, and `additionalProperties`.
 - Live nullable fields (`17`): `list_issues.assignee`; `save_issue.assignee`, `cycle`, `delegate`, `dueDate`, `duplicateOf`, `estimate`, `parentId`, `project`, `slaBreachesAt`, `slaType`; `save_milestone.targetDate`; `save_project.lead`; `save_release.completedAt`, `startDate`, `startedAt`, `targetDate`.
 - Local model policy intentionally accepts explicit null only for `save_issue.project`; every other model-surface null fails closed until a semantic clear operation is separately designed and reviewed.

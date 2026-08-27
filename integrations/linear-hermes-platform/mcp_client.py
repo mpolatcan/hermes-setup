@@ -37,7 +37,7 @@ EXPECTED_VENDOR_TOOL_NAMES = frozenset(
         "merge_diff", "prepare_attachment_upload", "resolve_diff_thread", "save_comment",
         "save_diff_comment", "save_document", "save_issue", "save_milestone",
         "save_project", "save_release", "save_release_note", "save_status_update",
-        "search_documentation", "submit_diff_review",
+        "search_documentation", "share_issue", "submit_diff_review", "unshare_issue",
     }
 )
 REQUIRED_TOOL_INPUT_FIELDS = {
@@ -167,7 +167,7 @@ def _expected_forwarded_contract(tool_name: str, field: str) -> dict[str, Any]:
     if (tool_name, field) == ("get_issue", "includeRelations"):
         contract["default"] = False
     elif (tool_name, field) == ("list_issues", "includeArchived"):
-        contract["default"] = True
+        contract["default"] = False
     elif (tool_name, field) == ("list_issues", "limit"):
         contract.update({"default": 50, "maximum": 250})
     elif (tool_name, field) == ("list_issues", "orderBy"):

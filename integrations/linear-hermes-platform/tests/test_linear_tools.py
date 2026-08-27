@@ -70,8 +70,7 @@ class RegistrationTests(unittest.TestCase):
                 "quota_admission_lock_path": str(
                     Path.home() / ".hermes" / "state" / "locks" / "linear-quota-admission.lock"
                 ),
-                "quota_team_id": "ops-1",
-                "quota_team_key": "OPS",
+                "quota_team_ids": ["ops-1", "game-1"],
                 "endpoint": "https://mcp.linear.app/mcp",
                 "expected_actor_id": "actor-1",
                 "expected_organization_id": "org-1",
@@ -407,8 +406,10 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(result, expected)
         lock_cls.assert_called_once_with(extra["outbound_mcp"]["quota_admission_lock_path"])
         self.assertIs(execute.await_args.kwargs["quota_admission_lock"], fleet_lock)
-        self.assertEqual(execute.await_args.kwargs["quota_team_id"], "ops-1")
-        self.assertEqual(execute.await_args.kwargs["quota_team_key"], "OPS")
+        self.assertEqual(
+            execute.await_args.kwargs["quota_team_ids"],
+            frozenset({"ops-1", "game-1"}),
+        )
 
 
 class FakeGraphQL:
@@ -556,6 +557,24 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.ledger.close()
         self.tempdir.cleanup()
 
+    async def test_list_issues_preserves_archived_inventory_behavior(self):
+        mcp = FakeMCP()
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="list_issues",
+            arguments={"team": "ops-1", "limit": 25},
+            mutation=False,
+            policy=self.policy,
+            ledger=None,
+            graphql_client=FakeGraphQL(),
+            mcp_client=mcp,
+        )
+        self.assertIn("content", result)
+        self.assertEqual(
+            mcp.calls[-1],
+            ("list_issues", {"team": "ops-1", "limit": 25, "includeArchived": True}, False),
+        )
+
     async def run_create(
         self,
         *,
@@ -564,8 +583,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         ledger: OutboundLedger | None = None,
         profile_id: str = "general",
         target_team_id: str = "ops-1",
-        quota_team_id: str = "ops-1",
-        quota_team_key: str = "OPS",
         mcp: FakeMCP | None = None,
     ) -> tuple[dict, FakeMCP, mock.AsyncMock]:
         mcp = mcp or FakeMCP()
@@ -577,7 +594,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(current_count, Exception)
             else current_count,
         )
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
                 profile_id=profile_id,
                 vendor_tool="save_issue",
@@ -591,47 +608,43 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 ledger=ledger or self.ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id=quota_team_id,
-                quota_team_key=quota_team_key,
                 graphql_client=FakeGraphQL(),
                 mcp_client=mcp,
             )
         return result, mcp, counter
 
-    async def test_matching_non_ops_quota_team_is_counted_without_hard_coding(self):
+    async def test_create_to_another_allowed_team_uses_same_workspace_total(self):
         policy = OutboundPolicy(
             expected_actor_id="actor-1",
             expected_organization_id="org-1",
-            allowed_team_ids={"eng-1"},
+            allowed_team_ids={"ops-1", "game-1"},
         )
         counter = mock.AsyncMock(return_value=12)
         mcp = FakeMCP()
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
-                profile_id="coder",
+                profile_id="general",
                 vendor_tool="save_issue",
                 arguments={
-                    "operation_key": "eng-create",
-                    "target_team_id": "eng-1",
-                    "team": "eng-1",
+                    "operation_key": "game-create",
+                    "target_team_id": "game-1",
+                    "team": "game-1",
                     "title": "Task",
                 },
                 mutation=True,
                 policy=policy,
                 ledger=self.ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id="eng-1",
-                quota_team_key="ENG",
-                graphql_client=FakeGraphQL(issue_team="eng-1"),
+                graphql_client=FakeGraphQL(issue_team="game-1"),
                 mcp_client=mcp,
             )
         self.assertEqual(result["status"], "success")
-        counter.assert_awaited_once_with(mock.ANY, "eng-1", "ENG")
+        self.assertEqual(counter.await_count, 2)
 
-    async def test_create_target_team_mismatch_is_denied_before_lock_count_or_vendor(self):
+    async def test_create_to_disallowed_team_is_policy_denied_before_count_or_vendor(self):
         counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
         mcp = FakeMCP()
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
                 profile_id="general",
                 vendor_tool="save_issue",
@@ -645,8 +658,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 ledger=self.ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id="ops-1",
-                quota_team_key="OPS",
                 graphql_client=FakeGraphQL(issue_team="other-1"),
                 mcp_client=mcp,
             )
@@ -657,29 +668,10 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         counter.assert_not_awaited()
         self.assertEqual(mcp.calls, [])
 
-    async def test_missing_or_unsafe_quota_team_config_fails_create_closed(self):
-        for team_id, team_key in (("", "OPS"), ("ops-1", ""), ("ops-1", "OPS\nBAD")):
-            with self.subTest(team_id=team_id, team_key=team_key):
-                result, mcp, counter = await self.run_create(
-                    operation_key=f"bad-config-{len(team_id)}-{len(team_key)}",
-                    current_count=AssertionError("quota count called"),
-                    quota_team_id=team_id,
-                    quota_team_key=team_key,
-                )
-                self.assertEqual(
-                    result,
-                    {
-                        "error": "linear_policy_denied",
-                        "reason": "quota_team_config_invalid",
-                    },
-                )
-                counter.assert_not_awaited()
-                self.assertEqual(mcp.calls, [])
-
     async def test_create_without_quota_admission_lock_fails_before_count_or_mutation(self):
         mcp = FakeMCP()
         counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
                 profile_id="general",
                 vendor_tool="save_issue",
@@ -693,8 +685,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 ledger=self.ledger,
                 quota_admission_lock=None,
-                quota_team_id="ops-1",
-                quota_team_key="OPS",
                 graphql_client=FakeGraphQL(),
                 mcp_client=mcp,
             )
@@ -709,7 +699,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.quota_admission_lock.path.chmod(0o644)
         mcp = FakeMCP()
         counter = mock.AsyncMock(side_effect=AssertionError("quota count called"))
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
                 profile_id="general",
                 vendor_tool="save_issue",
@@ -723,8 +713,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 ledger=self.ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id="ops-1",
-                quota_team_key="OPS",
                 graphql_client=FakeGraphQL(),
                 mcp_client=mcp,
             )
@@ -740,7 +728,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         assert held_fd is not None
         counter = mock.AsyncMock(side_effect=AssertionError("count ran before lock"))
         mcp = FakeMCP()
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             waiter = asyncio.create_task(
                 execute_with_clients(
                     profile_id="general",
@@ -755,8 +743,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                     policy=self.policy,
                     ledger=self.ledger,
                     quota_admission_lock=self.quota_admission_lock,
-                    quota_team_id="ops-1",
-                    quota_team_key="OPS",
                     graphql_client=FakeGraphQL(),
                     mcp_client=mcp,
                 )
@@ -790,7 +776,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                     current_count=current,
                 )
                 self.assertEqual(result["status"], "success")
-                counter.assert_awaited_once_with(mock.ANY, "ops-1", "OPS")
+                self.assertEqual(counter.await_count, 2)
                 self.assertEqual(
                     [call[0] for call in mcp.calls],
                     ["get_user", "save_issue"],
@@ -876,6 +862,34 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
+    async def test_create_revalidates_quota_immediately_before_dispatch(self):
+        counter = mock.AsyncMock(side_effect=[248, 249])
+        mcp = FakeMCP()
+        operation_key = "external-writer-race"
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
+            result = await execute_with_clients(
+                profile_id="general",
+                vendor_tool="save_issue",
+                arguments={
+                    "operation_key": operation_key,
+                    "target_team_id": "ops-1",
+                    "team": "ops-1",
+                    "title": "Task",
+                },
+                mutation=True,
+                policy=self.policy,
+                ledger=self.ledger,
+                quota_admission_lock=self.quota_admission_lock,
+                graphql_client=FakeGraphQL(),
+                mcp_client=mcp,
+            )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "quota_pre_dispatch_changed"},
+        )
+        self.assertEqual(counter.await_count, 2)
+        self.assertEqual([call[0] for call in mcp.calls], ["get_user"])
+
     async def test_create_replay_bypasses_fresh_quota_count_and_preserves_signal(self):
         first, first_mcp, first_counter = await self.run_create(
             operation_key="create-critical-replay",
@@ -887,7 +901,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(first["status"], "success")
-        first_counter.assert_awaited_once()
+        self.assertEqual(first_counter.await_count, 2)
         self.assertEqual(replay["status"], "success")
         self.assertIs(replay["replayed"], True)
         self.assertEqual(replay["result_id"], first["result_id"])
@@ -927,14 +941,12 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 ledger=ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id="ops-1",
-                quota_team_key="OPS",
                 graphql_client=FakeGraphQL(),
                 mcp_client=CountingMCP(),
             )
 
         try:
-            with mock.patch("linear_tools.count_operations_issues", new=counter):
+            with mock.patch("linear_tools.count_workspace_issues", new=counter):
                 results = await asyncio.gather(
                     create("general", "fleet-create-general", self.ledger),
                     create("coder", "fleet-create-coder", second_ledger),
@@ -972,7 +984,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                     self.ledger.mark_unknown(operation_key, error_code="mcp_outcome_unknown")
                 counter = mock.AsyncMock(side_effect=AssertionError("fresh count called"))
                 mcp = FakeMCP()
-                with mock.patch("linear_tools.count_operations_issues", new=counter):
+                with mock.patch("linear_tools.count_workspace_issues", new=counter):
                     result = await execute_with_clients(
                         profile_id="general",
                         vendor_tool="save_issue",
@@ -981,8 +993,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                         policy=self.policy,
                         ledger=self.ledger,
                         quota_admission_lock=self.quota_admission_lock,
-                        quota_team_id="ops-1",
-                        quota_team_key="OPS",
                         graphql_client=FakeGraphQL(),
                         mcp_client=mcp,
                     )
@@ -1005,7 +1015,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             mcp=AmbiguousMCP(),
         )
         self.assertEqual(first["error"], "linear_outcome_unknown")
-        first_counter.assert_awaited_once()
+        self.assertEqual(first_counter.await_count, 2)
         state = self.quota_admission_lock.inspect()
         self.assertEqual(len(state["unresolved_create_fences"]), 1)
         fence = state["unresolved_create_fences"][0]
@@ -1081,7 +1091,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 return await super().call_tool(name, arguments, mutation=mutation)
 
         counter = mock.AsyncMock(return_value=31)
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             task = asyncio.create_task(
                 execute_with_clients(
                     profile_id="general",
@@ -1096,8 +1106,6 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                     policy=self.policy,
                     ledger=self.ledger,
                     quota_admission_lock=self.quota_admission_lock,
-                    quota_team_id="ops-1",
-                    quota_team_key="OPS",
                     graphql_client=FakeGraphQL(),
                     mcp_client=BlockingMCP(),
                 )
@@ -1114,7 +1122,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_issue_update_is_unaffected_by_create_quota_gate(self):
         mcp = FakeMCP()
         counter = mock.AsyncMock(side_effect=AssertionError("create counter called"))
-        with mock.patch("linear_tools.count_operations_issues", new=counter):
+        with mock.patch("linear_tools.count_workspace_issues", new=counter):
             result = await execute_with_clients(
                 profile_id="general",
                 vendor_tool="save_issue",
@@ -1810,7 +1818,7 @@ payload
     async def test_save_issue_forwards_explicit_project_null(self):
         mcp = FakeMCP()
         with mock.patch(
-            "linear_tools.count_operations_issues",
+            "linear_tools.count_workspace_issues",
             new=mock.AsyncMock(return_value=0),
         ):
             result = await execute_with_clients(
@@ -1827,8 +1835,6 @@ payload
                 policy=self.policy,
                 ledger=self.ledger,
                 quota_admission_lock=self.quota_admission_lock,
-                quota_team_id="ops-1",
-                quota_team_key="OPS",
                 graphql_client=FakeGraphQL(),
                 mcp_client=mcp,
             )

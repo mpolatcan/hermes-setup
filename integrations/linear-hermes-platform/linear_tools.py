@@ -23,7 +23,7 @@ try:
         LINEAR_ISSUE_CAPACITY,
         LINEAR_ISSUE_CRITICAL_THRESHOLD,
         LinearClient,
-        count_operations_issues,
+        count_workspace_issues,
     )
     from .mcp_client import (
         OFFICIAL_LINEAR_MCP_ENDPOINT,
@@ -45,7 +45,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
         LINEAR_ISSUE_CAPACITY,
         LINEAR_ISSUE_CRITICAL_THRESHOLD,
         LinearClient,
-        count_operations_issues,
+        count_workspace_issues,
     )
     from mcp_client import (
         OFFICIAL_LINEAR_MCP_ENDPOINT,
@@ -902,8 +902,7 @@ async def execute_with_clients(
     graphql_client: LinearClient,
     mcp_client: LinearMCPClient,
     quota_admission_lock: FleetGlobalLock | None = None,
-    quota_team_id: str = "",
-    quota_team_key: str = "",
+    quota_team_ids: frozenset[str] | None = None,
     _quota_admission_lock_held: bool = False,
     _quota_admission_fd: int | None = None,
     _quota_create_context: dict[str, Any] | None = None,
@@ -922,22 +921,6 @@ async def execute_with_clients(
             return {
                 "error": "linear_policy_denied",
                 "reason": local_preflight.reason,
-            }
-        quota_config_valid = bool(
-            quota_team_id == quota_team_id.strip()
-            and 0 < len(quota_team_id) <= 200
-            and not any(ord(character) < 0x20 for character in quota_team_id)
-            and re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,49}", quota_team_key)
-        )
-        if not quota_config_valid:
-            return {
-                "error": "linear_policy_denied",
-                "reason": "quota_team_config_invalid",
-            }
-        if str(arguments.get("target_team_id") or "") != quota_team_id:
-            return {
-                "error": "linear_policy_denied",
-                "reason": "quota_team_mismatch",
             }
     if is_issue_create and not _quota_admission_lock_held:
         if quota_admission_lock is None:
@@ -979,8 +962,7 @@ async def execute_with_clients(
                 policy=policy,
                 ledger=ledger,
                 quota_admission_lock=quota_admission_lock,
-                quota_team_id=quota_team_id,
-                quota_team_key=quota_team_key,
+                quota_team_ids=quota_team_ids,
                 graphql_client=graphql_client,
                 mcp_client=mcp_client,
                 _quota_admission_lock_held=True,
@@ -1135,6 +1117,8 @@ async def execute_with_clients(
                 return plan_result
 
     forwarded = {key: value for key, value in arguments.items() if key not in WRAPPER_FIELDS}
+    if vendor_tool == "list_issues":
+        forwarded["includeArchived"] = True
     if lifecycle_transition is not None:
         forwarded["state"] = lifecycle_transition["target_state_id"]
     elif lifecycle_noop_result is not None and lifecycle_action != "enrich_plan":
@@ -1213,11 +1197,7 @@ async def execute_with_clients(
             }
 
         try:
-            current_count = await count_operations_issues(
-                graphql_client,
-                quota_team_id,
-                quota_team_key,
-            )
+            current_count = await count_workspace_issues(graphql_client, quota_team_ids or frozenset())
         except Exception:
             return {
                 "error": "linear_policy_denied",
@@ -1364,6 +1344,27 @@ async def execute_with_clients(
             return {
                 "error": "linear_policy_denied",
                 "reason": "session_activity_required",
+            }
+
+    if is_issue_create:
+        try:
+            confirmed_count = await count_workspace_issues(graphql_client, quota_team_ids or frozenset())
+            quota_unchanged = bool(
+                _quota_create_context is not None
+                and confirmed_count == _quota_create_context["observed_current_count"]
+                and confirmed_count + 1 < CAPACITY
+            )
+        except Exception:
+            quota_unchanged = False
+        if not quota_unchanged:
+            await asyncio.to_thread(
+                ledger.mark_failed,
+                operation_key,
+                error_code="quota_pre_dispatch_changed",
+            )
+            return {
+                "error": "linear_policy_denied",
+                "reason": "quota_pre_dispatch_changed",
             }
 
     def persist_ambiguous_create_fence() -> None:
@@ -1593,8 +1594,15 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
     inbound_database_path = str(extra.get("database_path") or "")
     outbound_ledger_path = str(outbound.get("ledger_path") or "")
     quota_admission_lock_path = str(outbound.get("quota_admission_lock_path") or "")
-    quota_team_id = str(outbound.get("quota_team_id") or "")
-    quota_team_key = str(outbound.get("quota_team_key") or "")
+    raw_quota_team_ids = outbound.get("quota_team_ids")
+    quota_team_ids = (
+        frozenset(raw_quota_team_ids)
+        if isinstance(raw_quota_team_ids, list)
+        and raw_quota_team_ids
+        and all(isinstance(value, str) and value for value in raw_quota_team_ids)
+        and len(set(raw_quota_team_ids)) == len(raw_quota_team_ids)
+        else frozenset()
+    )
     ledger_path_safe = bool(
         inbound_database_path
         and Path(inbound_database_path).is_absolute()
@@ -1652,8 +1660,7 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                     policy=policy,
                     ledger=ledger,
                     quota_admission_lock=quota_admission_lock,
-                    quota_team_id=quota_team_id,
-                    quota_team_key=quota_team_key,
+                    quota_team_ids=quota_team_ids,
                     graphql_client=graphql,
                     mcp_client=mcp,
                 )

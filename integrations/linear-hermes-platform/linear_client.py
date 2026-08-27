@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 from typing import Any
 
 import aiohttp
@@ -954,72 +955,158 @@ mutation LinearNativeIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
         return str((((result.get("issue") or {}).get("state") or {}).get("id")) or target["id"])
 
 
-async def _read_issue_ids_for_quota(
-    client: LinearClient, team_id: str, expected_team_key: str
-) -> list[str]:
+def _parse_workspace_team_visibility(
+    client: LinearClient,
+    data: dict[str, Any],
+    expected_team_ids: frozenset[str],
+) -> list[dict[str, Any]]:
+    organization = data.get("organization")
+    if (
+        not isinstance(organization, dict)
+        or organization.get("id") != client.organization_id
+    ):
+        raise LinearAPIError("Workspace quota identity could not be verified")
+
+    def parse(connection: Any, *, organization_side: bool) -> list[dict[str, Any]]:
+        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+            raise LinearAPIError("Workspace team visibility was incomplete")
+        page_info = connection.get("pageInfo")
+        if (
+            not isinstance(page_info, dict)
+            or page_info.get("hasNextPage") is not False
+            or len(connection["nodes"]) > 250
+        ):
+            raise LinearAPIError("Workspace team visibility exceeded the evidence limit")
+        result = []
+        seen = set()
+        for node in connection["nodes"]:
+            team_id = node.get("id") if isinstance(node, dict) else None
+            team_key = node.get("key") if isinstance(node, dict) else None
+            if (
+                not isinstance(team_id, str)
+                or not team_id
+                or not isinstance(team_key, str)
+                or not team_key
+                or team_id in seen
+            ):
+                raise LinearAPIError("Workspace team visibility was malformed")
+            seen.add(team_id)
+            item: dict[str, Any] = {"id": team_id, "key": team_key}
+            if organization_side:
+                private = node.get("private")
+                if type(private) is not bool:
+                    raise LinearAPIError("Workspace team visibility was malformed")
+                item["private"] = private
+            result.append(item)
+        return result
+
+    organization_teams = parse(organization.get("teams"), organization_side=True)
+    administrable_teams = parse(data.get("administrableTeams"), organization_side=True)
+    organization_ids = {item["id"] for item in organization_teams}
+    administrable_ids = {item["id"] for item in administrable_teams}
+    if organization_ids != expected_team_ids or administrable_ids != expected_team_ids:
+        raise LinearAPIError("Workspace reviewed team manifest did not match live visibility")
+    return organization_teams
+
+
+async def _read_workspace_issues_for_quota(
+    client: LinearClient, expected_team_ids: frozenset[str]
+) -> tuple[int, bytes]:
     query = """
-query LinearOperationsQuota($teamId: String!, $after: String) {
-  team(id: $teamId) {
-    id key
-    issues(first: 50, after: $after, includeArchived: true) {
-      nodes { id }
+query LinearWorkspaceQuota($after: String) {
+  organization {
+    id
+    teams(first: 250, includeArchived: true) {
+      nodes { id key private }
       pageInfo { hasNextPage endCursor }
     }
   }
+  administrableTeams(first: 250, includeArchived: true) {
+    nodes { id key private }
+    pageInfo { hasNextPage endCursor }
+  }
+  issues(first: 50, after: $after, includeArchived: true) {
+    nodes { id team { id key } }
+    pageInfo { hasNextPage endCursor }
+  }
 }
 """
-    issue_ids: list[str] = []
+    issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_cursors: set[str] = set()
+    workspace_teams: list[dict[str, Any]] | None = None
     after: str | None = None
     for _ in range(MAX_ISSUE_QUOTA_PAGES):
-        data = await client.graphql(query, {"teamId": team_id, "after": after})
-        team = data.get("team")
-        if (
-            not isinstance(team, dict)
-            or team.get("id") != team_id
-            or team.get("key") != expected_team_key
-        ):
-            raise LinearAPIError("Operations team identity could not be verified")
-        connection = team.get("issues")
+        data = await client.graphql(query, {"after": after})
+        current_teams = _parse_workspace_team_visibility(
+            client, data, expected_team_ids
+        )
+        if workspace_teams is None:
+            workspace_teams = current_teams
+        elif current_teams != workspace_teams:
+            raise LinearAPIError("Workspace team visibility changed during pagination")
+        team_identity = {(item["id"], item["key"]) for item in workspace_teams}
+        connection = data.get("issues")
         if not isinstance(connection, dict) or not isinstance(
             connection.get("nodes"), list
         ):
-            raise LinearAPIError("Operations issue pagination was incomplete")
+            raise LinearAPIError("Workspace issue pagination was incomplete")
+        if len(connection["nodes"]) > 50:
+            raise LinearAPIError("Workspace issue pagination exceeded the page limit")
         page_info = connection.get("pageInfo")
         if not isinstance(page_info, dict) or not isinstance(
             page_info.get("hasNextPage"), bool
         ):
-            raise LinearAPIError("Operations issue pagination was incomplete")
+            raise LinearAPIError("Workspace issue pagination was incomplete")
         cursor = page_info.get("endCursor")
         if cursor is not None and not isinstance(cursor, str):
-            raise LinearAPIError("Operations issue pagination was incomplete")
+            raise LinearAPIError("Workspace issue pagination was incomplete")
         for node in connection["nodes"]:
             issue_id = node.get("id") if isinstance(node, dict) else None
-            if not isinstance(issue_id, str) or not issue_id:
-                raise LinearAPIError("Operations issue identity was malformed")
+            team = node.get("team") if isinstance(node, dict) else None
+            team_id = team.get("id") if isinstance(team, dict) else None
+            team_key = team.get("key") if isinstance(team, dict) else None
+            if not all(
+                isinstance(value, str) and bool(value)
+                for value in (issue_id, team_id, team_key)
+            ):
+                raise LinearAPIError("Workspace issue identity was malformed")
+            if (team_id, team_key) not in team_identity:
+                raise LinearAPIError("Workspace issue team visibility changed during inventory")
             if issue_id in seen_ids:
                 raise LinearAPIError(
-                    "Operations issue inventory contained duplicate identity"
+                    "Workspace issue inventory contained duplicate identity"
                 )
             seen_ids.add(issue_id)
-            issue_ids.append(issue_id)
+            issues.append(
+                {"id": issue_id, "team": {"id": team_id, "key": team_key}}
+            )
         if not page_info["hasNextPage"]:
-            return issue_ids
+            assert workspace_teams is not None
+            inventory = json.dumps(
+                {"teams": workspace_teams, "issues": issues},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            return len(issues), inventory
         if not cursor or cursor in seen_cursors:
-            raise LinearAPIError("Operations issue pagination did not advance")
+            raise LinearAPIError("Workspace issue pagination did not advance")
         seen_cursors.add(cursor)
         after = cursor
-    raise LinearAPIError("Operations issue pagination exceeded the page limit")
+    raise LinearAPIError("Workspace issue pagination exceeded the page limit")
 
 
-async def count_operations_issues(
-    client: LinearClient, team_id: str, expected_team_key: str
+async def count_workspace_issues(
+    client: LinearClient, expected_team_ids: frozenset[str]
 ) -> int:
-    """Return an exact, drift-checked count across complete cursor pagination."""
+    """Return an exact reviewed-manifest count across a byte-identical double read."""
 
-    first = await _read_issue_ids_for_quota(client, team_id, expected_team_key)
-    second = await _read_issue_ids_for_quota(client, team_id, expected_team_key)
+    if not expected_team_ids or any(
+        not isinstance(team_id, str) or not team_id for team_id in expected_team_ids
+    ):
+        raise LinearAPIError("Workspace reviewed team manifest was invalid")
+    first = await _read_workspace_issues_for_quota(client, expected_team_ids)
+    second = await _read_workspace_issues_for_quota(client, expected_team_ids)
     if first != second:
-        raise LinearAPIError("Operations issue inventory changed during revalidation")
-    return len(first)
+        raise LinearAPIError("Workspace issue inventory changed during revalidation")
+    return first[0]
