@@ -6390,6 +6390,27 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_session_create_uses_live_input_object_contract(self):
+        client = LinearClient("/unused")
+        client.graphql = mock.AsyncMock(
+            return_value={
+                "agentSessionCreateOnIssue": {
+                    "success": True,
+                    "agentSession": {"id": "session-live-contract"},
+                }
+            }
+        )
+
+        session_id = await client.create_agent_session_on_issue("issue-1")
+
+        self.assertEqual(session_id, "session-live-contract")
+        client.graphql.assert_awaited_once()
+        assert client.graphql.await_args is not None
+        query, variables = client.graphql.await_args.args
+        self.assertIn("$input: AgentSessionCreateOnIssue!", query)
+        self.assertIn("agentSessionCreateOnIssue(input: $input)", query)
+        self.assertEqual(variables, {"input": {"issueId": "issue-1"}})
+
     async def test_user_by_url_paginates_and_returns_one_exact_live_user(self):
         client = LinearClient("/unused")
         target_url = "https://linear.app/mpolatcan/profiles/doruk"

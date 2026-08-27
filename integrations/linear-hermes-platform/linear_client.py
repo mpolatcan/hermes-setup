@@ -95,14 +95,14 @@ mutation LinearManagerActivationDelegate($id: String!, $delegateId: String!) {
         """Ask Linear to create the native session for one verified human reopen."""
         data = await self.graphql(
             """
-mutation LinearHumanReopenAgentSession($issueId: String!) {
-  agentSessionCreateOnIssue(issueId: $issueId) {
+mutation LinearHumanReopenAgentSession($input: AgentSessionCreateOnIssue!) {
+  agentSessionCreateOnIssue(input: $input) {
     success
     agentSession { id }
   }
 }
 """,
-            {"issueId": issue_id},
+            {"input": {"issueId": issue_id}},
         )
         result = data.get("agentSessionCreateOnIssue") or {}
         session = result.get("agentSession") or {}
