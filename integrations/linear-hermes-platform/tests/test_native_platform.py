@@ -3233,8 +3233,16 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             issue_id, "canceled", session_id="session-manager-completed-old"
         )
         self.adapter._linear.issue_agent_sessions[issue_id] = [
-            {"id": "session-manager-completed-old", "status": "complete", "app_user_id": "agent-derya"}
+            {"id": "session-manager-completed-old", "status": "pending", "app_user_id": "agent-derya"}
         ]
+        self.adapter._ledger.enqueue_closure_activity(
+            "closure-manager-completed-old",
+            issue_id,
+            "session-manager-completed-old",
+            "activity-manager-completed-old",
+            "Closure reconciliation complete.",
+            {"issue_id": issue_id},
+        )
         self.adapter._linear.closure_contexts[issue_id] = {
             "id": issue_id,
             "updated_at": "2026-08-27T16:51:58.254Z",
@@ -3309,37 +3317,40 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "session_started",
         )
 
-    async def test_human_reopen_with_open_actor_session_fails_closed(self):
-        self.adapter._planned_activation_enabled = True
-        self.adapter._activation_allowed_team_ids = {"team-ops"}
-        self.adapter._planned_owner_ids = {"user-1"}
-        issue_id = "issue-manager-human-reopen-open-session"
-        self.adapter._linear.issue_agent_sessions[issue_id] = [
-            {"id": "open-session", "status": "active", "app_user_id": "agent-derya"}
-        ]
-        self.adapter._linear.closure_contexts[issue_id] = {
-            "id": issue_id,
-            "updated_at": "2026-08-27T17:00:00.000Z",
-            "state": {"id": "started-1", "type": "started"},
-            "team": {"id": "team-ops"},
-            "team_states": [{"id": "completed-1", "type": "completed"}],
-            "assignee": {"id": "user-1"},
-            "delegate": {"id": "agent-derya"},
-        }
-        transition = self.make_data_payload(
-            webhookId="webhook-manager-human-reopen-open-session",
-            data={
-                "id": issue_id,
-                "updatedAt": "2026-08-27T17:00:00.000Z",
-                "state": {"id": "started-1", "type": "started"},
-            },
-            updatedFrom={"stateId": "completed-1"},
-        )
+    async def test_human_reopen_with_unfenced_open_actor_session_fails_closed(self):
+        for index, status in enumerate(("pending", "active", "awaitingInput")):
+            with self.subTest(status=status):
+                self.adapter._planned_activation_enabled = True
+                self.adapter._activation_allowed_team_ids = {"team-ops"}
+                self.adapter._planned_owner_ids = {"user-1"}
+                issue_id = f"issue-manager-human-reopen-open-session-{status}"
+                self.adapter._linear.issue_agent_sessions[issue_id] = [
+                    {"id": f"open-session-{status}", "status": status, "app_user_id": "agent-derya"}
+                ]
+                updated_at = f"2026-08-27T17:00:0{index}.000Z"
+                self.adapter._linear.closure_contexts[issue_id] = {
+                    "id": issue_id,
+                    "updated_at": updated_at,
+                    "state": {"id": "started-1", "type": "started"},
+                    "team": {"id": "team-ops"},
+                    "team_states": [{"id": "completed-1", "type": "completed"}],
+                    "assignee": {"id": "user-1"},
+                    "delegate": {"id": "agent-derya"},
+                }
+                transition = self.make_data_payload(
+                    webhookId=f"webhook-manager-human-reopen-open-session-{status}",
+                    data={
+                        "id": issue_id,
+                        "updatedAt": updated_at,
+                        "state": {"id": "started-1", "type": "started"},
+                    },
+                    updatedFrom={"stateId": "completed-1"},
+                )
 
-        response = await self.adapter._handle_webhook(self.request_for(transition))
+                response = await self.adapter._handle_webhook(self.request_for(transition))
 
-        self.assertEqual(json.loads(response.text)["status"], "reopen_open_session")
-        self.assertEqual(self.adapter._linear.created_agent_sessions, [])
+                self.assertEqual(json.loads(response.text)["status"], "reopen_open_session")
+                self.assertEqual(self.adapter._linear.created_agent_sessions, [])
 
     async def test_human_reopen_revalidates_open_session_immediately_before_dispatch(self):
         self.adapter._planned_activation_enabled = True
@@ -3438,6 +3449,14 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             "delegate": {"id": "agent-derya"},
         }
         self.adapter._linear.closure_contexts[issue_id] = context
+        self.adapter._ledger.enqueue_closure_activity(
+            "closure-manager-completed-old-lost-response",
+            issue_id,
+            "session-manager-completed-old",
+            "activity-manager-completed-old-lost-response",
+            "Closure reconciliation complete.",
+            {"issue_id": issue_id},
+        )
         attempts = 0
 
         async def committed_but_response_lost(_issue_id):
@@ -3445,10 +3464,15 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             attempts += 1
             self.adapter._linear.issue_agent_sessions[issue_id] = [
                 {
+                    "id": "session-manager-completed-old",
+                    "status": "pending",
+                    "app_user_id": "agent-derya",
+                },
+                {
                     "id": "recovered-reopen-session",
                     "status": "active",
                     "app_user_id": "agent-derya",
-                }
+                },
             ]
             raise LinearAPIError("agentSessionCreateOnIssue response lost", retryable=True)
 
@@ -4516,6 +4540,8 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("In Progress", body)
         self.assertIn("Done", body)
         self.assertIn("not rerun", body)
+        for forbidden_follow_up in ("reply", "write back", "same session", "aynı session"):
+            self.assertNotIn(forbidden_follow_up, body.casefold())
         self.assertEqual(self.adapter._ledger.closure_counts()["completed"], 1)
         self.assertEqual(self.adapter._ledger.get_wait("session-closure")["state"], "canceled")
 

@@ -719,7 +719,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.15",
+                "version": "0.8.16",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1093,9 +1093,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 open_actor_sessions = [
                     session
                     for session in await self._linear.get_issue_agent_sessions(issue_id)
-                    if str(session.get("app_user_id") or "") == self._linear.actor_id
-                    and str(session.get("status") or "")
-                    in {"pending", "active", "awaitingInput"}
+                    if self._is_execution_capable_open_session(session)
                 ]
                 recovered_reopen = bool(
                     evidence.get("verification_source")
@@ -1515,9 +1513,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             return None
         sessions = await self._linear.get_issue_agent_sessions(issue_id)
         open_for_actor = any(
-            str(session.get("app_user_id") or "") == self._linear.actor_id
-            and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
-            for session in sessions
+            self._is_execution_capable_open_session(session) for session in sessions
         )
         if open_for_actor:
             return "reopen_open_session"
@@ -1550,8 +1546,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         confirmed_state = confirmed.get("state") or {}
         confirmed_sessions = await self._linear.get_issue_agent_sessions(issue_id)
         confirmed_open = any(
-            str(session.get("app_user_id") or "") == self._linear.actor_id
-            and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+            self._is_execution_capable_open_session(session)
             for session in confirmed_sessions
         )
         confirmation_matches = bool(
@@ -1573,6 +1568,19 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             issue_id, "delegated", session_id=session_id
         )
         return "reopen_session_created"
+
+    def _is_execution_capable_open_session(self, session: dict[str, Any]) -> bool:
+        """Treat vendor-open status as actionable only without a durable closure fence."""
+        assert self._linear is not None
+        assert self._ledger is not None
+        if (
+            str(session.get("app_user_id") or "") != self._linear.actor_id
+            or str(session.get("status") or "")
+            not in {"pending", "active", "awaitingInput"}
+        ):
+            return False
+        session_id = str(session.get("id") or "")
+        return not session_id or not self._ledger.has_session_closure(session_id)
 
     async def _reconcile_human_completion(
         self,
