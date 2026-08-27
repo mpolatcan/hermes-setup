@@ -3511,6 +3511,68 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activation["state"], "session_started")
         self.assertEqual(activation["session_id"], "recovered-reopen-session")
 
+    async def test_human_reopen_recovers_when_native_session_creation_advances_issue_revision(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-native-revision"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:03:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "completed-1", "type": "completed"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+
+        async def committed_but_response_lost(_issue_id):
+            self.adapter._linear.issue_agent_sessions[issue_id] = [
+                {
+                    "id": "native-revision-session",
+                    "status": "active",
+                    "app_user_id": "agent-derya",
+                }
+            ]
+            raise LinearAPIError("agentSessionCreateOnIssue response lost", retryable=True)
+
+        self.adapter._linear.create_agent_session_on_issue = committed_but_response_lost
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-native-revision",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+        uncertain = await self.adapter._handle_webhook(self.request_for(transition))
+        context["updated_at"] = "2026-08-27T17:03:01.150Z"
+        created = self.make_payload(
+            webhookId="webhook-manager-human-reopen-native-revision-created",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "native-revision-session",
+                "createdAt": "2026-08-27T17:03:01.000Z",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-193",
+                    "title": "Native revision recovery",
+                    "updatedAt": "2026-08-27T17:03:01.150Z",
+                },
+            },
+        )
+
+        recovered = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(uncertain.status, 503)
+        self.assertEqual(json.loads(recovered.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        activation = self.adapter._ledger.get_manager_activation(issue_id)
+        self.assertEqual(activation["state"], "session_started")
+        self.assertEqual(activation["session_id"], "native-revision-session")
+
     async def test_human_reopen_lost_response_rejects_created_webhook_after_revision_drift(self):
         self.adapter._planned_activation_enabled = True
         self.adapter._activation_allowed_team_ids = {"team-ops"}
@@ -3554,10 +3616,12 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             actor={"id": "agent-derya", "name": "Derya"},
             agentSession={
                 "id": "drifted-reopen-session",
+                "createdAt": "2026-08-27T17:04:00.500Z",
                 "issue": {
                     "id": issue_id,
                     "identifier": "OPS-193",
                     "title": "Drifted human reopen activation",
+                    "updatedAt": "2026-08-27T17:04:00.750Z",
                 },
             },
         )

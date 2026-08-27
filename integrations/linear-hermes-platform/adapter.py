@@ -719,7 +719,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.17",
+                "version": "0.8.18",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1090,6 +1090,42 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 evidence_team_id = str(evidence.get("team_id") or "")
                 evidence_assignee_id = str(evidence.get("assignee_id") or "")
                 evidence_delegate_id = str(evidence.get("delegate_id") or "")
+                live_revision = str(recovery_context.get("updated_at") or "")
+                session_created_at = str(
+                    ((payload.get("agentSession") or {}).get("createdAt") or "")
+                )
+                signed_session_issue_revision = str(
+                    (
+                        ((payload.get("agentSession") or {}).get("issue") or {}).get(
+                            "updatedAt"
+                        )
+                        or ""
+                    )
+                )
+                exact_reopen_revision = bool(
+                    evidence_revision
+                    and hmac.compare_digest(live_revision, evidence_revision)
+                )
+                native_session_revision = False
+                if (
+                    evidence_revision
+                    and live_revision
+                    and session_created_at
+                    and signed_session_issue_revision
+                    and hmac.compare_digest(
+                        live_revision, signed_session_issue_revision
+                    )
+                ):
+                    try:
+                        evidence_ts = _iso_timestamp(evidence_revision)
+                        session_created_ts = _iso_timestamp(session_created_at)
+                        signed_issue_ts = _iso_timestamp(signed_session_issue_revision)
+                        native_session_revision = bool(
+                            evidence_ts < session_created_ts <= signed_issue_ts
+                            and signed_issue_ts - session_created_ts <= 5.0
+                        )
+                    except ValueError:
+                        native_session_revision = False
                 open_actor_sessions = [
                     session
                     for session in await self._linear.get_issue_agent_sessions(issue_id)
@@ -1107,11 +1143,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     )
                     and str(recovery_state.get("type") or "").casefold()
                     == "started"
-                    and evidence_revision
-                    and hmac.compare_digest(
-                        str(recovery_context.get("updated_at") or ""),
-                        evidence_revision,
-                    )
+                    and (exact_reopen_revision or native_session_revision)
                     and evidence_team_id
                     and hmac.compare_digest(
                         str((recovery_context.get("team") or {}).get("id") or ""),
