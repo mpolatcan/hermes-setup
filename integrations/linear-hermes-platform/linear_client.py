@@ -91,6 +91,26 @@ mutation LinearManagerActivationDelegate($id: String!, $delegateId: String!) {
             raise LinearAPIError("Manager activation delegate assignment was not confirmed")
         return str(issue.get("id") or issue_id)
 
+    async def create_agent_session_on_issue(self, issue_id: str) -> str:
+        """Ask Linear to create the native session for one verified human reopen."""
+        data = await self.graphql(
+            """
+mutation LinearHumanReopenAgentSession($issueId: String!) {
+  agentSessionCreateOnIssue(issueId: $issueId) {
+    success
+    agentSession { id }
+  }
+}
+""",
+            {"issueId": issue_id},
+        )
+        result = data.get("agentSessionCreateOnIssue") or {}
+        session = result.get("agentSession") or {}
+        session_id = str(session.get("id") or "")
+        if result.get("success") is not True or not session_id:
+            raise LinearAPIError("agentSessionCreateOnIssue did not report a session")
+        return session_id
+
     async def get_issue_team_id(self, issue_id: str) -> str:
         data = await self.graphql(
             "query LinearPolicyIssueTeam($id: String!) { issue(id: $id) { team { id } } }",

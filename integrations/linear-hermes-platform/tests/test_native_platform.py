@@ -68,12 +68,17 @@ class FakeLinear:
         self.blockers: dict[str, list[dict[str, str]]] = {}
         self.closure_contexts: dict[str, dict] = {}
         self.delegate_assignments: list[tuple[str, str]] = []
+        self.created_agent_sessions: list[str] = []
         self.issue_agent_sessions: dict[str, list[dict[str, str]]] = {}
         self.delivery_contexts: dict[str, dict] = {}
 
     async def assign_issue_delegate(self, issue_id, delegate_id):
         self.delegate_assignments.append((issue_id, delegate_id))
         return issue_id
+
+    async def create_agent_session_on_issue(self, issue_id):
+        self.created_agent_sessions.append(issue_id)
+        return f"reopen-session-{len(self.created_agent_sessions)}"
 
     async def create_activity(
         self,
@@ -3214,6 +3219,333 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.adapter._ledger.get_issue_session(issue_id),
             "session-manager-completed-fresh-mention",
+        )
+
+    async def test_human_completed_to_started_reopen_creates_one_native_session_without_mention(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen"
+        self.adapter._ledger.claim_manager_activation(
+            issue_id, "activation-completed", {"issue_id": issue_id}
+        )
+        self.adapter._ledger.mark_manager_activation(
+            issue_id, "canceled", session_id="session-manager-completed-old"
+        )
+        self.adapter._linear.issue_agent_sessions[issue_id] = [
+            {"id": "session-manager-completed-old", "status": "complete", "app_user_id": "agent-derya"}
+        ]
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T16:51:58.254Z",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [
+                {"id": "completed-1", "name": "Done", "type": "completed"},
+                {"id": "started-1", "name": "In Progress", "type": "started"},
+            ],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-27T16:51:58.254Z",
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+
+        first = await self.adapter._handle_webhook(self.request_for(transition))
+        replay = dict(transition, webhookId="webhook-manager-human-reopen-replay")
+        second = await self.adapter._handle_webhook(self.request_for(replay))
+
+        self.assertEqual(json.loads(first.text)["status"], "reopen_session_created")
+        self.assertEqual(json.loads(second.text)["status"], "duplicate")
+        self.assertEqual(self.adapter._linear.created_agent_sessions, [issue_id])
+        activation = self.adapter._ledger.get_manager_activation(issue_id)
+        self.assertEqual(activation["state"], "delegated")
+        self.assertEqual(activation["session_id"], "reopen-session-1")
+
+        mismatched = self.make_payload(
+            webhookId="webhook-manager-human-reopen-mismatched",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "unexpected-reopen-session",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-193",
+                    "title": "Human reopen activation",
+                },
+            },
+        )
+        mismatch = await self.adapter._handle_webhook(self.request_for(mismatched))
+        self.assertEqual(json.loads(mismatch.text)["status"], "manager_session_mismatch")
+        self.assertEqual(self.events, [])
+
+        created = self.make_payload(
+            webhookId="webhook-manager-human-reopen-created",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "reopen-session-1",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-193",
+                    "title": "Human reopen activation",
+                },
+            },
+        )
+        accepted = await self.adapter._handle_webhook(self.request_for(created))
+        created_replay = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(accepted.text)["status"], "accepted")
+        self.assertEqual(json.loads(created_replay.text)["status"], "duplicate")
+        self.assertEqual(len(self.events), 1)
+        self.assertIn("Adapter-verified lifecycle activation", self.events[0].text)
+        self.assertEqual(self.events[0].source.chat_id, "reopen-session-1")
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "session_started",
+        )
+
+    async def test_human_reopen_with_open_actor_session_fails_closed(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-open-session"
+        self.adapter._linear.issue_agent_sessions[issue_id] = [
+            {"id": "open-session", "status": "active", "app_user_id": "agent-derya"}
+        ]
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:00:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "completed-1", "type": "completed"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-open-session",
+            data={
+                "id": issue_id,
+                "updatedAt": "2026-08-27T17:00:00.000Z",
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(transition))
+
+        self.assertEqual(json.loads(response.text)["status"], "reopen_open_session")
+        self.assertEqual(self.adapter._linear.created_agent_sessions, [])
+
+    async def test_human_reopen_revalidates_open_session_immediately_before_dispatch(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-race"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:01:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "completed-1", "type": "completed"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        self.adapter._linear.get_issue_agent_sessions = mock.AsyncMock(side_effect=[
+            [],
+            [{"id": "racing-session", "status": "active", "app_user_id": "agent-derya"}],
+        ])
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-race",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(transition))
+
+        self.assertEqual(json.loads(response.text)["status"], "reopen_rejected")
+        self.assertEqual(self.adapter._linear.created_agent_sessions, [])
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"], "failed"
+        )
+
+    async def test_human_reopen_ambiguous_session_create_is_fenced_without_retry(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-ambiguous"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:02:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "canceled-1", "type": "canceled"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        attempts = 0
+
+        async def lost_response(_issue_id):
+            nonlocal attempts
+            attempts += 1
+            raise LinearAPIError("agentSessionCreateOnIssue timed out", retryable=True)
+
+        self.adapter._linear.create_agent_session_on_issue = lost_response
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-ambiguous",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "canceled-1"},
+        )
+
+        first = await self.adapter._handle_webhook(self.request_for(transition))
+        second = await self.adapter._handle_webhook(self.request_for(transition))
+
+        self.assertEqual(first.status, 503)
+        self.assertEqual(second.status, 503)
+        self.assertEqual(json.loads(second.text)["status"], "reopen_ambiguous")
+        self.assertEqual(attempts, 1)
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "dispatch_unknown",
+        )
+
+    async def test_human_reopen_lost_create_response_recovers_from_exact_created_webhook(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-lost-response"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:03:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "completed-1", "type": "completed"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+        attempts = 0
+
+        async def committed_but_response_lost(_issue_id):
+            nonlocal attempts
+            attempts += 1
+            self.adapter._linear.issue_agent_sessions[issue_id] = [
+                {
+                    "id": "recovered-reopen-session",
+                    "status": "active",
+                    "app_user_id": "agent-derya",
+                }
+            ]
+            raise LinearAPIError("agentSessionCreateOnIssue response lost", retryable=True)
+
+        self.adapter._linear.create_agent_session_on_issue = committed_but_response_lost
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-lost-response",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+
+        uncertain = await self.adapter._handle_webhook(self.request_for(transition))
+        created = self.make_payload(
+            webhookId="webhook-manager-human-reopen-recovered-created",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "recovered-reopen-session",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-193",
+                    "title": "Recovered human reopen activation",
+                },
+            },
+        )
+        recovered = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(uncertain.status, 503)
+        self.assertEqual(json.loads(recovered.text)["status"], "accepted")
+        self.assertEqual(attempts, 1)
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.chat_id, "recovered-reopen-session")
+        activation = self.adapter._ledger.get_manager_activation(issue_id)
+        self.assertEqual(activation["state"], "session_started")
+        self.assertEqual(activation["session_id"], "recovered-reopen-session")
+
+    async def test_human_reopen_lost_response_rejects_created_webhook_after_revision_drift(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-manager-human-reopen-revision-drift"
+        context = {
+            "id": issue_id,
+            "updated_at": "2026-08-27T17:04:00.000Z",
+            "state": {"id": "started-1", "type": "started"},
+            "team": {"id": "team-ops"},
+            "team_states": [{"id": "completed-1", "type": "completed"}],
+            "assignee": {"id": "user-1"},
+            "delegate": {"id": "agent-derya"},
+        }
+        self.adapter._linear.closure_contexts[issue_id] = context
+
+        async def committed_but_response_lost(_issue_id):
+            self.adapter._linear.issue_agent_sessions[issue_id] = [
+                {
+                    "id": "drifted-reopen-session",
+                    "status": "active",
+                    "app_user_id": "agent-derya",
+                }
+            ]
+            raise LinearAPIError("agentSessionCreateOnIssue response lost", retryable=True)
+
+        self.adapter._linear.create_agent_session_on_issue = committed_but_response_lost
+        transition = self.make_data_payload(
+            webhookId="webhook-manager-human-reopen-revision-drift",
+            data={
+                "id": issue_id,
+                "updatedAt": context["updated_at"],
+                "state": {"id": "started-1", "type": "started"},
+            },
+            updatedFrom={"stateId": "completed-1"},
+        )
+        uncertain = await self.adapter._handle_webhook(self.request_for(transition))
+        context["updated_at"] = "2026-08-27T17:04:01.000Z"
+        created = self.make_payload(
+            webhookId="webhook-manager-human-reopen-drifted-created",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "drifted-reopen-session",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-193",
+                    "title": "Drifted human reopen activation",
+                },
+            },
+        )
+
+        rejected = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(uncertain.status, 503)
+        self.assertEqual(json.loads(rejected.text)["status"], "dispatch_ambiguous")
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_manager_activation(issue_id)["state"],
+            "dispatch_unknown",
         )
 
     async def test_manager_dispatch_failure_leaves_ambiguity_and_degrades_without_replay(self):

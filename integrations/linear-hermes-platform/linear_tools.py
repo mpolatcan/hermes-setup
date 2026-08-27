@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import html
@@ -14,7 +17,7 @@ import stat
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from markdown_it import MarkdownIt
 
@@ -40,6 +43,7 @@ try:
         OutboundLedgerError,
     )
     from .outbound_policy import OutboundPolicy, extract_linear_profile_url
+    from .retention import RetentionInventoryReader, build_manifest, classify_inventory
 except ImportError:  # Direct module loading in standalone tests/scripts.
     from linear_client import (
         LINEAR_ISSUE_CAPACITY,
@@ -62,6 +66,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
         OutboundLedgerError,
     )
     from outbound_policy import OutboundPolicy, extract_linear_profile_url
+    from retention import RetentionInventoryReader, build_manifest, classify_inventory
 
 CAPACITY = LINEAR_ISSUE_CAPACITY
 CRITICAL_THRESHOLD = LINEAR_ISSUE_CRITICAL_THRESHOLD
@@ -82,7 +87,8 @@ VENDOR_MUTATION_TOOLS = frozenset(
     vendor_tool for vendor_tool, is_mutation in TOOL_MAP.values() if is_mutation
 )
 LIFECYCLE_NOOP_LEDGER_PREFIX = "lifecycle-noop:"
-QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v1:"
+LEGACY_QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v1:"
+QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v2:"
 LIFECYCLE_NOOP_STATUSES = frozenset(
     {"already_started", "already_completed", "already_canceled", "already_enriched"}
 )
@@ -113,16 +119,89 @@ def _quota_admission(current_count: int) -> dict[str, Any]:
     }
 
 
-def _encode_quota_admission_result(result_id: str, current_count: int) -> str:
-    return f"{QUOTA_ADMISSION_LEDGER_PREFIX}{current_count}:{result_id}"
+async def _immediate_retention_dry_run(
+    graphql_client: LinearClient,
+    *,
+    team_id: str,
+    team_key: str,
+    minimum_age_days: int,
+) -> dict[str, Any]:
+    """Run the canonical classifier in memory; this path has no mutation API."""
+    as_of = datetime.now(timezone.utc)
+    inventory = await RetentionInventoryReader(graphql_client).read_team(team_id, team_key)
+    result = classify_inventory(
+        inventory,
+        successor_attestations={},
+        minimum_age_days=minimum_age_days,
+        as_of=as_of,
+        team_id=team_id,
+        team_key=team_key,
+    )
+    manifest = build_manifest(result)
+    return {
+        "mode": "read-only-dry-run",
+        "inventory_count": result.summary["inventory_count"],
+        "candidate_count": result.summary["candidate_count"],
+        "protected_count": result.summary["protected_count"],
+        "protected_reason_counts": dict(result.summary["protected_reason_counts"]),
+        "manifest_sha256": manifest["sha256"],
+        "deletion_performed": False,
+    }
+
+
+def _encode_quota_admission_result(
+    result_id: str,
+    current_count: int,
+    retention_dry_run: dict[str, Any],
+) -> str:
+    payload = json.dumps(
+        {
+            "current_count": current_count,
+            "result_id": result_id,
+            "retention_dry_run": retention_dry_run,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return f"{QUOTA_ADMISSION_LEDGER_PREFIX}{encoded}"
 
 
 def _decode_quota_admission_result(
     value: str | None,
-) -> tuple[str, dict[str, Any]] | None:
-    if not isinstance(value, str) or not value.startswith(QUOTA_ADMISSION_LEDGER_PREFIX):
+) -> tuple[str, dict[str, Any], dict[str, Any] | None] | None:
+    if not isinstance(value, str):
         return None
-    payload = value[len(QUOTA_ADMISSION_LEDGER_PREFIX):]
+    if value.startswith(QUOTA_ADMISSION_LEDGER_PREFIX):
+        encoded = value[len(QUOTA_ADMISSION_LEDGER_PREFIX):]
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            decoded = json.loads(
+                base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+            )
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        current_count = decoded.get("current_count")
+        result_id = decoded.get("result_id")
+        retention_dry_run = decoded.get("retention_dry_run")
+        if (
+            not isinstance(current_count, int)
+            or isinstance(current_count, bool)
+            or not isinstance(result_id, str)
+            or not result_id
+            or not isinstance(retention_dry_run, dict)
+        ):
+            return None
+        projected_count = current_count + 1
+        if not CRITICAL_THRESHOLD <= projected_count < CAPACITY:
+            return None
+        return result_id, _quota_admission(current_count), retention_dry_run
+    if not value.startswith(LEGACY_QUOTA_ADMISSION_LEDGER_PREFIX):
+        return None
+    payload = value[len(LEGACY_QUOTA_ADMISSION_LEDGER_PREFIX):]
     raw_count, separator, result_id = payload.partition(":")
     if not separator or not result_id:
         return None
@@ -133,7 +212,7 @@ def _decode_quota_admission_result(
     projected_count = current_count + 1
     if not CRITICAL_THRESHOLD <= projected_count < CAPACITY:
         return None
-    return result_id, _quota_admission(current_count)
+    return result_id, _quota_admission(current_count), None
 
 
 def _replay_response(
@@ -153,14 +232,17 @@ def _replay_response(
         else None
     )
     if quota_replay is not None:
-        result_id, admission = quota_replay
-        return {
+        result_id, admission, retention_dry_run = quota_replay
+        response = {
             "status": reservation.status,
             "replayed": True,
             "result_id": result_id,
             "quota_admission": admission,
             "immediate_retention_required": True,
         }
+        if retention_dry_run is not None:
+            response["retention_dry_run"] = retention_dry_run
+        return response
     return {
         "status": reservation.status,
         "replayed": True,
@@ -903,6 +985,7 @@ async def execute_with_clients(
     mcp_client: LinearMCPClient,
     quota_admission_lock: FleetGlobalLock | None = None,
     quota_team_ids: frozenset[str] | None = None,
+    retention_dry_run: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     _quota_admission_lock_held: bool = False,
     _quota_admission_fd: int | None = None,
     _quota_create_context: dict[str, Any] | None = None,
@@ -963,6 +1046,7 @@ async def execute_with_clients(
                 ledger=ledger,
                 quota_admission_lock=quota_admission_lock,
                 quota_team_ids=quota_team_ids,
+                retention_dry_run=retention_dry_run,
                 graphql_client=graphql_client,
                 mcp_client=mcp_client,
                 _quota_admission_lock_held=True,
@@ -1139,6 +1223,7 @@ async def execute_with_clients(
     operation_key = str(arguments.get("operation_key") or "")
     team_id = str(arguments.get("target_team_id") or "")
     quota_admission: dict[str, Any] | None = None
+    retention_result: dict[str, Any] | None = None
     if is_issue_create:
         try:
             existing = await asyncio.to_thread(
@@ -1205,14 +1290,29 @@ async def execute_with_clients(
             }
         _quota_create_context["observed_current_count"] = current_count
         projected_count = current_count + 1
+        if projected_count >= CRITICAL_THRESHOLD:
+            quota_admission = _quota_admission(current_count)
+            if retention_dry_run is None:
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "immediate_retention_dry_run_unavailable",
+                    "quota_admission": quota_admission,
+                }
+            try:
+                retention_result = await retention_dry_run()
+            except Exception:
+                return {
+                    "error": "linear_policy_denied",
+                    "reason": "immediate_retention_dry_run_unavailable",
+                    "quota_admission": quota_admission,
+                }
         if projected_count >= CAPACITY:
             return {
                 "error": "linear_policy_denied",
                 "reason": "quota_capacity_reserved_or_exhausted",
-                "quota_admission": _quota_admission(current_count),
+                "quota_admission": quota_admission,
+                "retention_dry_run": retention_result,
             }
-        if projected_count >= CRITICAL_THRESHOLD:
-            quota_admission = _quota_admission(current_count)
 
     try:
         reservation = await asyncio.to_thread(
@@ -1482,11 +1582,23 @@ async def execute_with_clients(
 
     parsed = _extract_first_json(result)
     result_id = str(parsed.get("id") or parsed.get("identifier") or "") or None
+    if result_id is None:
+        persist_ambiguous_create_fence()
+        await asyncio.to_thread(
+            ledger.mark_unknown,
+            operation_key,
+            error_code="mutation_result_id_missing",
+        )
+        return {
+            "error": "linear_mutation_outcome_unknown",
+            "reason": "mutation_result_id_missing",
+        }
     ledger_result_id = result_id
     if quota_admission is not None and result_id is not None:
         ledger_result_id = _encode_quota_admission_result(
             result_id,
             quota_admission["current_count"],
+            retention_result or {},
         )
     await asyncio.to_thread(ledger.mark_success, operation_key, result_id=ledger_result_id)
     if (
@@ -1503,6 +1615,7 @@ async def execute_with_clients(
     if quota_admission is not None:
         response["quota_admission"] = quota_admission
         response["immediate_retention_required"] = True
+        response["retention_dry_run"] = retention_result
     return response
 
 
@@ -1603,6 +1716,16 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
         and len(set(raw_quota_team_ids)) == len(raw_quota_team_ids)
         else frozenset()
     )
+    retention_team_id = str(outbound.get("quota_retention_team_id") or "")
+    retention_team_key = str(outbound.get("quota_retention_team_key") or "")
+    raw_retention_age = outbound.get("quota_retention_minimum_age_days")
+    retention_minimum_age_days = (
+        raw_retention_age
+        if isinstance(raw_retention_age, int)
+        and not isinstance(raw_retention_age, bool)
+        and raw_retention_age > 0
+        else 0
+    )
     ledger_path_safe = bool(
         inbound_database_path
         and Path(inbound_database_path).is_absolute()
@@ -1652,6 +1775,16 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                         quota_admission_lock = None
                 await graphql.connect()
                 await mcp.connect()
+                retention_runner: Callable[[], Awaitable[dict[str, Any]]] | None = None
+                if retention_team_id and retention_team_key and retention_minimum_age_days:
+                    async def configured_retention_runner() -> dict[str, Any]:
+                        return await _immediate_retention_dry_run(
+                            graphql,
+                            team_id=retention_team_id,
+                            team_key=retention_team_key,
+                            minimum_age_days=retention_minimum_age_days,
+                        )
+                    retention_runner = configured_retention_runner
                 return await execute_with_clients(
                     profile_id=profile_id,
                     vendor_tool=vendor_tool,
@@ -1661,6 +1794,7 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                     ledger=ledger,
                     quota_admission_lock=quota_admission_lock,
                     quota_team_ids=quota_team_ids,
+                    retention_dry_run=retention_runner,
                     graphql_client=graphql,
                     mcp_client=mcp,
                 )

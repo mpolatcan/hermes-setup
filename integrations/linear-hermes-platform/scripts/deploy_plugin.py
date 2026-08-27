@@ -2,7 +2,7 @@
 """Atomically deploy or roll back the reviewed Linear Hermes plugin.
 
 The helper never edits Hermes config and never restarts a gateway. It exports
-only a reviewed ten-file manifest from a clean, exact Git commit. Promotion and
+only a reviewed eleven-file manifest from a clean, exact Git commit. Promotion and
 rollback use pinned directory descriptors, a profile lock, durable coordinates,
 and same-filesystem rename operations.
 """
@@ -36,6 +36,7 @@ ALLOWLIST = (
     "outbound_policy.py",
     "outbound_ledger.py",
     "linear_tools.py",
+    "retention.py",
     "plugin.yaml",
 )
 REVIEWED_MANIFESTS: dict[str, dict[str, str]] = {

@@ -24,6 +24,7 @@ ALLOWLIST = (
     "outbound_policy.py",
     "outbound_ledger.py",
     "linear_tools.py",
+    "retention.py",
     "plugin.yaml",
 )
 FIX_COMMIT = "2fc28f4cf80b55c7a6a5f8e03ffbbb9153dfc47c"

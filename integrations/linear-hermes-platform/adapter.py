@@ -719,7 +719,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.14",
+                "version": "0.8.15",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -1050,13 +1050,15 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             if dispatch_lock_held and dispatch_lock is not None:
                 dispatch_lock.release()
 
-    def _live_activation_policy_allows(self, context: dict[str, Any]) -> bool:
+    def _live_activation_policy_allows(
+        self, context: dict[str, Any], *, allow_started: bool = False
+    ) -> bool:
         state_type = str((context.get("state") or {}).get("type") or "").casefold()
         team_id = str((context.get("team") or {}).get("id") or "")
         owner_id = str((context.get("assignee") or {}).get("id") or "")
         delegate_id = str((context.get("delegate") or {}).get("id") or "")
         return bool(
-            state_type == "unstarted"
+            state_type in ({"unstarted", "started"} if allow_started else {"unstarted"})
             and team_id in self._activation_allowed_team_ids
             and owner_id in self._planned_owner_ids
             and self._linear is not None
@@ -1078,9 +1080,70 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         async with self._issue_lock(issue_id):
             activation = self._ledger.get_manager_activation(issue_id)
             state = str((activation or {}).get("state") or "")
+            evidence = (activation or {}).get("evidence") or {}
             if state == "dispatch_unknown":
-                self._ledger.mark_done(delivery_key)
-                return web.json_response({"status": "dispatch_ambiguous"}, status=200)
+                event_actor_id, _ = _actor(payload)
+                recovery_context = await self._linear.get_issue_closure_context(issue_id)
+                recovery_state = recovery_context.get("state") or {}
+                evidence_state_id = str(evidence.get("current_state_id") or "")
+                evidence_revision = str(evidence.get("event_updated_at") or "")
+                evidence_team_id = str(evidence.get("team_id") or "")
+                evidence_assignee_id = str(evidence.get("assignee_id") or "")
+                evidence_delegate_id = str(evidence.get("delegate_id") or "")
+                open_actor_sessions = [
+                    session
+                    for session in await self._linear.get_issue_agent_sessions(issue_id)
+                    if str(session.get("app_user_id") or "") == self._linear.actor_id
+                    and str(session.get("status") or "")
+                    in {"pending", "active", "awaitingInput"}
+                ]
+                recovered_reopen = bool(
+                    evidence.get("verification_source")
+                    == "signed_human_reopen_plus_live_readback"
+                    and event_actor_id
+                    and self._linear.actor_id
+                    and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+                    and evidence_state_id
+                    and hmac.compare_digest(
+                        str(recovery_state.get("id") or ""), evidence_state_id
+                    )
+                    and str(recovery_state.get("type") or "").casefold()
+                    == "started"
+                    and evidence_revision
+                    and hmac.compare_digest(
+                        str(recovery_context.get("updated_at") or ""),
+                        evidence_revision,
+                    )
+                    and evidence_team_id
+                    and hmac.compare_digest(
+                        str((recovery_context.get("team") or {}).get("id") or ""),
+                        evidence_team_id,
+                    )
+                    and evidence_assignee_id
+                    and hmac.compare_digest(
+                        str((recovery_context.get("assignee") or {}).get("id") or ""),
+                        evidence_assignee_id,
+                    )
+                    and evidence_delegate_id
+                    and hmac.compare_digest(
+                        str((recovery_context.get("delegate") or {}).get("id") or ""),
+                        evidence_delegate_id,
+                    )
+                    and len(open_actor_sessions) == 1
+                    and hmac.compare_digest(
+                        str(open_actor_sessions[0].get("id") or ""), session_id
+                    )
+                )
+                if not recovered_reopen:
+                    self._ledger.mark_done(delivery_key)
+                    return web.json_response(
+                        {"status": "dispatch_ambiguous"}, status=200
+                    )
+                self._ledger.mark_manager_activation(
+                    issue_id, "delegated", session_id=session_id
+                )
+                activation = self._ledger.get_manager_activation(issue_id)
+                state = "delegated"
             if state == "session_started":
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "manager_session_duplicate"}, status=200)
@@ -1088,7 +1151,24 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "activation_policy_denied"}, status=200)
             context = await self._linear.get_issue_closure_context(issue_id)
-            if not self._live_activation_policy_allows(context):
+            expected_session_id = str((activation or {}).get("session_id") or "")
+            evidence = (activation or {}).get("evidence") or {}
+            reopen_activation = bool(
+                evidence.get("verification_source")
+                == "signed_human_reopen_plus_live_readback"
+            )
+            expected_session_matches = bool(
+                not expected_session_id
+                or hmac.compare_digest(expected_session_id, session_id)
+            )
+            if not expected_session_matches:
+                self._ledger.mark_done(delivery_key)
+                return web.json_response(
+                    {"status": "manager_session_mismatch"}, status=200
+                )
+            if not self._live_activation_policy_allows(
+                context, allow_started=reopen_activation
+            ):
                 if state in {"claimed", "failed", "delegation_unknown"}:
                     self._ledger.release(delivery_key)
                     return web.json_response(
@@ -1362,6 +1442,137 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             self._ledger.fail_activation(issue_id, str(exc))
             raise
+
+    async def _reconcile_human_reopen(
+        self,
+        payload: dict[str, Any],
+        issue_id: str,
+        *,
+        _issue_locked: bool = False,
+    ) -> str | None:
+        """Create one native session for a signed human completed/canceled→started edge."""
+        if (
+            not self._planned_activation_enabled
+            or self._linear is None
+            or self._ledger is None
+        ):
+            return None
+        if not _issue_locked:
+            async with self._issue_lock(issue_id):
+                return await self._reconcile_human_reopen(
+                    payload, issue_id, _issue_locked=True
+                )
+        previous = payload.get("updatedFrom")
+        data = payload.get("data")
+        if not isinstance(previous, dict) or not isinstance(data, dict):
+            return None
+        previous_state_id = str(previous.get("stateId") or "")
+        event_state = data.get("state")
+        event_state_id = str(
+            data.get("stateId")
+            or (event_state.get("id") if isinstance(event_state, dict) else "")
+            or ""
+        )
+        event_state_type = str(
+            event_state.get("type") if isinstance(event_state, dict) else ""
+        ).casefold()
+        event_updated_at = str(data.get("updatedAt") or "")
+        actor_id, _ = _actor(payload)
+        if not (
+            previous_state_id and event_state_id and event_state_type == "started"
+            and event_updated_at and actor_id
+        ):
+            return None
+        context = await self._linear.get_issue_closure_context(issue_id)
+        previous_live = next(
+            (
+                item for item in context.get("team_states") or []
+                if hmac.compare_digest(str(item.get("id") or ""), previous_state_id)
+            ),
+            None,
+        )
+        previous_type = str(
+            previous_live.get("type") if isinstance(previous_live, dict) else ""
+        ).casefold()
+        state = context.get("state") or {}
+        team_id = str((context.get("team") or {}).get("id") or "")
+        assignee_id = str((context.get("assignee") or {}).get("id") or "")
+        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+        live_updated_at = str(context.get("updated_at") or "")
+        authoritative = bool(
+            previous_type in {"completed", "canceled"}
+            and team_id in self._activation_allowed_team_ids
+            and assignee_id in self._planned_owner_ids
+            and hmac.compare_digest(actor_id, assignee_id)
+            and self._linear.actor_id
+            and hmac.compare_digest(delegate_id, self._linear.actor_id)
+            and str(state.get("type") or "").casefold() == "started"
+            and hmac.compare_digest(str(state.get("id") or ""), event_state_id)
+            and live_updated_at
+            and hmac.compare_digest(live_updated_at, event_updated_at)
+        )
+        if not authoritative:
+            return None
+        sessions = await self._linear.get_issue_agent_sessions(issue_id)
+        open_for_actor = any(
+            str(session.get("app_user_id") or "") == self._linear.actor_id
+            and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+            for session in sessions
+        )
+        if open_for_actor:
+            return "reopen_open_session"
+        material = "\0".join(
+            (issue_id, event_updated_at, previous_state_id, event_state_id, actor_id, delegate_id)
+        )
+        activation_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        evidence = {
+            "issue_id": issue_id,
+            "event_updated_at": event_updated_at,
+            "previous_state_id": previous_state_id,
+            "current_state_id": event_state_id,
+            "actor_id": actor_id,
+            "assignee_id": assignee_id,
+            "delegate_id": delegate_id,
+            "team_id": team_id,
+            "verification_source": "signed_human_reopen_plus_live_readback",
+        }
+        if not self._ledger.claim_manager_reactivation(
+            issue_id, activation_key, evidence
+        ):
+            current = self._ledger.get_manager_activation(issue_id) or {}
+            if current.get("activation_key") == activation_key:
+                if current.get("state") in {"claimed", "dispatch_unknown"}:
+                    return "reopen_ambiguous"
+                return "reopen_duplicate"
+            return "reopen_rejected"
+        self._ledger.mark_manager_activation(issue_id, "dispatch_unknown")
+        confirmed = await self._linear.get_issue_closure_context(issue_id)
+        confirmed_state = confirmed.get("state") or {}
+        confirmed_sessions = await self._linear.get_issue_agent_sessions(issue_id)
+        confirmed_open = any(
+            str(session.get("app_user_id") or "") == self._linear.actor_id
+            and str(session.get("status") or "") in {"pending", "active", "awaitingInput"}
+            for session in confirmed_sessions
+        )
+        confirmation_matches = bool(
+            str((confirmed.get("team") or {}).get("id") or "") == team_id
+            and str((confirmed.get("assignee") or {}).get("id") or "") == assignee_id
+            and str((confirmed.get("delegate") or {}).get("id") or "") == delegate_id
+            and str(confirmed_state.get("id") or "") == event_state_id
+            and str(confirmed_state.get("type") or "").casefold() == "started"
+            and str(confirmed.get("updated_at") or "") == event_updated_at
+            and not confirmed_open
+        )
+        if not confirmation_matches:
+            self._ledger.mark_manager_activation(
+                issue_id, "failed", error="reopen_pre_dispatch_changed"
+            )
+            return "reopen_rejected"
+        session_id = await self._linear.create_agent_session_on_issue(issue_id)
+        self._ledger.mark_manager_activation(
+            issue_id, "delegated", session_id=session_id
+        )
+        return "reopen_session_created"
 
     async def _reconcile_human_completion(
         self,
@@ -2030,6 +2241,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 notification = {}
             entity_id = str(data.get("id") or "")
             activation_status: str | None = None
+            reopen_status: str | None = None
             closure_status: str | None = None
             if event_type == "Issue" and action == "update" and entity_id:
                 async with self._issue_lock(entity_id):
@@ -2041,9 +2253,13 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         self._ledger.cancel_activation_for_issue(entity_id)
                         if self._ledger.get_manager_activation(entity_id):
                             self._ledger.mark_manager_activation(entity_id, "canceled")
-                    activation_status = await self._reconcile_planned_activation(
+                    reopen_status = await self._reconcile_human_reopen(
                         payload, entity_id, _issue_locked=True
                     )
+                    if reopen_status is None:
+                        activation_status = await self._reconcile_planned_activation(
+                            payload, entity_id, _issue_locked=True
+                        )
                     closure_status = await self._reconcile_human_completion(
                         payload, entity_id, _issue_locked=True
                     )
@@ -2085,24 +2301,27 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             for session_id in candidates:
                 if await self._reconcile_wait(session_id):
                     resumed += 1
-            if activation_status in {"activation_ambiguous", "delegation_ambiguous"}:
+            if activation_status in {"activation_ambiguous", "delegation_ambiguous"} or reopen_status == "reopen_ambiguous":
                 self._ledger.release(delivery_key)
                 claimed = False
-                return web.json_response({"status": activation_status}, status=503)
+                return web.json_response(
+                    {"status": reopen_status or activation_status}, status=503
+                )
             self._ledger.mark_done(delivery_key)
             logger.info(
-                "[linear] observed data event type=%s action=%s entity=%s resumed=%d activation=%s closure=%s subscription=%s",
+                "[linear] observed data event type=%s action=%s entity=%s resumed=%d activation=%s reopen=%s closure=%s subscription=%s",
                 event_type,
                 action,
                 entity_id or "none",
                 resumed,
                 activation_status or "none",
+                reopen_status or "none",
                 closure_status or "none",
                 webhook_id,
             )
             return web.json_response(
                 {
-                    "status": activation_status or closure_status or "observed",
+                    "status": reopen_status or activation_status or closure_status or "observed",
                     "resumed": resumed,
                 },
                 status=200,

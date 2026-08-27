@@ -602,6 +602,48 @@ class DeliveryLedger:
             self._db.commit()
             return True
 
+    def claim_manager_reactivation(
+        self,
+        issue_id: str,
+        activation_key: str,
+        evidence: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> bool:
+        """Claim one human terminal→started edge, replacing only a terminal prior activation."""
+        now = int(time.time()) if now is None else int(now)
+        evidence_json = json.dumps(
+            evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT activation_key, state FROM manager_activations WHERE issue_id=?",
+                (issue_id,),
+            ).fetchone()
+            if row is None:
+                self._db.execute(
+                    "INSERT INTO manager_activations("
+                    "issue_id, activation_key, state, session_id, evidence_json, "
+                    "created_at, updated_at) VALUES (?, ?, 'claimed', NULL, ?, ?, ?)",
+                    (issue_id, activation_key, evidence_json, now, now),
+                )
+                self._db.commit()
+                return True
+            if str(row[0]) == activation_key or str(row[1]) not in {
+                "canceled", "session_started", "failed"
+            }:
+                self._db.rollback()
+                return False
+            self._db.execute(
+                "UPDATE manager_activations SET activation_key=?, state='claimed', "
+                "session_id=NULL, evidence_json=?, last_error=NULL, updated_at=? "
+                "WHERE issue_id=?",
+                (activation_key, evidence_json, now, issue_id),
+            )
+            self._db.commit()
+            return True
+
     def get_manager_activation(self, issue_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._db.execute(

@@ -176,7 +176,7 @@ The active Hermes checkout must match official `NousResearch/hermes-agent` `orig
 
 Current local behavior is extension-first:
 
-- **Linear:** the ten-file profile-local plugin owns native AgentSession routing, durable channel-route reservation, lifecycle/closure policy, official-MCP outbound tools, and secret-safe tool-driven ephemeral `thought` progress. Gateway heartbeats are not used as Linear execution progress. Fresh human mentions are scoped by the new AgentSession ID, so an earlier completed manager session cannot poison a distinct new session.
+- **Linear:** the eleven-file profile-local plugin owns native AgentSession routing, durable channel-route reservation, lifecycle/closure policy, official-MCP outbound tools, retention classification, and secret-safe tool-driven ephemeral `thought` progress. Gateway heartbeats are not used as Linear execution progress. Fresh human mentions are scoped by the new AgentSession ID, so an earlier completed manager session cannot poison a distinct new session.
 - **Honcho:** profile-local `honcho.json` plus the loopback-only `honcho.localhost` alias preserves process-scoped JWT authentication. Auth is never disabled and JWTs are never written to config.
 - **Credential bootstrap:** the external Keychain → official 1Password SDK wrapper remains a separately owned launcher contract. Revalidate it after every core update; do not modify upstream core merely to recognize the wrapper.
 
