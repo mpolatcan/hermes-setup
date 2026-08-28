@@ -1,5 +1,5 @@
 name: linear
-version: 0.8.18
+version: 0.8.19
 description: Native Linear Agent Sessions, create-time quota retention, human reopen activation, and policy-gated MCP tools
 kind: platform
 author: Polatcan Studio

@@ -662,8 +662,10 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
 
-    def test_vendor_tool_contract_tracks_2026_08_27_live_set(self):
-        self.assertEqual(len(EXPECTED_VENDOR_TOOL_NAMES), 55)
+    def test_vendor_tool_contract_tracks_2026_08_29_live_set(self):
+        self.assertEqual(len(EXPECTED_VENDOR_TOOL_NAMES), 57)
+        self.assertIn("get_template", EXPECTED_VENDOR_TOOL_NAMES)
+        self.assertIn("list_templates", EXPECTED_VENDOR_TOOL_NAMES)
         self.assertIn("share_issue", EXPECTED_VENDOR_TOOL_NAMES)
         self.assertIn("unshare_issue", EXPECTED_VENDOR_TOOL_NAMES)
 
