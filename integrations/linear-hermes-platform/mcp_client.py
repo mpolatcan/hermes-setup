@@ -71,7 +71,7 @@ LIVE_TOOL_PROPERTY_FIELDS = {
     | frozenset(
         {
             "addReleases", "duplicateOf", "links", "patch", "removeReleases",
-            "setReleases", "slaBreachesAt", "slaType",
+            "setReleases", "slaBreachesAt", "slaType", "template",
         }
     ),
     "save_comment": REQUIRED_TOOL_INPUT_FIELDS["save_comment"]

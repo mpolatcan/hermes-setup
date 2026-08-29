@@ -15,6 +15,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from mcp_client import (  # noqa: E402
     EXPECTED_VENDOR_TOOL_NAMES,
     INITIAL_PROTOCOL_VERSION,
+    LIVE_TOOL_PROPERTY_FIELDS,
     LinearMCPClient,
     LinearMCPError,
     MCPOutcomeUnknown,
@@ -78,6 +79,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 "estimate", "dueDate", "blocks", "blockedBy", "relatedTo", "removeBlocks",
                 "removeBlockedBy", "removeRelatedTo", "addReleases", "duplicateOf", "links",
                 "patch", "removeReleases", "setReleases", "slaBreachesAt", "slaType",
+                "template",
             },
             "save_comment": {
                 "id", "issueId", "body", "documentId", "initiativeId", "milestoneId",
@@ -666,6 +668,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(EXPECTED_VENDOR_TOOL_NAMES), 57)
         self.assertIn("get_template", EXPECTED_VENDOR_TOOL_NAMES)
         self.assertIn("list_templates", EXPECTED_VENDOR_TOOL_NAMES)
+        self.assertIn("template", LIVE_TOOL_PROPERTY_FIELDS["save_issue"])
         self.assertIn("share_issue", EXPECTED_VENDOR_TOOL_NAMES)
         self.assertIn("unshare_issue", EXPECTED_VENDOR_TOOL_NAMES)
 
