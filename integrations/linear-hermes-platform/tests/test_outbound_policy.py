@@ -301,6 +301,52 @@ class OutboundPolicyTests(unittest.TestCase):
                 )
                 self.assertEqual((denied.action, denied.reason), ("deny", reason))
 
+    def test_mark_acceptance_requires_exact_revision_and_description_only(self):
+        policy = self.standard()
+        allowed = policy.evaluate(
+            "save_issue",
+            {
+                "id": "OPS-1",
+                "target_team_id": "ops-1",
+                "lifecycle_action": "mark_acceptance",
+                "expected_updated_at": "2026-08-09T18:00:00.000Z",
+                "description": "- [x] Proven criterion",
+            },
+            live_actor_id="actor-1",
+            live_organization_id="org-1",
+        )
+        self.assertEqual(allowed.action, "allow")
+        for arguments, reason in (
+            (
+                {
+                    "id": "OPS-1",
+                    "target_team_id": "ops-1",
+                    "lifecycle_action": "mark_acceptance",
+                    "description": "- [x] Proven criterion",
+                },
+                "expected_updated_at_required",
+            ),
+            (
+                {
+                    "id": "OPS-1",
+                    "target_team_id": "ops-1",
+                    "lifecycle_action": "mark_acceptance",
+                    "expected_updated_at": "revision",
+                    "description": "- [x] Proven criterion",
+                    "priority": 1,
+                },
+                "lifecycle_fields_not_allowed",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                denied = policy.evaluate(
+                    "save_issue",
+                    arguments,
+                    live_actor_id="actor-1",
+                    live_organization_id="org-1",
+                )
+                self.assertEqual((denied.action, denied.reason), ("deny", reason))
+
     def test_semantic_start_cannot_bundle_other_issue_mutations(self):
         policy = self.standard()
         for field, value in (("delegate", "other"), ("title", "renamed"), ("priority", 1)):

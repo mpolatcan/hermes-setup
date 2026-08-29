@@ -90,7 +90,13 @@ LIFECYCLE_NOOP_LEDGER_PREFIX = "lifecycle-noop:"
 LEGACY_QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v1:"
 QUOTA_ADMISSION_LEDGER_PREFIX = "quota-admission:v2:"
 LIFECYCLE_NOOP_STATUSES = frozenset(
-    {"already_started", "already_completed", "already_canceled", "already_enriched"}
+    {
+        "already_started",
+        "already_completed",
+        "already_canceled",
+        "already_enriched",
+        "already_accepted",
+    }
 )
 
 
@@ -294,11 +300,17 @@ SAVE_ISSUE_SCHEMA = {
             "description": {"type": "string"},
             "lifecycle_action": {
                 "type": "string",
-                "enum": ["start", "complete_child", "cancel_child", "enrich_plan"],
+                "enum": [
+                    "start",
+                    "complete_child",
+                    "cancel_child",
+                    "enrich_plan",
+                    "mark_acceptance",
+                ],
             },
             "expected_updated_at": {
                 "type": "string",
-                "description": "Exact updatedAt revision read before enrich_plan",
+                "description": "Exact updatedAt revision read before guarded description action",
             },
             "priority": {"type": "number"},
             "assignee": {"type": "string"},
@@ -920,6 +932,92 @@ def _evaluate_plan_context(
     }, None
 
 
+_ACCEPTANCE_CHECKBOX = re.compile(r"^([ \t]*[-+*][ \t]+)\[([ xX])\](?=[ \t]+)")
+
+
+def _acceptance_checkbox_shape(description: str) -> tuple[str, tuple[bool, ...]]:
+    checkbox_lines: set[int] = set()
+    list_stack: list[str] = []
+    for token in _COMMONMARK.parse(description):
+        if token.type == "bullet_list_open":
+            list_stack.append("bullet")
+        elif token.type == "ordered_list_open":
+            list_stack.append("ordered")
+        elif token.type == "list_item_open" and list_stack and list_stack[-1] == "bullet":
+            if token.map:
+                checkbox_lines.add(int(token.map[0]))
+        elif token.type in {"bullet_list_close", "ordered_list_close"} and list_stack:
+            list_stack.pop()
+
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", description)
+    if lines and lines[-1] == "":
+        lines.pop()
+    states: list[bool] = []
+    for index in sorted(checkbox_lines):
+        if index >= len(lines):
+            continue
+        match = _ACCEPTANCE_CHECKBOX.match(lines[index])
+        if match is None:
+            continue
+        states.append(match.group(2).casefold() == "x")
+        lines[index] = (
+            lines[index][: match.start(2)]
+            + "?"
+            + lines[index][match.end(2) :]
+        )
+    return "".join(lines), tuple(states)
+
+
+def _evaluate_acceptance_context(
+    context: dict[str, Any],
+    *,
+    target_team_id: str,
+    actor_id: str,
+    expected_updated_at: str,
+    description: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    if str((context.get("team") or {}).get("id") or "") != target_team_id:
+        return None, {"error": "linear_policy_denied", "reason": "authoritative_team_mismatch"}
+    if str((context.get("delegate") or {}).get("id") or "") != actor_id:
+        return None, {"error": "linear_policy_denied", "reason": "delegate_mismatch"}
+    assignee = context.get("assignee") or {}
+    if not str(assignee.get("id") or "") or assignee.get("app") is not False:
+        return None, {"error": "linear_policy_denied", "reason": "human_owner_required"}
+    state_type = str((context.get("state") or {}).get("type") or "").casefold()
+    if state_type not in {"backlog", "unstarted", "started"}:
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_state_not_active"}
+    live_updated_at = str(context.get("updatedAt") or "")
+    if not live_updated_at or live_updated_at != expected_updated_at:
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_revision_mismatch"}
+
+    source_description = str(context.get("description") or "")
+    source_shape, source_states = _acceptance_checkbox_shape(source_description)
+    target_shape, target_states = _acceptance_checkbox_shape(description)
+    if not source_states or len(source_states) != len(target_states) or source_shape != target_shape:
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_description_drift"}
+    if any(source and not target for source, target in zip(source_states, target_states, strict=True)):
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_checkbox_regression"}
+    if source_states == target_states:
+        if all(source_states):
+            return None, {
+                "status": "already_accepted",
+                "result_id": str(context.get("id") or ""),
+            }
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_no_change"}
+    if not any(not source and target for source, target in zip(source_states, target_states, strict=True)):
+        return None, {"error": "linear_policy_denied", "reason": "acceptance_no_change"}
+    return {
+        "team_id": target_team_id,
+        "delegate_id": actor_id,
+        "assignee_id": str(assignee.get("id") or ""),
+        "state_id": str((context.get("state") or {}).get("id") or ""),
+        "state_type": state_type,
+        "title": str(context.get("title") or ""),
+        "updated_at": live_updated_at,
+        "description": description,
+    }, None
+
+
 def _canonicalize_vendor_markdown(description: str) -> str:
     bullet_item_lines: set[int] = set()
     list_stack: list[str] = []
@@ -942,6 +1040,12 @@ def _canonicalize_vendor_markdown(description: str) -> str:
         lines[index] = re.sub(
             r"^([ \t]*)[-+*](?=[ \t]+)",
             r"\1*",
+            lines[index],
+            count=1,
+        )
+        lines[index] = re.sub(
+            r"^([ \t]*\*[ \t]+)\[[xX]\](?=[ \t]+)",
+            r"\1[x]",
             lines[index],
             count=1,
         )
@@ -1111,6 +1215,7 @@ async def execute_with_clients(
     lifecycle_action = str(arguments.get("lifecycle_action") or "")
     lifecycle_transition: dict[str, str] | None = None
     plan_snapshot: dict[str, str] | None = None
+    description_evaluator: Callable[..., Any] | None = None
     lifecycle_noop_result: dict[str, Any] | None = None
     if lifecycle_action == "start":
         lifecycle_transition, lifecycle_result = await _resolve_start_transition(
@@ -1138,13 +1243,13 @@ async def execute_with_clients(
                 lifecycle_noop_result = lifecycle_result
             else:
                 return lifecycle_result
-    elif lifecycle_action == "enrich_plan":
+    elif lifecycle_action in {"enrich_plan", "mark_acceptance"}:
         if ledger is None:
             return {"error": "linear_idempotency_rejected", "reason": "ledger_not_configured"}
         plan_ledger_payload = {
             "id": str(arguments.get("id") or ""),
             "description": str(arguments.get("description") or ""),
-            "lifecycle_action": "enrich_plan",
+            "lifecycle_action": lifecycle_action,
             "expected_updated_at": str(arguments.get("expected_updated_at") or ""),
         }
         try:
@@ -1187,8 +1292,14 @@ async def execute_with_clients(
                 "result_id": existing.result_id,
                 **({"error_code": existing.error_code} if existing.error_code else {}),
             }
-        plan_snapshot, plan_result = _evaluate_plan_context(
-            await graphql_client.get_issue_plan_context(str(arguments.get("id") or "")),
+        context = await graphql_client.get_issue_plan_context(str(arguments.get("id") or ""))
+        description_evaluator = (
+            _evaluate_plan_context
+            if lifecycle_action == "enrich_plan"
+            else _evaluate_acceptance_context
+        )
+        plan_snapshot, plan_result = description_evaluator(
+            context,
             target_team_id=str(arguments.get("target_team_id") or ""),
             actor_id=graph_actor,
             expected_updated_at=str(arguments.get("expected_updated_at") or ""),
@@ -1205,13 +1316,22 @@ async def execute_with_clients(
         forwarded["includeArchived"] = True
     if lifecycle_transition is not None:
         forwarded["state"] = lifecycle_transition["target_state_id"]
-    elif lifecycle_noop_result is not None and lifecycle_action != "enrich_plan":
+    elif lifecycle_noop_result is not None and lifecycle_action not in {
+        "enrich_plan",
+        "mark_acceptance",
+    }:
         forwarded["state"] = str(lifecycle_noop_result.get("result_id") or "")
     ledger_payload = dict(forwarded)
-    if lifecycle_action in {"start", "complete_child", "cancel_child", "enrich_plan"}:
+    if lifecycle_action in {
+        "start",
+        "complete_child",
+        "cancel_child",
+        "enrich_plan",
+        "mark_acceptance",
+    }:
         ledger_payload.pop("state", None)
         ledger_payload["lifecycle_action"] = lifecycle_action
-        if lifecycle_action == "enrich_plan":
+        if lifecycle_action in {"enrich_plan", "mark_acceptance"}:
             ledger_payload["expected_updated_at"] = str(
                 arguments.get("expected_updated_at") or ""
             )
@@ -1397,8 +1517,10 @@ async def execute_with_clients(
                 "reason": "lifecycle_pre_dispatch_changed",
             }
     elif plan_snapshot is not None:
+        if description_evaluator is None:
+            raise RuntimeError("description evaluator missing")
         try:
-            confirmed, confirmation_result = _evaluate_plan_context(
+            confirmed, confirmation_result = description_evaluator(
                 await graphql_client.get_issue_plan_context(
                     str(arguments.get("id") or "")
                 ),

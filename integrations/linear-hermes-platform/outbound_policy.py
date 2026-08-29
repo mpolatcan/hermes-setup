@@ -194,36 +194,43 @@ class OutboundPolicy:
         if target_team_id not in self.allowed_team_ids:
             return PolicyDecision("deny", "team_not_allowed")
         if tool_name == "save_issue":
+            lifecycle_action = arguments.get("lifecycle_action")
+            description_actions = {"enrich_plan", "mark_acceptance"}
             if "state" in arguments:
                 return PolicyDecision("deny", "state_transition_not_allowed")
-            if "expected_updated_at" in arguments and arguments.get("lifecycle_action") != "enrich_plan":
+            if "expected_updated_at" in arguments and lifecycle_action not in description_actions:
                 return PolicyDecision("deny", "expected_updated_at_not_allowed")
             if (
                 arguments.get("id")
                 and "description" in arguments
-                and arguments.get("lifecycle_action") != "enrich_plan"
+                and lifecycle_action not in description_actions
             ):
                 return PolicyDecision("deny", "description_update_requires_enrich_plan")
             if "lifecycle_action" in arguments:
-                lifecycle_action = arguments.get("lifecycle_action")
                 if not isinstance(lifecycle_action, str) or lifecycle_action not in {
                     "start",
                     "complete_child",
                     "cancel_child",
                     "enrich_plan",
+                    "mark_acceptance",
                 }:
                     return PolicyDecision("deny", "invalid_lifecycle_action")
                 if not arguments.get("id"):
                     return PolicyDecision("deny", "lifecycle_issue_required")
                 lifecycle_fields = {"operation_key", "target_team_id", "id", "lifecycle_action"}
-                if lifecycle_action == "enrich_plan":
+                if lifecycle_action in description_actions:
                     lifecycle_fields |= {"expected_updated_at", "description"}
                     if not isinstance(arguments.get("expected_updated_at"), str) or not str(
                         arguments.get("expected_updated_at") or ""
                     ).strip():
                         return PolicyDecision("deny", "expected_updated_at_required")
                     if not isinstance(arguments.get("description"), str):
-                        return PolicyDecision("deny", "plan_description_required")
+                        reason = (
+                            "plan_description_required"
+                            if lifecycle_action == "enrich_plan"
+                            else "acceptance_description_required"
+                        )
+                        return PolicyDecision("deny", reason)
                 if set(arguments) - lifecycle_fields:
                     return PolicyDecision("deny", "lifecycle_fields_not_allowed")
             requested_team = str(arguments.get("team") or "")
