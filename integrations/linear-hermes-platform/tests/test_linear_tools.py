@@ -16,6 +16,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from linear_tools import (  # noqa: E402
     _canonicalize_vendor_markdown,
+    _evaluate_acceptance_context,
     _parse_plan_sections,
     execute_with_clients,
     register_outbound_tools,
@@ -129,7 +130,13 @@ class RegistrationTests(unittest.TestCase):
             issue_properties["lifecycle_action"],
             {
                 "type": "string",
-                "enum": ["start", "complete_child", "cancel_child", "enrich_plan"],
+                "enum": [
+                    "start",
+                    "complete_child",
+                    "cancel_child",
+                    "enrich_plan",
+                    "mark_acceptance",
+                ],
             },
         )
         self.assertEqual(issue_properties["expected_updated_at"]["type"], "string")
@@ -1360,6 +1367,93 @@ Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur
         )
         return result, mcp
 
+    async def run_acceptance_action(
+        self,
+        *,
+        operation_key: str,
+        contexts: list[dict],
+        description: str,
+        expected_updated_at: str = "2026-08-09T18:00:00.000Z",
+    ) -> tuple[dict, FakeMCP, FakeGraphQL]:
+        mcp = FakeMCP()
+        graphql = FakeGraphQL(plan_contexts=contexts)
+        result = await execute_with_clients(
+            profile_id="general",
+            vendor_tool="save_issue",
+            arguments={
+                "id": "OPS-105",
+                "target_team_id": "ops-1",
+                "operation_key": operation_key,
+                "lifecycle_action": "mark_acceptance",
+                "expected_updated_at": expected_updated_at,
+                "description": description,
+            },
+            mutation=True,
+            policy=self.policy,
+            ledger=self.ledger,
+            graphql_client=graphql,
+            mcp_client=mcp,
+        )
+        return result, mcp, graphql
+
+    async def test_mark_acceptance_updates_only_proven_checkboxes_with_conflict_guard(self):
+        source = self.plan_description()
+        checked = source.replace("- [ ]", "- [x]")
+        before = self.plan_context(description=source)
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=checked,
+        )
+        result, mcp, graphql = await self.run_acceptance_action(
+            operation_key="mark-acceptance-positive",
+            contexts=[before, before, after],
+            description=checked,
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(graphql.plan_contexts, [after])
+        self.assertEqual(
+            [call for call in mcp.calls if call[0] == "save_issue"],
+            [("save_issue", {"id": "OPS-105", "description": checked}, True)],
+        )
+
+    async def test_mark_acceptance_accepts_vendor_checkbox_and_bullet_normalization(self):
+        source = self.plan_description()
+        checked = source.replace("- [ ]", "- [x]")
+        vendor_description = "\n".join(
+            f"* {line[2:].replace('[x]', '[X]')}" if line.startswith("- ") else line
+            for line in checked.splitlines()
+        )
+        before = self.plan_context(description=source)
+        after = self.plan_context(
+            updated_at="2026-08-09T18:01:00.000Z",
+            description=vendor_description,
+        )
+        result, _mcp, _graphql = await self.run_acceptance_action(
+            operation_key="mark-acceptance-vendor-normalization",
+            contexts=[before, before, after],
+            description=checked,
+        )
+        self.assertEqual(result["status"], "success")
+
+    async def test_mark_acceptance_rejects_stale_revision_before_dispatch(self):
+        source = self.plan_description()
+        checked = source.replace("- [ ]", "- [x]")
+        before = self.plan_context(description=source)
+        drift = self.plan_context(
+            updated_at="2026-08-09T18:00:30.000Z",
+            description=source,
+        )
+        result, mcp, _graphql = await self.run_acceptance_action(
+            operation_key="mark-acceptance-stale",
+            contexts=[before, drift],
+            description=checked,
+        )
+        self.assertEqual(
+            result,
+            {"error": "linear_policy_denied", "reason": "lifecycle_pre_dispatch_changed"},
+        )
+        self.assertEqual([call for call in mcp.calls if call[0] == "save_issue"], [])
+
     async def test_enrich_plan_updates_same_issue_with_conflict_guard(self):
         before = self.plan_context()
         after = self.plan_context(
@@ -1431,6 +1525,85 @@ Stale human edit körlemesine ezilmez. Drift durumunda mutation fail-closed olur
                         f"{separator}+ protected paragraph bytes\n- actual item\n"
                     ),
                 )
+
+    def test_mark_acceptance_allows_only_monotonic_checkbox_changes(self):
+        before = self.plan_context(description="## Kabul kriterleri\n- [ ] One\n- [x] Two")
+        checked = "## Kabul kriterleri\n- [x] One\n- [x] Two"
+        snapshot, error = _evaluate_acceptance_context(
+            before,
+            target_team_id="ops-1",
+            actor_id="actor-1",
+            expected_updated_at="2026-08-09T18:00:00.000Z",
+            description=checked,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(snapshot["description"], checked)
+
+        for description, reason in (
+            ("## Kabul kriterleri\n- [ ] One\n- [ ] Two", "acceptance_checkbox_regression"),
+            ("## Kabul kriterleri changed\n- [x] One\n- [x] Two", "acceptance_description_drift"),
+            ("## Kabul kriterleri\n- [ ] One\n- [x] Two", "acceptance_no_change"),
+        ):
+            with self.subTest(reason=reason):
+                denied, error = _evaluate_acceptance_context(
+                    before,
+                    target_team_id="ops-1",
+                    actor_id="actor-1",
+                    expected_updated_at="2026-08-09T18:00:00.000Z",
+                    description=description,
+                )
+                self.assertIsNone(denied)
+                self.assertEqual(error["reason"], reason)
+
+    def test_mark_acceptance_ignores_checkbox_syntax_inside_code_blocks(self):
+        source = """## Kabul kriterleri
+
+```text
+- [ ] Example only
+```
+
+    - [ ] Indented example only
+
+- [ ] Real criterion
+"""
+        valid_target = source.rsplit("- [ ] Real criterion", 1)[0] + "- [x] Real criterion\n"
+        before = self.plan_context(description=source)
+        snapshot, error = _evaluate_acceptance_context(
+            before,
+            target_team_id="ops-1",
+            actor_id="actor-1",
+            expected_updated_at="2026-08-09T18:00:00.000Z",
+            description=valid_target,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(snapshot["description"], valid_target)
+
+        invalid_target = valid_target.replace("- [ ] Example only", "- [x] Example only")
+        snapshot, error = _evaluate_acceptance_context(
+            before,
+            target_team_id="ops-1",
+            actor_id="actor-1",
+            expected_updated_at="2026-08-09T18:00:00.000Z",
+            description=invalid_target,
+        )
+        self.assertIsNone(snapshot)
+        self.assertEqual(error["reason"], "acceptance_description_drift")
+
+    def test_mark_acceptance_is_semantically_idempotent_when_all_boxes_already_checked(self):
+        description = "## Kabul kriterleri\n- [x] One\n- [X] Two"
+        context = self.plan_context(description=description)
+        snapshot, result = _evaluate_acceptance_context(
+            context,
+            target_team_id="ops-1",
+            actor_id="actor-1",
+            expected_updated_at="2026-08-09T18:00:00.000Z",
+            description=description,
+        )
+        self.assertIsNone(snapshot)
+        self.assertEqual(
+            result,
+            {"status": "already_accepted", "result_id": "issue-1"},
+        )
 
     async def test_enrich_plan_post_dispatch_drift_reports_unknown(self):
         before = self.plan_context()
