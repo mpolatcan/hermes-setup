@@ -251,6 +251,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 17. [Honcho Codex OAuth adapter](integrations/honcho-codex-adapter/README.md) — local OpenAI-compatible transport from Honcho inference routes to Hermes Codex OAuth, with tests, probes and rollback
 18. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
 19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, plans, decisions, reports, auth boundary, and hygiene
+20. [Gateway Restart Coordinator](integrations/gateway-restart-coordinator/README.md) — external launchd queue, requester allowlist, deterministic restart ordering, crash recovery and rollback boundary
 
 ---
 
