@@ -83,7 +83,29 @@ Codex `auth.json`, Hermes `mcp-tokens/*.json`, Linear's OAuth JSON, and the offi
 
 Derya's unattended GitHub API path uses a dedicated GitHub App installed only on `mpolatcan/hermes-setup`. The App ID, installation ID, repository scope, and private-key attachment live in the profile-scoped `Derya - Secrets` item. The private key is never mapped into the long-running gateway environment.
 
-`~/.hermes/scripts/derya-gh` obtains the general profile's existing 1Password service-account bootstrap identity from Keychain, resolves only the four pinned GitHub App references through the official SDK, signs a short-lived App JWT in memory, verifies the pinned installation owner/selection/permission set, requests a repository-restricted installation token, removes the bootstrap identity, and runs the pinned `/opt/homebrew/bin/gh` with a fresh mode-`0700` config directory. The wrapper never prints either credential and does not cache the installation token. Its command gate allows only exact `gh auth status` and API routes under `repos/mpolatcan/hermes-setup` plus the read-only installation-scope check; aliases, extensions, token printing, custom hosts and generic gh commands fail closed. Git remotes continue to use SSH; this identity is for API, pull-request, and narrowly scoped repository automation.
+`~/.hermes/scripts/derya-gh` obtains the general profile's existing 1Password service-account bootstrap identity from Keychain, resolves only the four pinned GitHub App references through the official SDK, signs a short-lived App JWT in memory, verifies the pinned installation owner/selection/permission set, requests a repository-restricted installation token, removes the bootstrap identity, and runs the pinned `/opt/homebrew/bin/gh` with a fresh mode-`0700` config directory. The wrapper never prints either credential and does not cache the installation token. Its command gate allows only exact `gh auth status` and API routes under `repos/mpolatcan/hermes-setup` plus the read-only installation-scope check; aliases, extensions, token printing, custom hosts and generic gh commands fail closed. Agent Git operations use the explicit `derya-gh-credential` helper over HTTPS. The host user's personal SSH identity remains available only outside Hermes agent sessions.
+
+### Fleet GitHub access matrix
+
+The default is no profile-scoped GitHub access. Public-web research does not count as a repository credential. A repository absent from the allowlist is denied rather than inferred from the host user's SSH access.
+
+| Persona / profile | Repository allowlist | Read | Write | API / PR / CI | Decision |
+| --- | --- | --- | --- | --- | --- |
+| Derya / `general` | `mpolatcan/hermes-setup` | brokered HTTPS | brokered HTTPS | API + PR write; Actions read | active |
+| Naz / `coder` | none | no | no | no | no access until an exact game/build/CI repository and App scope are approved |
+| Doruk / `researcher` | none | no | no | no | no access; a future research need defaults to repository-specific read-only review |
+| Tuna / `assistant` | none | no | no | no | no access |
+| Ozan / `writer` | none | no | no | no | no access |
+| Nilay / `marketing` | none | no | no | no | no access |
+| Sarp / `producer` | none | no | no | no | no access |
+| Defne / `health` | none | no | no | no | no access |
+| Murat / `finance` | none | no | no | no | no access |
+
+The profile-scoped `Naz - Secrets` item currently has no GitHub App metadata or private-key attachment, so `Studio Naz Dev App` is not an active or verifiable rollout source. No personal SSH key, PAT, or guessed private repository is used as a substitute.
+
+All nine profile shells set `GIT_SSH_COMMAND` to the owner-only `hermes-agent-ssh-guard`, which rejects every Git-over-SSH transport before the host SSH client executes. The enabled `github-transport-guard` plugin independently blocks normal direct GitHub SSH routes submitted through terminal or code-execution tools. Normal human shells are unchanged; agent Git network operations must use an approved profile-scoped HTTPS broker. This is an accidental-credential-use boundary, not an isolation claim against deliberately obfuscated arbitrary local code running as the same macOS user.
+
+Rollback disables/removes the profile plugin link and its managed init block, then restarts only affected gateways. It does not create a PAT, plaintext fallback, remote-URL credential, or wider App installation.
 
 Acceptance checks:
 
