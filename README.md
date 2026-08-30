@@ -252,6 +252,7 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 18. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
 19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, plans, decisions, reports, auth boundary, and hygiene
 20. [Gateway Restart Coordinator](components/operations/gateway-restart-coordinator/README.md) — external launchd queue, requester allowlist, deterministic restart ordering, crash recovery and rollback boundary
+21. [Gateway Restart Request](components/operations/gateway-restart-request/README.md) — model-facing coordinator facade and direct-restart guard, installed only for Derya/general and Naz/coder
 
 ---
 

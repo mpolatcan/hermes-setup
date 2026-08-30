@@ -1,0 +1,4 @@
+name: gateway-restart-request
+version: "1.0.0"
+description: "Coordinator-first request tool and direct gateway restart guard"
+kind: standalone

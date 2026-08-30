@@ -54,9 +54,14 @@ If the service is already loaded, use `launchctl kickstart -k gui/$(id -u)/ai.he
 
 Request from an authorized profile:
 
+- Normal model path on `general` and `coder`: use the registered `request_gateway_restart` tool from the profile-local `gateway-restart-request` plugin. It creates the temporary JSON and invokes this facade internally.
+- Direct CLI form below is an operator/debug surface, not the normal model path:
+
 ```bash
 /Users/mutlupolatcan/.hermes/services/gateway-restart-coordinator/restartctl.py request /absolute/request.json
 ```
+
+The plugin's `pre_tool_call` guard rejects model-driven `hermes gateway restart` and gateway-targeting `launchctl` mutations on those two profiles and points back to the tool. Human `/restart` remains an emergency fallback only when the coordinator is unavailable or reaches `operator_required`.
 
 ## Verification
 
