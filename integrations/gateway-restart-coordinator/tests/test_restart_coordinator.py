@@ -213,6 +213,7 @@ class FakeRuntime:
         self.restarts = []
         self.valid = True
         self.managed_ok = True
+        self.health_failures = 0
         self.health_payload = {"version": "1.2.3", "status": "ok", "platforms": {"telegram": "connected"}}
 
     def pid(self, profile):
@@ -229,6 +230,9 @@ class FakeRuntime:
         return self.managed_ok
 
     def health(self, url):
+        if self.health_failures:
+            self.health_failures -= 1
+            raise OSError("listener not ready")
         return self.health_payload
 
 
@@ -246,13 +250,22 @@ class CoordinatorExecutionTests(CoordinatorStoreTests):
         self.assertGreaterEqual(len(store.ledger("OPS-195-a")), 4)
         self.assertEqual(store.outbox_counts(), {"pending": 1, "delivered": 0, "dead": 0})
 
+    def test_readiness_retries_transient_listener_startup_before_acceptance(self):
+        store = CoordinatorStore(self.db)
+        store.enqueue("general", self.payload())
+        runtime = FakeRuntime()
+        runtime.health_failures = 2
+        result = Coordinator(store, runtime, readiness_attempts=3, readiness_delay=0).process_once()
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(runtime.health_failures, 0)
+
     def test_failed_canary_never_blind_retries_and_stops_operator_required(self):
         store = CoordinatorStore(self.db)
         store.enqueue("general", self.payload())
         runtime = FakeRuntime()
         runtime.health_payload["status"] = "degraded"
-        first = Coordinator(store, runtime).process_once()
-        second = Coordinator(store, runtime).process_once()
+        first = Coordinator(store, runtime, readiness_attempts=1, readiness_delay=0).process_once()
+        second = Coordinator(store, runtime, readiness_attempts=1, readiness_delay=0).process_once()
         self.assertEqual(first["status"], "operator_required")
         self.assertIsNone(second)
         self.assertEqual(runtime.restarts, ["assistant"])

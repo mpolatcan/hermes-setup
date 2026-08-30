@@ -542,9 +542,17 @@ class CoordinatorStore:
 
 
 class Coordinator:
-    def __init__(self, store: CoordinatorStore, runtime: Runtime):
+    def __init__(
+        self,
+        store: CoordinatorStore,
+        runtime: Runtime,
+        readiness_attempts: int = 30,
+        readiness_delay: float = 1.0,
+    ):
         self.store = store
         self.runtime = runtime
+        self.readiness_attempts = max(1, readiness_attempts)
+        self.readiness_delay = max(0.0, readiness_delay)
 
     @staticmethod
     def _lookup(payload: dict[str, Any], dotted: str) -> Any:
@@ -562,31 +570,49 @@ class Coordinator:
         new_pid: int | None = None
         health: dict[str, Any] = {}
         rollback_verified = False
-        try:
-            new_pid = self.runtime.pid(profile)
-            self.store.transition(task_id, "verifying", {"new_pid": new_pid})
-            health = self.runtime.health(payload["health_url"])
-            canary = payload["semantic_canary"]
-            rollback_verified = _coordinate_valid(payload, "rollback")
-            accepted = (
-                new_pid != old_pid
-                and self.runtime.managed(new_pid, profile)
-                and _coordinate_valid(payload, "artifact")
-                and rollback_verified
-                and health.get("version") == payload["expected_version"]
-                and self._lookup(health, canary["path"]) == canary["equals"]
-            )
-        except Exception:
-            accepted = False
+        accepted = False
+        attempts_used = 0
+        last_error_type: str | None = None
+        for attempt in range(1, self.readiness_attempts + 1):
+            attempts_used = attempt
             try:
+                new_pid = self.runtime.pid(profile)
+                if attempt == 1:
+                    self.store.transition(task_id, "verifying", {"new_pid": new_pid})
+                health = self.runtime.health(payload["health_url"])
+                canary = payload["semantic_canary"]
                 rollback_verified = _coordinate_valid(payload, "rollback")
-            except Exception:
-                rollback_verified = False
-        evidence = {"old_pid": old_pid, "new_pid": new_pid, "health": health}
+                accepted = (
+                    new_pid != old_pid
+                    and self.runtime.managed(new_pid, profile)
+                    and _coordinate_valid(payload, "artifact")
+                    and rollback_verified
+                    and health.get("version") == payload["expected_version"]
+                    and self._lookup(health, canary["path"]) == canary["equals"]
+                )
+                if accepted:
+                    break
+            except Exception as exc:
+                last_error_type = type(exc).__name__
+                health = {}
+            if attempt < self.readiness_attempts:
+                time.sleep(self.readiness_delay)
+        try:
+            rollback_verified = _coordinate_valid(payload, "rollback")
+        except Exception:
+            rollback_verified = False
+        evidence = {
+            "old_pid": old_pid,
+            "new_pid": new_pid,
+            "health": health,
+            "readiness_attempts": attempts_used,
+        }
         if accepted:
             return self.store.transition(task_id, "succeeded", evidence)
         evidence["reason"] = "post_restart_acceptance_failed"
         evidence["rollback_coordinate_verified"] = rollback_verified
+        if last_error_type:
+            evidence["error_type"] = last_error_type
         return self.store.transition(task_id, "operator_required", evidence)
 
     def _execute_claimed(self, request: dict[str, Any]) -> dict[str, Any]:
