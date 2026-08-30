@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import time
@@ -55,9 +56,15 @@ def requester_from_ancestry(ancestors: list[int], gateway_pids: dict[str, int]) 
 class ProcessRuntime:
     """Production runtime with fixed launchd and Hermes command surfaces."""
 
-    def __init__(self, uid: int | None = None, hermes: str = "/Users/mutlupolatcan/.local/bin/hermes"):
+    def __init__(
+        self,
+        uid: int | None = None,
+        hermes: str = "/Users/mutlupolatcan/.local/bin/hermes",
+        restart_timeout: float = 1860.0,
+    ):
         self.uid = os.getuid() if uid is None else uid
         self.hermes = hermes
+        self.restart_timeout = restart_timeout
 
     @staticmethod
     def parse_launchd_pid(output: str) -> int:
@@ -117,8 +124,8 @@ class ProcessRuntime:
 
     def restart(self, profile: str) -> None:
         old_pid = self.pid(profile)
-        subprocess.run(["/bin/launchctl", "kickstart", "-k", self._label(profile)], check=True, timeout=15)
-        deadline = time.monotonic() + 30
+        os.kill(old_pid, signal.SIGUSR1)
+        deadline = time.monotonic() + self.restart_timeout
         while time.monotonic() < deadline:
             try:
                 new_pid = self.pid(profile)
@@ -129,7 +136,7 @@ class ProcessRuntime:
             except (RuntimeError, subprocess.SubprocessError):
                 pass
             time.sleep(1)
-        raise RuntimeError("restart_readiness_timeout")
+        raise RuntimeError("graceful_restart_readiness_timeout")
 
     def managed(self, pid: int, profile: str) -> bool:
         try:

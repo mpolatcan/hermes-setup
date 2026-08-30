@@ -8,7 +8,7 @@ External, launchd-managed serialization plane for Hermes gateway restart request
 - Targets: the nine known fleet profiles.
 - Queue: owner-only SQLite/WAL with full synchronous durability, transition ledger, dependency gates, duplicate coalescing and queued-request supersede.
 - Preflight: immutable artifact and rollback SHA-256, expected live PID, `hermes -p <profile> config check`, loopback-only health URL.
-- Execution: one global service lock, one serial `launchctl kickstart -k`, bounded new-PID wait, managed-process proof, expected serving version and semantic canary.
+- Execution: one global service lock, one serial native `SIGUSR1` graceful restart request, bounded wait longer than Hermes' after-turn drain budget, managed-process proof, expected serving version and semantic canary.
 - Recovery: a request committed as `restarting` is never blindly restarted. A changed PID resumes verification; an unchanged PID becomes `operator_required`.
 - Rollback: this service verifies the immutable rollback coordinate but does not mutate artifacts. Failed acceptance stops at `operator_required`; a reviewed deployment helper may perform rollback separately.
 

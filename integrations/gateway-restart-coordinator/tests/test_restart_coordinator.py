@@ -1,11 +1,13 @@
 import hashlib
 import json
 import os
+import signal
 import sqlite3
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from restart_coordinator import (
     Coordinator,
@@ -321,6 +323,24 @@ class ProcessRuntimeTests(unittest.TestCase):
         self.assertEqual(ProcessRuntime.parse_launchd_pid(output), 4321)
         with self.assertRaises(RuntimeError):
             ProcessRuntime.parse_launchd_pid("state = waiting\n")
+
+    def test_restart_requests_graceful_sigusr1_and_never_kickstarts(self):
+        runtime = ProcessRuntime(restart_timeout=5)
+        runtime.pid = mock.Mock(side_effect=[111, 111, 222, 222])
+        with mock.patch("restart_coordinator.os.kill") as kill, mock.patch("restart_coordinator.time.sleep"):
+            runtime.restart("assistant")
+        kill.assert_called_once_with(111, signal.SIGUSR1)
+
+    def test_restart_timeout_is_bounded_without_second_signal(self):
+        runtime = ProcessRuntime(restart_timeout=2)
+        runtime.pid = mock.Mock(return_value=111)
+        clock = iter([0.0, 0.5, 1.5, 2.1])
+        with mock.patch("restart_coordinator.os.kill") as kill, mock.patch(
+            "restart_coordinator.time.monotonic", side_effect=lambda: next(clock)
+        ), mock.patch("restart_coordinator.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "graceful_restart_readiness_timeout"):
+                runtime.restart("assistant")
+        kill.assert_called_once_with(111, signal.SIGUSR1)
 
 
 if __name__ == "__main__":
