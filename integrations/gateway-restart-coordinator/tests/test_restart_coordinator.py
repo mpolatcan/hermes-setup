@@ -261,6 +261,24 @@ class CoordinatorExecutionTests(CoordinatorStoreTests):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(runtime.health_failures, 0)
 
+    def test_late_equivalent_request_is_already_satisfied_without_second_restart(self):
+        store = CoordinatorStore(self.db)
+        store.enqueue("general", self.payload(task_id="first"))
+        runtime = FakeRuntime()
+        first = Coordinator(store, runtime).process_once()
+        self.assertEqual(first["status"], "succeeded")
+        store.enqueue("coder", self.payload(task_id="late", expected_pid=222))
+        late = Coordinator(store, runtime).process_once()
+        self.assertEqual(late["status"], "succeeded")
+        self.assertEqual(late["disposition"], "already_satisfied")
+        self.assertEqual(runtime.restarts, ["assistant"])
+        self.assertEqual(late["old_pid"], 222)
+        self.assertEqual(late["new_pid"], 222)
+        store.enqueue("general", self.payload(task_id="late-stale-pid", expected_pid=111))
+        stale = Coordinator(store, runtime).process_once()
+        self.assertEqual(stale["disposition"], "already_satisfied")
+        self.assertEqual(runtime.restarts, ["assistant"])
+
     def test_failed_canary_never_blind_retries_and_stops_operator_required(self):
         store = CoordinatorStore(self.db)
         store.enqueue("general", self.payload())

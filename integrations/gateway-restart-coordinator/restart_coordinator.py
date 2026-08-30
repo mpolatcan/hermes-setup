@@ -425,6 +425,22 @@ class CoordinatorStore:
             raise RequestError("dependency_pid_unavailable")
         return int(parent["new_pid"])
 
+    def has_succeeded_coordinate(
+        self,
+        target_profile: str,
+        artifact_sha256: str,
+        expected_version: str,
+        current_pid: int,
+    ) -> bool:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT evidence_json FROM requests
+                   WHERE target_profile=? AND artifact_sha256=? AND expected_version=? AND status='succeeded'
+                   ORDER BY id DESC""",
+                (target_profile, artifact_sha256, expected_version),
+            ).fetchall()
+        return any(json.loads(row["evidence_json"]).get("new_pid") == current_pid for row in rows)
+
     def settle_failed_dependencies(self) -> int:
         with self._connect() as conn:
             rows = conn.execute(
@@ -622,6 +638,42 @@ class Coordinator:
             evidence["error_type"] = last_error_type
         return self.store.transition(task_id, "operator_required", evidence)
 
+    def _already_satisfied(self, request: dict[str, Any], current_pid: int) -> dict[str, Any] | None:
+        payload = request["payload"]
+        profile = request["target_profile"]
+        if not self.store.has_succeeded_coordinate(
+            profile,
+            payload["artifact_sha256"],
+            payload["expected_version"],
+            current_pid,
+        ):
+            return None
+        try:
+            health = self.runtime.health(payload["health_url"])
+            canary = payload["semantic_canary"]
+            accepted = (
+                self.runtime.managed(current_pid, profile)
+                and _coordinate_valid(payload, "artifact")
+                and _coordinate_valid(payload, "rollback")
+                and health.get("version") == payload["expected_version"]
+                and self._lookup(health, canary["path"]) == canary["equals"]
+            )
+        except Exception:
+            return None
+        if not accepted:
+            return None
+        return self.store.transition(
+            request["task_id"],
+            "succeeded",
+            {
+                "disposition": "already_satisfied",
+                "old_pid": current_pid,
+                "new_pid": current_pid,
+                "health": health,
+                "readiness_attempts": 0,
+            },
+        )
+
     def _execute_claimed(self, request: dict[str, Any]) -> dict[str, Any]:
         task_id = request["task_id"]
         payload = request["payload"]
@@ -641,6 +693,10 @@ class Coordinator:
                 "operator_required",
                 {"reason": "preflight_exception", "error_type": type(exc).__name__},
             )
+        if valid_coordinates and config_valid:
+            satisfied = self._already_satisfied(request, old_pid)
+            if satisfied is not None:
+                return satisfied
         if old_pid != expected_pid or not valid_coordinates or not config_valid:
             return self.store.transition(task_id, "operator_required", {"reason": "preflight_failed", "old_pid": old_pid})
         self.store.transition(task_id, "restarting", {"old_pid": old_pid})

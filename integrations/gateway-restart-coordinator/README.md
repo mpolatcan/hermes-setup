@@ -6,7 +6,7 @@ External, launchd-managed serialization plane for Hermes gateway restart request
 
 - Requesters: only `general` (Derya) and `coder` (Naz). The facade requires both a matching `HERMES_HOME` and a live launchd gateway PID in the caller's process ancestry; no requester argument exists and direct external-shell calls fail closed.
 - Targets: the nine known fleet profiles.
-- Queue: owner-only SQLite/WAL with full synchronous durability, transition ledger, dependency gates, duplicate coalescing and queued-request supersede.
+- Queue: owner-only SQLite/WAL with full synchronous durability, transition ledger, dependency gates, in-flight duplicate coalescing, queued-request supersede, and post-cutover `already_satisfied` suppression when the same serving coordinate is already proven on the live PID.
 - Preflight: immutable artifact and rollback SHA-256, expected live PID, `hermes -p <profile> config check`, loopback-only health URL.
 - Execution: one global service lock, one serial native `SIGUSR1` graceful restart request, bounded wait longer than Hermes' after-turn drain budget, managed-process proof, expected serving version and semantic canary.
 - Recovery: a request committed as `restarting` is never blindly restarted. A changed PID resumes verification; an unchanged PID becomes `operator_required`.
