@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "manage_hermes_agent_patches.py"
 STAGE_SCRIPT = (
     ROOT
-    / "integrations"
-    / "honcho-codex-adapter"
+    / "components"
+    / "memory"
+    / "honcho-codex-bridge"
     / "scripts"
     / "stage_hermes_upgrade.sh"
 )

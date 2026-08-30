@@ -15,7 +15,7 @@ The production fleet does not execute Homebrew Hermes. Gateways and the shell CL
 └── ~/.hermes/runtime/releases/hermes-agent-<managed-hash>/venv/bin/hermes
 ```
 
-Do not upgrade the live directory in place and do not make Python `3.14` the production runtime. Stage the official candidate side by side, preserve the stable path for rollback, and keep the candidate and Honcho adapter in the same supported Python `major.minor` family (`3.13`). The adapter compatibility gate is documented in [`integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md`](../integrations/honcho-codex-adapter/docs/upgrade-lifecycle.md).
+Do not upgrade the live directory in place and do not make Python `3.14` the production runtime. Stage the official candidate side by side, preserve the stable path for rollback, and keep the candidate and Honcho adapter in the same supported Python `major.minor` family (`3.13`). The adapter compatibility gate is documented in [`components/memory/honcho-codex-bridge/docs/upgrade-lifecycle.md`](../components/memory/honcho-codex-bridge/docs/upgrade-lifecycle.md).
 
 Full procedure, in order:
 
@@ -191,7 +191,7 @@ If a future upstream regression cannot be solved by config, plugin, wrapper or s
 
 Quicksilver retirement is deliberately gated:
 
-1. `integrations/honcho-codex-adapter/scripts/quicksilver_soak_cleanup.py` is the byte-for-byte source copy of the deployed canonical soak cleanup. It removes the recovery checkout and managed candidate only after the scheduler reaches 8 completed runs and the persisted soak history contains seven successful calendar days with no failures.
+1. `components/memory/honcho-codex-bridge/scripts/quicksilver_soak_cleanup.py` is the byte-for-byte source copy of the deployed canonical soak cleanup. It removes the recovery checkout and managed candidate only after the scheduler reaches 8 completed runs and the persisted soak history contains seven successful calendar days with no failures.
 2. The remaining Python canary, gateway/adapter candidates, Homebrew formula, and Homebrew-backup environments are **not** deleted by unattended automation. After the canonical completion marker exists, re-run live process, `lsof`, LaunchAgent, cron, config, global-CLI, and path-safety checks; then show the exact `brew uninstall` and removal commands for explicit approval. Do not infer approval from the earlier soak schedule.
 
 The canonical cleanup remains general-profile no-agent job `c083e57807d7` at 04:40. A proposed destructive post-soak job was rejected during independent review and removed before its first run; no post-cleanup script remains deployed.

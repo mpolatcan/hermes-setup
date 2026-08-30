@@ -1,0 +1,759 @@
+"""Tests for the atomic Linear plugin deployment helper."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import os
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "deploy_linear_agent_plugin.py"
+ALLOWLIST = (
+    "__init__.py",
+    "adapter.py",
+    "ledger.py",
+    "linear_client.py",
+    "oauth_store.py",
+    "mcp_client.py",
+    "outbound_policy.py",
+    "outbound_ledger.py",
+    "linear_tools.py",
+    "retention.py",
+    "plugin.yaml",
+)
+FIX_COMMIT = "2fc28f4cf80b55c7a6a5f8e03ffbbb9153dfc47c"
+FIX_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "679723f859f0a8baeb74dcba11961e5d57a9e892597da54d3b9a810dffedb3ad",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "70bff1072ff39c28917ccd0f015985495565db3b0ddce5c9311cf84212469e99",
+    "linear_tools.py": "eca26788b4d62866e06482dceca21dc30675cc54bba919b1495ac3a92e62abfb",
+    "mcp_client.py": "3debd6bbc7ba7b6084d8bfb39045a0ed97f7a514266896f3e59bf1c0f6f0a2e7",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "aa61090da20e580d12e0bd321b152dfc00123f478bde9c4954497f10c2d62b06",
+    "outbound_policy.py": "963e81aa311766744a005c60aa96a59bb317e3a8f674168429feb3bedb04327d",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
+GOVERNANCE_COMMIT = "f553c648988f870aa9de1bd8b34999c74ea05c6e"
+GOVERNANCE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "7d0355e3b381dcbac2e718ca0dc0f38fcfd9946a7fe0275178de587bb570be6a",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "44f52019888b93ce0b144b09570eaf10eaba5b2593b0f11efac4fd81e6bf1189",
+    "linear_tools.py": "b02f477d6df4cfe18e93abc80ba5851dea4fc021b733ac44a18083f836da821c",
+    "mcp_client.py": "3debd6bbc7ba7b6084d8bfb39045a0ed97f7a514266896f3e59bf1c0f6f0a2e7",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "aa61090da20e580d12e0bd321b152dfc00123f478bde9c4954497f10c2d62b06",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
+LEDGER_HARDENING_COMMIT = "bf12127eb2c91c2f49a82b5f4aedde2bd17365c7"
+LEDGER_HARDENING_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "7d0355e3b381dcbac2e718ca0dc0f38fcfd9946a7fe0275178de587bb570be6a",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "44f52019888b93ce0b144b09570eaf10eaba5b2593b0f11efac4fd81e6bf1189",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "3debd6bbc7ba7b6084d8bfb39045a0ed97f7a514266896f3e59bf1c0f6f0a2e7",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
+MCP_SCHEMA_COMMIT = "ae223f9cf10c1c78fed949dcdec890582fc49610"
+MCP_SCHEMA_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "7d0355e3b381dcbac2e718ca0dc0f38fcfd9946a7fe0275178de587bb570be6a",
+    "ledger.py": "59012eb54e4032cf61f3b4bd7315114e2a9c09d9a15387d5dadea6ba892a80b1",
+    "linear_client.py": "44f52019888b93ce0b144b09570eaf10eaba5b2593b0f11efac4fd81e6bf1189",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "68d6aae07ffb392f613d927719f479ffe70c5253575915c1ec5c06d90e30cd98",
+}
+OPS73_COMMIT = "5822ea28c36856f0ce8f244035dd489cc4a7ddda"
+OPS73_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "1e1828faa7fdebc632d49fb505524dee598a510d969d659f5b53d62342845c61",
+    "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+    "linear_client.py": "b1a7b1ab431af6c26d22337caa4cb70b5feef6fe886fa4fb7e0e67b1ad351158",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+}
+HEALTH_VERSION_COMMIT = "c12d73119e230437faf01f0cddc294bc5f364185"
+HEALTH_VERSION_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "ff9aa401976a0e41e22cdbf4604dcf7e7a292a9d0628bb30fabcb02ed9083c1c",
+    "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+    "linear_client.py": "b1a7b1ab431af6c26d22337caa4cb70b5feef6fe886fa4fb7e0e67b1ad351158",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+}
+LIVE_REVISION_COMMIT = "d63a1e441ba3ef98c0f593116cce317a0fb566c9"
+LIVE_REVISION_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "f7695ea3d48c3f2cfe7e881467ca8211961a7f1e0b4db72e42e0956de8487a43",
+    "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+    "linear_client.py": "7cc114f486cb99e37a1419b30abe315683931f83420e3d4d6da7e398128c5c92",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+}
+AUDIT_COMPLETION_COMMIT = "498408a0a10082f2d1c7742f68059ffc5899b144"
+AUDIT_COMPLETION_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "b9bce9511ecc4700165b160a6f33e98994dcefeea6d7d646045fc08503f6f41c",
+    "ledger.py": "910c1314a9c3489e370759f270487227af8f949bcd0d889959f9e6df8a2d0e88",
+    "linear_client.py": "7cc114f486cb99e37a1419b30abe315683931f83420e3d4d6da7e398128c5c92",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "plugin.yaml": "819912eec91576605f1fe401ce69811b335586184b4a27d5a36aa01a5ab208fb",
+}
+SESSIONLESS_FENCE_COMMIT = "db7fa04992a9fd3ae5c18fd1e938726f05efd4cc"
+SESSIONLESS_FENCE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "cc89960a21e72b48e69c1b1b492e139c47d83aeaeaf53d31c2fff6b7f3dfc9fb",
+    "ledger.py": "a9e1432cf2d3b3cda9f6d2d6579cfa4c2ae6c151b660803be247cbc03681d542",
+    "linear_client.py": "7cc114f486cb99e37a1419b30abe315683931f83420e3d4d6da7e398128c5c92",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "a099d8a4fe68f579da91fe3311285d44409691265a07de02d5f5ad1cba1e2289",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "fd332aa1443b665a681cfdc01c916419f6c2bc8f92b287943fc3cfbbd9baebd0",
+    "plugin.yaml": "299390e58eb8e4a00e7350a33ecf5dc8908786c375b5c8ccbad992736f119d93",
+}
+SEMANTIC_START_COMMIT = "87868f2d3fcb27541398df1671e6b6ea8698cf59"
+SEMANTIC_START_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "cc89960a21e72b48e69c1b1b492e139c47d83aeaeaf53d31c2fff6b7f3dfc9fb",
+    "ledger.py": "a9e1432cf2d3b3cda9f6d2d6579cfa4c2ae6c151b660803be247cbc03681d542",
+    "linear_client.py": "bb995c1eeccf0a91cda57c48e3787dce575c26f10e3fa2c13ded80da19dab920",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "29e7f91c9ef0e7b302f369d6aea49f0d6137a281d57a6df20eec2e1594ae9e46",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "c1d5f920aff8b0df299728d2d8c621ecd517bac917372d913cee6da7b032bf08",
+    "plugin.yaml": "299390e58eb8e4a00e7350a33ecf5dc8908786c375b5c8ccbad992736f119d93",
+}
+AGENTSESSION_CLOSURE_COMMIT = "2f9aaabcfb0a3d080a1078c1506a000a20024190"
+AGENTSESSION_CLOSURE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "771c78c3e420dcc7667163794ceacd9dd026ffa74015fd2df2fe439cfcc750d5",
+    "ledger.py": "ac00c13e3d62da2a81d2c6f89ea98a6405911886c3b848e8d3300735b0ee21d1",
+    "linear_client.py": "91084e4ee0b83fdaa20260bc2cf0cab8b4ad944265cb3882349de733f97eee4a",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "29e7f91c9ef0e7b302f369d6aea49f0d6137a281d57a6df20eec2e1594ae9e46",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "c1d5f920aff8b0df299728d2d8c621ecd517bac917372d913cee6da7b032bf08",
+    "plugin.yaml": "ad0c41f5c2e93a2a37b6ee379d48a0f7578791cf841651092caa86648be98881",
+}
+AGENTSESSION_AWARE_OUTBOUND_COMMIT = "111dad9039caf8b7b9103d67cbb74335101e7338"
+AGENTSESSION_AWARE_OUTBOUND_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "771c78c3e420dcc7667163794ceacd9dd026ffa74015fd2df2fe439cfcc750d5",
+    "ledger.py": "ac00c13e3d62da2a81d2c6f89ea98a6405911886c3b848e8d3300735b0ee21d1",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "70327e431a2059e959e0aa8102cb24ec30c98be25006d8e8873034f66e726c81",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
+    "plugin.yaml": "ad0c41f5c2e93a2a37b6ee379d48a0f7578791cf841651092caa86648be98881",
+}
+NONTERMINAL_NOTICE_COMMIT = "05ac704b18630625fc49622b2b1df2eeb6cf7b57"
+NONTERMINAL_NOTICE_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "a40a0344ae6f0d30bd7c9e0dc833b9395539538b2ae476d7849eecb0ab9afdba",
+    "ledger.py": "ac00c13e3d62da2a81d2c6f89ea98a6405911886c3b848e8d3300735b0ee21d1",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "70327e431a2059e959e0aa8102cb24ec30c98be25006d8e8873034f66e726c81",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
+    "plugin.yaml": "9ce3a34baaaa2997149bc882e35b083d5f600ec087cbe48103d5270bf65225ee",
+}
+NONEDITABLE_STREAMING_COMMIT = "74b03613de9a9be440239f7a25534e46f349f374"
+NONEDITABLE_STREAMING_MANIFEST = {
+    "__init__.py": "7d5de2107c3de5f641b6678ab0beb3042e1bdf55c1be754fdd6d81ec6a9fd800",
+    "adapter.py": "af60b481b964f6287d0ce792f904cdeeca14fb994f5dde569f413d6dc85df1f6",
+    "ledger.py": "ac00c13e3d62da2a81d2c6f89ea98a6405911886c3b848e8d3300735b0ee21d1",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "81fe6bcbb4cec6bc0eb265d9b720d94cc3f75cbc73114984f468c291603ee0d9",
+    "outbound_policy.py": "70327e431a2059e959e0aa8102cb24ec30c98be25006d8e8873034f66e726c81",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "8971a7d8a1e1a98d676de3085efadc4b88324a38526d2b753b2edb63096f056a",
+    "plugin.yaml": "fbcc5c7c01c393eb80be0c8f335e1ecc65b38d9309f2bfaa4f9e572dcf8afd9f",
+}
+CRON_STANDALONE_COMMIT = "a0f815d0ad378ee421d025bc67753c705d8db48c"
+CRON_STANDALONE_MANIFEST = {
+    "__init__.py": "90565b9f72024822d3a0aa595d7f739c1bd2622730a68078de18b99c74d0a888",
+    "adapter.py": "4e058c8f7a12989baca2c7ade16db9f7bc466a55c0351f4c46dd82e39d12ed25",
+    "ledger.py": "c039c8b321c0a2b487a897a226375c3eda99075a3ed2291b28b9630bbefb85cf",
+    "linear_client.py": "2ce52cbf1c1e6226ecb0125d1d8c0ff7232131a8cab9415cd9851008e16bd8c8",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "e212bed43f86846bc9e55f70425622dda4f903421e5ea529e75845f8be23ac25",
+    "outbound_policy.py": "565fde4e6e0c2dc1ccb215641d1a821b60c6be7faa779232bdc3c8fe2d6d4a50",
+    "outbound_ledger.py": "e1e5754e0aa2ee118658ac36ec6a0cd772d476976d7fc14eece78cd97841f293",
+    "linear_tools.py": "22ad70c1eef8c6bd5b062daf9ba7bf9fda29ded75280ae9ce1a549278ad7f3af",
+    "plugin.yaml": "e77a1592959cd7de3157894f79a4c2126ae29d44d839a9c20a1e84f39153aeaf",
+}
+PLAN_READBACK_COMMIT = "609c4f181302b1c88bab99616c5988e655dea575"
+PLAN_READBACK_MANIFEST = {
+    "__init__.py": "0117a75173b9909b92137601e9725717c3d058c90b7551c710c94752207792a7",
+    "adapter.py": "be092e8ac16452b59ed0047810362b6e6cfc940c68bc739f436db81658c6bcee",
+    "ledger.py": "2bc25766cb61152e2c302a4a87b7ece075cc495e9331d9aa0d8ae1f8859df306",
+    "linear_client.py": "8da34c13e1898f2416c28ba65315b6a3261ab7790a3df8535888c567b8073012",
+    "linear_tools.py": "4e34480f2356d1850071375b86fbee6a5d706157a1122b6c6498ec7a80e09cb5",
+    "mcp_client.py": "3a0cc6a4f492dce148f782742f6820e6cc63d07609800da2d36daf7320c1546e",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "outbound_ledger.py": "aff0b2a6bd8f6fe933a28c8396cd7855b5929881cffbc2408ca89d74b1ca83e7",
+    "outbound_policy.py": "20aee376ba0377df9091186ddd29ec7c895fd02934e255d06f254d2dabe0a091",
+    "plugin.yaml": "80938d5975ef9e08d1a271a223db657c5037adbc7dd7f3c1a932bb2c0fe2f5f6",
+}
+
+
+def load_helper():
+    if not SCRIPT.exists():
+        raise AssertionError("deploy_linear_agent_plugin.py does not exist")
+    spec = importlib.util.spec_from_file_location("linear_deploy_plugin", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def run(*args: str, cwd: Path) -> str:
+    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+
+
+class DeployPluginTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        source = self.repo / "components" / "platforms" / "linear-agent-platform"
+        source.mkdir(parents=True)
+        for index, name in enumerate(ALLOWLIST):
+            (source / name).write_text(f"reviewed-{index}\n", encoding="utf-8")
+        run("git", "init", "-q", cwd=self.repo)
+        run("git", "config", "user.email", "tests@example.invalid", cwd=self.repo)
+        run("git", "config", "user.name", "Tests", cwd=self.repo)
+        run("git", "add", ".", cwd=self.repo)
+        run("git", "commit", "-qm", "fixture", cwd=self.repo)
+        self.commit = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        # main-gated policy resolves against origin/main; the fixture commit is
+        # its own ancestor, so it is deployable by default.
+        run("git", "update-ref", "refs/remotes/origin/main", self.commit, cwd=self.repo)
+        self.manifest = {
+            name: hashlib.sha256((f"reviewed-{index}\n").encode()).hexdigest()
+            for index, name in enumerate(ALLOWLIST)
+        }
+
+        self.profiles = self.root / "profiles"
+        self.target = self.profiles / "general" / "plugins" / "linear"
+        self.target.mkdir(parents=True)
+        (self.profiles / "general" / "state").mkdir()
+        (self.target / "old.py").write_text("old-runtime\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_tool_result_contract_fix_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(helper.REVIEWED_MANIFESTS[FIX_COMMIT], FIX_MANIFEST)
+
+    def test_plan_readback_hotfix_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[PLAN_READBACK_COMMIT],
+            PLAN_READBACK_MANIFEST,
+        )
+
+    def test_semantic_start_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[SEMANTIC_START_COMMIT],
+            SEMANTIC_START_MANIFEST,
+        )
+
+    def test_agentsession_closure_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[AGENTSESSION_CLOSURE_COMMIT],
+            AGENTSESSION_CLOSURE_MANIFEST,
+        )
+
+    def test_agentsession_aware_outbound_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[AGENTSESSION_AWARE_OUTBOUND_COMMIT],
+            AGENTSESSION_AWARE_OUTBOUND_MANIFEST,
+        )
+
+    def test_nonterminal_notice_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[NONTERMINAL_NOTICE_COMMIT],
+            NONTERMINAL_NOTICE_MANIFEST,
+        )
+
+    def test_noneditable_streaming_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[NONEDITABLE_STREAMING_COMMIT],
+            NONEDITABLE_STREAMING_MANIFEST,
+        )
+
+    def test_cron_standalone_delivery_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[CRON_STANDALONE_COMMIT],
+            CRON_STANDALONE_MANIFEST,
+        )
+
+    def test_human_final_acceptance_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(helper.REVIEWED_MANIFESTS[GOVERNANCE_COMMIT], GOVERNANCE_MANIFEST)
+
+    def test_outbound_ledger_hardening_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[LEDGER_HARDENING_COMMIT],
+            LEDGER_HARDENING_MANIFEST,
+        )
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[MCP_SCHEMA_COMMIT],
+            MCP_SCHEMA_MANIFEST,
+        )
+
+    def test_ops73_closure_reconciliation_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(helper.REVIEWED_MANIFESTS[OPS73_COMMIT], OPS73_MANIFEST)
+
+    def test_health_version_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[HEALTH_VERSION_COMMIT],
+            HEALTH_VERSION_MANIFEST,
+        )
+
+    def test_live_revision_closure_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[LIVE_REVISION_COMMIT],
+            LIVE_REVISION_MANIFEST,
+        )
+
+    def test_audit_completion_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[AUDIT_COMPLETION_COMMIT],
+            AUDIT_COMPLETION_MANIFEST,
+        )
+
+    def test_sessionless_terminal_fence_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(
+            helper.REVIEWED_MANIFESTS[SESSIONLESS_FENCE_COMMIT],
+            SESSIONLESS_FENCE_MANIFEST,
+        )
+
+    def test_deploy_promotes_exact_allowlist_and_preserves_rollback(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+
+        result = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        self.assertEqual(0o700, self.target.stat().st_mode & 0o777)
+        for name in ALLOWLIST:
+            self.assertEqual(0o600, (self.target / name).stat().st_mode & 0o777)
+            self.assertEqual(self.manifest[name], hashlib.sha256((self.target / name).read_bytes()).hexdigest())
+        rollback = Path(result["rollback_path"])
+        self.assertTrue(rollback.is_dir())
+        self.assertEqual(0o700, rollback.stat().st_mode & 0o777)
+        self.assertEqual("old-runtime\n", (rollback / "old.py").read_text(encoding="utf-8"))
+        self.assertEqual(self.commit, result["commit"])
+        self.assertTrue(result["rollback_digest"])
+    def test_interruption_after_backup_rename_restores_original_target(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+
+        def interrupt() -> None:
+            raise RuntimeError("injected interruption")
+
+        with self.assertRaisesRegex(RuntimeError, "injected interruption"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="general",
+                commit=self.commit,
+                _after_backup_hook=interrupt,
+            )
+
+        self.assertTrue(self.target.is_dir())
+        self.assertEqual("old-runtime\n", (self.target / "old.py").read_text(encoding="utf-8"))
+    def test_dirty_repository_is_rejected_before_mutation(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        (self.repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(helper.DeploymentError, "not clean"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="general",
+                commit=self.commit,
+            )
+
+        self.assertEqual("old-runtime\n", (self.target / "old.py").read_text(encoding="utf-8"))
+
+    def test_unmerged_commit_is_rejected_before_mutation(self) -> None:
+        helper = load_helper()
+        # A branch-only commit that is not an ancestor of origin/main must be
+        # rejected: only merged code is deployable under the main-gated policy.
+        run("git", "checkout", "-qb", "side", cwd=self.repo)
+        (self.repo / "side.txt").write_text("side\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.repo)
+        run("git", "commit", "-qm", "side branch", cwd=self.repo)
+        side_commit = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        run("git", "checkout", "-q", "main", cwd=self.repo)
+
+        with self.assertRaisesRegex(helper.DeploymentError, "not an ancestor"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="general",
+                commit=side_commit,
+            )
+        self.assertTrue((self.target / "old.py").exists())
+
+    def test_deploy_defaults_to_origin_main_head(self) -> None:
+        helper = load_helper()
+        # No --commit: deploy resolves origin/main HEAD, computes the manifest
+        # from that commit, and promotes it without any pre-registered review.
+        result = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+        )
+        self.assertEqual(self.commit, result["commit"])
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        for name in ALLOWLIST:
+            self.assertEqual(0o600, (self.target / name).stat().st_mode & 0o777)
+            self.assertEqual(self.manifest[name], hashlib.sha256((self.target / name).read_bytes()).hexdigest())
+        rollback = Path(result["rollback_path"])
+        self.assertTrue(rollback.is_dir())
+        self.assertEqual("old-runtime\n", (rollback / "old.py").read_text(encoding="utf-8"))
+        self.assertTrue(result.get("main_gated"))
+
+    def test_manifest_from_legacy_commit_path_remains_deployable(self) -> None:
+        helper = load_helper()
+        legacy_repo = self.root / "legacy-repo"
+        source = legacy_repo / "integrations" / "linear-hermes-platform"
+        source.mkdir(parents=True)
+        for index, name in enumerate(ALLOWLIST):
+            (source / name).write_text(f"legacy-{index}\n", encoding="utf-8")
+        run("git", "init", "-q", cwd=legacy_repo)
+        run("git", "config", "user.email", "tests@example.invalid", cwd=legacy_repo)
+        run("git", "config", "user.name", "Tests", cwd=legacy_repo)
+        run("git", "add", ".", cwd=legacy_repo)
+        run("git", "commit", "-qm", "legacy fixture", cwd=legacy_repo)
+        commit = run("git", "rev-parse", "HEAD", cwd=legacy_repo)
+
+        manifest = helper._manifest_from_commit(legacy_repo, commit)
+
+        self.assertEqual(
+            manifest,
+            {
+                name: hashlib.sha256(f"legacy-{index}\n".encode()).hexdigest()
+                for index, name in enumerate(ALLOWLIST)
+            },
+        )
+
+    def test_manifest_from_commit_matches_reviewed_record(self) -> None:
+        helper = load_helper()
+        # The auto-computed manifest must equal the historically reviewed one
+        # for a registered commit: deploy-time hashing is equivalent to the
+        # pre-registered review contract.
+        manifest = helper._manifest_from_commit(self.repo, self.commit)
+        self.assertEqual(manifest, self.manifest)
+        self.assertEqual(set(manifest), set(ALLOWLIST))
+
+    def test_symlink_target_is_rejected(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        shutil_target = self.root / "elsewhere"
+        shutil_target.mkdir()
+        for item in self.target.iterdir():
+            item.unlink()
+        self.target.rmdir()
+        self.target.symlink_to(shutil_target, target_is_directory=True)
+
+        with self.assertRaisesRegex(helper.DeploymentError, "non-symlink"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="general",
+                commit=self.commit,
+            )
+
+    def test_post_promotion_failure_restores_original_and_preserves_candidate(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+
+        def fail(_target: Path) -> None:
+            raise RuntimeError("verification failure")
+
+        with self.assertRaisesRegex(RuntimeError, "verification failure"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="general",
+                commit=self.commit,
+                _post_promote_hook=fail,
+            )
+
+        self.assertEqual("old-runtime\n", (self.target / "old.py").read_text(encoding="utf-8"))
+        failed = list((self.target.parent).glob(".linear-failed-*"))
+        self.assertEqual(1, len(failed))
+        self.assertEqual(set(ALLOWLIST), {path.name for path in failed[0].iterdir()})
+
+    def test_exact_rollback_restores_old_tree_and_preserves_failed_current(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        result = helper.rollback_exact(
+            profiles_root=self.profiles,
+            profile="general",
+            rollback_path=Path(deployed["rollback_path"]),
+            rollback_digest=deployed["rollback_digest"],
+        )
+
+        self.assertEqual("rolled_back", result["status"])
+        self.assertEqual("old-runtime\n", (self.target / "old.py").read_text(encoding="utf-8"))
+        failed = Path(result["failed_path"])
+        self.assertEqual(set(ALLOWLIST), {path.name for path in failed.iterdir()})
+
+    def test_wrong_rollback_digest_causes_no_mutation(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        with self.assertRaisesRegex(helper.DeploymentError, "does not match"):
+            helper.rollback_exact(
+                profiles_root=self.profiles,
+                profile="general",
+                rollback_path=Path(deployed["rollback_path"]),
+                rollback_digest="0" * 64,
+            )
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+
+    def test_invalid_profile_name_is_rejected(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        with self.assertRaisesRegex(helper.DeploymentError, "Profile name"):
+            helper.deploy_reviewed(
+                repo_root=self.repo,
+                profiles_root=self.profiles,
+                profile="../general",
+                commit=self.commit,
+            )
+
+    def test_lock_contention_times_out_without_mutation(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        lock_path = self.profiles / "general" / "state" / "linear-plugin-deploy.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(helper.DeploymentError, "timed out"):
+                helper.deploy_reviewed(
+                    repo_root=self.repo,
+                    profiles_root=self.profiles,
+                    profile="general",
+                    commit=self.commit,
+                    lock_timeout=0.05,
+                )
+        finally:
+            os.close(fd)
+        self.assertTrue((self.target / "old.py").exists())
+    def test_coordinates_are_durable_and_announced_before_target_mutation(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        announcements = []
+
+        def announce(payload):
+            self.assertTrue((self.target / "old.py").exists())
+            self.assertFalse(Path(payload["rollback_path"]).exists())
+            records = list((self.profiles / "general" / "state").glob("linear-plugin-deploy-*.json"))
+            self.assertEqual(1, len(records))
+            announcements.append(payload)
+
+        helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+            announce=announce,
+        )
+        self.assertEqual(1, len(announcements))
+
+    def test_rollback_is_revalidated_after_lock_acquisition(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+        rollback = Path(deployed["rollback_path"])
+        original_acquire = helper._acquire_lock
+
+        def acquire_then_tamper(state_fd, timeout):
+            fd = original_acquire(state_fd, timeout)
+            (rollback / "old.py").write_text("tampered-after-lock\n", encoding="utf-8")
+            return fd
+
+        helper._acquire_lock = acquire_then_tamper
+        with self.assertRaisesRegex(helper.DeploymentError, "does not match"):
+            helper.rollback_exact(
+                profiles_root=self.profiles,
+                profile="general",
+                rollback_path=rollback,
+                rollback_digest=deployed["rollback_digest"],
+            )
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+
+    def test_failed_post_restore_verification_restores_previous_current(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        def corrupt(restored: Path) -> None:
+            (restored / "old.py").write_text("corrupted-rollback\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(helper.DeploymentError, "does not match"):
+            helper.rollback_exact(
+                profiles_root=self.profiles,
+                profile="general",
+                rollback_path=Path(deployed["rollback_path"]),
+                rollback_digest=deployed["rollback_digest"],
+                _post_restore_hook=corrupt,
+            )
+
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        rejected = list(self.target.parent.glob(".linear-rollback-failed-*"))
+        self.assertEqual(1, len(rejected))
+        self.assertEqual("corrupted-rollback\n", (rejected[0] / "old.py").read_text(encoding="utf-8"))
+    def test_sigterm_after_verified_does_not_roll_back(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+
+        result = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+            _after_verified_hook=lambda: os.kill(os.getpid(), signal.SIGTERM),
+        )
+
+        self.assertEqual("verified", result["status"])
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+
+    def test_sigterm_between_rollback_renames_restores_previous_current(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        with self.assertRaisesRegex(helper.DeploymentError, "signal"):
+            helper.rollback_exact(
+                profiles_root=self.profiles,
+                profile="general",
+                rollback_path=Path(deployed["rollback_path"]),
+                rollback_digest=deployed["rollback_digest"],
+                _after_current_backup_hook=lambda: os.kill(os.getpid(), signal.SIGTERM),
+            )
+
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        self.assertTrue(Path(deployed["rollback_path"]).is_dir())
+    def test_repeated_sigterm_during_rollback_recovery_is_swallowed(self) -> None:
+        helper = load_helper()
+        helper.REVIEWED_MANIFESTS = {self.commit: self.manifest}
+        deployed = helper.deploy_reviewed(
+            repo_root=self.repo,
+            profiles_root=self.profiles,
+            profile="general",
+            commit=self.commit,
+        )
+
+        with self.assertRaisesRegex(helper.DeploymentError, "signal"):
+            helper.rollback_exact(
+                profiles_root=self.profiles,
+                profile="general",
+                rollback_path=Path(deployed["rollback_path"]),
+                rollback_digest=deployed["rollback_digest"],
+                _after_current_backup_hook=lambda: os.kill(os.getpid(), signal.SIGTERM),
+                _during_recovery_hook=lambda: os.kill(os.getpid(), signal.SIGTERM),
+            )
+
+        self.assertEqual(set(ALLOWLIST), {path.name for path in self.target.iterdir()})
+        self.assertTrue(Path(deployed["rollback_path"]).is_dir())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -8,7 +8,7 @@
 
 **1Password is the canonical source of truth for every static service and integration credential used by the Hermes fleet.** Provider API keys, Telegram bot tokens, webhook signing secrets, static MCP credentials, and third-party service tokens live in 1Password items. They are not copied into chat, clipboard, Notion, Linear, the repository, `config.yaml`, `bot-tokens.env`, or profile `.env` files.
 
-Profile configs contain only ID-based `op://` references; resolved values exist in process memory/environment only for the lifetime of the process. Legacy gateways resolve them through Hermes' native CLI-backed provider. The Quicksilver target resolves them before Hermes starts through the dedicated Python 3.13 [gateway SDK bootstrap](../integrations/hermes-gateway-sdk-bootstrap/README.md), then disables the native provider so `op read` is never invoked.
+Profile configs contain only ID-based `op://` references; resolved values exist in process memory/environment only for the lifetime of the process. Legacy gateways resolve them through Hermes' native CLI-backed provider. The Quicksilver target resolves them before Hermes starts through the dedicated Python 3.13 [gateway SDK bootstrap](../components/secrets/1password-hermes-bootstrap/README.md), then disables the native provider so `op read` is never invoked.
 
 ```mermaid
 flowchart LR

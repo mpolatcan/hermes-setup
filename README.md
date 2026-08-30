@@ -167,7 +167,7 @@ Beyond the studio, each life domain gets its own profile (own SOUL/memory/bot; H
 
 Linear is the human-visible command and discussion surface; Hermes remains the conversation and execution engine. Nine profile-local native platform instances receive signed Agent Session webhooks on dedicated `127.0.0.1` ports, convert them to Hermes `MessageEvent`s, and write activities and lifecycle state back through Linear GraphQL. Cloudflare Named Tunnel is the narrow public ingress and routes only each profile's exact `/linear/webhook` path to loopback. Tailscale remains private/admin mesh and Remote Desktop transport; the retired Funnel sidecar is not a fallback.
 
-The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`; human `started -> completed` closure reconciliation uses live actor/team/delegate read-back and a durable exactly-once final-activity ledger without rerunning the deliverable or mutating terminal state. Explicit OPS commands arriving on another channel are durably reserved and routed only to an active native AgentSession; otherwise the source channel fails closed and asks for a real Linear mention. A fresh human mention after an earlier manager session is accepted when Linear creates a distinct session ID. Tool calls publish secret-safe ephemeral `thought` progress from the plugin's `pre_tool_call` hook; no gateway-heartbeat core patch is required. Source, deployment, security, rollback, and test instructions: [`integrations/linear-hermes-platform/README.md`](integrations/linear-hermes-platform/README.md).
+The adapter verifies raw-body HMAC signatures, replay age, OAuth-pinned organization identity, rotating current/previous secrets, body limits, and separate pre-auth rate limits. SQLite semantic dedup keys use session/activity identity rather than Linear's subscription-level `webhookId`; human `started -> completed` closure reconciliation uses live actor/team/delegate read-back and a durable exactly-once final-activity ledger without rerunning the deliverable or mutating terminal state. Explicit OPS commands arriving on another channel are durably reserved and routed only to an active native AgentSession; otherwise the source channel fails closed and asks for a real Linear mention. A fresh human mention after an earlier manager session is accepted when Linear creates a distinct session ID. Tool calls publish secret-safe ephemeral `thought` progress from the plugin's `pre_tool_call` hook; no gateway-heartbeat core patch is required. Source, deployment, security, rollback, and test instructions: [`components/platforms/linear-agent-platform/README.md`](components/platforms/linear-agent-platform/README.md).
 
 ---
 
@@ -246,12 +246,12 @@ The plan is split by concern. Original section numbers (`## 1` … `## 17`) are 
 12. [Agent-to-Agent Communication](docs/12-agent-comms.md) — local coordination, Notion knowledge, Honcho context, and kanban
 13. [Deployment Runbook](docs/13-deployment-runbook.md) — the *what, in order*, with a live build log of what's done
 14. [Upgrade & Maintenance](docs/14-upgrade-and-maintenance.md) — the brew-upgrade checklist (plist/FDA traps), hardened backups, watchdog v2, session-store hygiene, config-git rollback, skill-consolidation blast radius
-15. [Linear native platform adapter](integrations/linear-hermes-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
-16. [Codex usage Telegram command](integrations/codex-usage/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
-17. [Honcho Codex OAuth adapter](integrations/honcho-codex-adapter/README.md) — local OpenAI-compatible transport from Honcho inference routes to Hermes Codex OAuth, with tests, probes and rollback
+15. [Linear native platform adapter](components/platforms/linear-agent-platform/README.md) — Agent Sessions, OAuth, signed webhook ingress, semantic dedup, Stop lifecycle, tests and rollback
+16. [Codex usage Telegram command](components/commands/codex-usage-command/README.md) — canonical `/codex_usage` plugin, official rate-limit RPC, nine-profile restore installer and tests
+17. [Honcho Codex OAuth adapter](components/memory/honcho-codex-bridge/README.md) — local OpenAI-compatible transport from Honcho inference routes to Hermes Codex OAuth, with tests, probes and rollback
 18. [Credential Management](docs/15-credential-management.md) — 1Password canonical architecture, exceptions, rotation and incident response
 19. [Notion — Knowledge & Reporting Plane](docs/16-notion-knowledge-and-reporting.md) — durable knowledge, plans, decisions, reports, auth boundary, and hygiene
-20. [Gateway Restart Coordinator](integrations/gateway-restart-coordinator/README.md) — external launchd queue, requester allowlist, deterministic restart ordering, crash recovery and rollback boundary
+20. [Gateway Restart Coordinator](components/operations/gateway-restart-coordinator/README.md) — external launchd queue, requester allowlist, deterministic restart ordering, crash recovery and rollback boundary
 
 ---
 
@@ -270,8 +270,8 @@ hermes -p <profile> secrets onepassword status
 # 5. verify the shared Notion OAuth/CLI plane without printing credential state:
 NOTION_KEYRING=0 NOTION_HOME=/Users/YOU/.hermes/profiles/general/home/.notion ntn whoami
 # 6. fleet-wide Telegram /codex_usage command (dry-run, then apply; no restart performed):
-python3 integrations/codex-usage/install.py
-python3 integrations/codex-usage/install.py --apply
+python3 components/commands/codex-usage-command/install_codex_usage_command.py
+python3 components/commands/codex-usage-command/install_codex_usage_command.py --apply
 ```
 
 **1Password is the single source of truth for static credentials.** Profile configs contain only ID-based `op://` references. Bootstrap identity and writable OAuth stores — including the shared Notion CLI OAuth state — are the documented local `0600` exceptions; see [Credential Management](docs/15-credential-management.md) and [Notion — Knowledge & Reporting](docs/16-notion-knowledge-and-reporting.md).
@@ -299,16 +299,22 @@ flowchart LR
 
 ## 9 · Repo layout
 
+The canonical component naming and ownership contract is indexed in
+[`components/README.md`](components/README.md).
+
 ```mermaid
 flowchart TB
     root["📦 hermes-setup"]:::root
     root --> readme["README.md · this file"]:::doc
     root --> docs["docs/ · 01-15<br/>architecture · operations · live runbooks"]:::doc
     root --> scripts["scripts/"]:::svc
-    root --> integrations["integrations/<br/>native adapters + Codex usage command"]:::svc
-    integrations --> lin["linear-hermes-platform/<br/>native Linear platform adapter"]:::svc
-    integrations --> cu["codex-usage/<br/>fleet-wide /codex_usage plugin + installer"]:::svc
-    integrations --> hc["honcho-codex-adapter/<br/>typed config + compatibility-gated backend"]:::svc
+    root --> components["components/<domain>/<br/><vendor-or-product>-<capability>"]:::svc
+    components --> platforms["platforms/<br/>Linear agent platform"]:::svc
+    components --> secrets["secrets/<br/>1Password Hermes bootstrap"]:::svc
+    components --> memory["memory/<br/>Honcho Codex bridge"]:::svc
+    components --> operations["operations/<br/>gateway restart coordinator"]:::svc
+    components --> security["security/<br/>GitHub personal SSH guard"]:::svc
+    components --> commands["commands/<br/>Codex usage command"]:::svc
     scripts --> sb["setup-bots.sh<br/>retired plaintext fan-out path"]:::svc
     scripts --> wt["wire-tinyfish.sh<br/>TinyFish MCP (per-profile OAuth) + SearXNG fallback · all 9"]:::svc
     scripts --> no["notify-online.sh<br/>per-bot 'online' ping at fleet boot (launchd)"]:::svc
