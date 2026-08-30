@@ -1,0 +1,5 @@
+name: github-transport-guard
+version: 1.0.0
+description: Blocks Hermes agents from using the host personal GitHub SSH identity
+kind: standalone
+author: Polatcan Studio
