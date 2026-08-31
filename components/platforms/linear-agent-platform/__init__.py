@@ -333,6 +333,14 @@ def _progress_adapter(profile: str = "") -> Any | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _notify_direct_grant_bound(profile: str, issue_id: str) -> None:
+    """Wake the profile-matching adapter after durable create provenance binds."""
+    adapter = _progress_adapter(profile)
+    schedule = getattr(adapter, "schedule_direct_activation_reconcile", None)
+    if callable(schedule):
+        schedule(issue_id)
+
+
 def _tool_progress_label(tool_name: str) -> str:
     """Map only the trusted tool name; arguments/results are never rendered."""
     name = str(tool_name or "").strip().lower()
@@ -582,4 +590,6 @@ def register(ctx) -> None:
         register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
         register_hook("pre_tool_call", _pre_tool_progress)
         register_hook("on_interim_message", _on_interim_message)
-    register_outbound_tools(ctx)
+    register_outbound_tools(
+        ctx, direct_grant_bound_callback=_notify_direct_grant_bound
+    )

@@ -1785,7 +1785,7 @@ class LedgerTests(unittest.TestCase):
                 self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
             ledger.close()
 
-    def test_populated_v5_database_migrates_to_v7_without_losing_rows(self):
+    def test_populated_v5_database_migrates_to_v8_without_losing_rows(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "v5.sqlite3"
             existing_at = int(time.time())
@@ -1827,7 +1827,7 @@ class LedgerTests(unittest.TestCase):
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 7
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 8
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -1850,6 +1850,13 @@ class LedgerTests(unittest.TestCase):
             )
             self.assertEqual(ledger.activation_counts()["waiting"], 0)
             self.assertEqual(ledger.manager_activation_counts()["delegated"], 0)
+            direct_columns = {
+                row[1]: row for row in ledger._db.execute(
+                    "PRAGMA table_info(direct_activation_grants)"
+                ).fetchall()
+            }
+            self.assertIn("issue_fingerprint", direct_columns)
+            self.assertEqual(direct_columns["issue_fingerprint"][3], 1)
             ledger.close()
 
     def test_activation_dispatch_ambiguity_is_restart_durable_and_not_replayable(self):
@@ -1880,8 +1887,177 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             recovered.close()
+
+    def test_direct_activation_claim_is_restart_ambiguous_and_watchdog_visible(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "direct-activation.sqlite3")
+            ledger = DeliveryLedger(path, processing_timeout_seconds=10)
+            self.assertTrue(ledger.reserve_direct_activation_grant(
+                operation_key="direct-op-1",
+                source_platform="telegram",
+                source_user_id="telegram-mutlu",
+                source_message_id="message-1",
+                source_session_id="hermes-session-1",
+                source_profile="general",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                    "team-ops", "Direct restart"
+                ),
+                now=100,
+            ))
+            self.assertTrue(ledger.bind_direct_activation_grant(
+                "direct-op-1", "issue-direct-1", now=101
+            ))
+            self.assertTrue(ledger.claim_direct_activation(
+                "issue-direct-1",
+                "linear-session-1",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                now=102,
+            ))
+            ledger.close()
+
+            recovered = DeliveryLedger(path, processing_timeout_seconds=10)
+            grant = recovered.get_direct_activation_grant("issue-direct-1")
+            self.assertEqual(grant["state"], "claimed")
+            self.assertFalse(recovered.claim_direct_activation(
+                "issue-direct-1",
+                "linear-session-1",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                now=103,
+            ))
+            self.assertEqual(
+                recovered.direct_activation_counts(now=113)["stuck_active"], 1
+            )
+            recovered.close()
+
+    def test_unbound_direct_reservation_accepts_concurrent_fresh_fingerprints(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(
+                str(Path(td) / "direct-correlation.sqlite3"),
+                processing_timeout_seconds=10,
+            )
+            fingerprint = DeliveryLedger.direct_issue_fingerprint("team-ops", "Exact title")
+            for operation_key in ("direct-correlation-1", "direct-correlation-2"):
+                ledger.reserve_direct_activation_grant(
+                    operation_key=operation_key,
+                    source_platform="telegram",
+                    source_user_id="telegram-mutlu",
+                    source_message_id=f"message-{operation_key}",
+                    source_session_id="hermes-session",
+                    source_profile="general",
+                    actor_id="agent-derya",
+                    team_id="team-ops",
+                    issue_fingerprint=fingerprint,
+                    now=100,
+                )
+            self.assertTrue(ledger.has_unbound_direct_reservation(
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=fingerprint,
+                now=101,
+            ))
+            ledger.fail_direct_activation_grant(
+                "direct-correlation-2", "superseded", now=102
+            )
+            self.assertTrue(ledger.has_unbound_direct_reservation(
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=fingerprint,
+                now=102,
+            ))
+            self.assertFalse(ledger.has_unbound_direct_reservation(
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=fingerprint,
+                now=113,
+            ))
+            ledger.close()
+
+    def test_expired_direct_reservation_cannot_bind_on_late_replay(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(
+                str(Path(td) / "direct-expired-bind.sqlite3"),
+                processing_timeout_seconds=10,
+            )
+            ledger.reserve_direct_activation_grant(
+                operation_key="direct-expired-bind",
+                source_platform="telegram",
+                source_user_id="telegram-mutlu",
+                source_message_id="message-expired",
+                source_session_id="hermes-expired",
+                source_profile="general",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                    "team-ops", "Expired"
+                ),
+                now=100,
+            )
+            self.assertFalse(ledger.bind_direct_activation_grant(
+                "direct-expired-bind", "issue-expired", now=111
+            ))
+            state = ledger._db.execute(
+                "SELECT state FROM direct_activation_grants WHERE operation_key=?",
+                ("direct-expired-bind",),
+            ).fetchone()[0]
+            self.assertEqual(state, "failed")
+            ledger.close()
+
+    def test_prune_removes_terminal_direct_grants_and_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = DeliveryLedger(
+                str(Path(td) / "direct-prune.sqlite3"), retention_seconds=10
+            )
+            ledger.reserve_direct_activation_grant(
+                operation_key="direct-prune",
+                source_platform="telegram",
+                source_user_id="telegram-mutlu",
+                source_message_id="message-prune",
+                source_session_id="hermes-session-prune",
+                source_profile="general",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                    "team-ops", "Direct prune"
+                ),
+                now=100,
+            )
+            ledger.bind_direct_activation_grant(
+                "direct-prune", "issue-direct-prune", now=101
+            )
+            ledger.put_direct_activation_event(
+                "issue-direct-prune",
+                "linear-session-prune",
+                "delivery-prune",
+                {"type": "AgentSessionEvent", "action": "created"},
+                now=101,
+            )
+            ledger.claim_direct_activation(
+                "issue-direct-prune",
+                "linear-session-prune",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                now=102,
+            )
+            ledger.mark_direct_activation_event(
+                "issue-direct-prune", "claimed", now=102
+            )
+            ledger.mark_direct_activation_dispatched(
+                "issue-direct-prune", "linear-session-prune", now=103
+            )
+            ledger.mark_direct_activation_event(
+                "issue-direct-prune", "dispatched", now=103
+            )
+
+            self.assertEqual(ledger.prune(now=200), 2)
+            self.assertIsNone(ledger.get_direct_activation_grant("issue-direct-prune"))
+            self.assertIsNone(ledger.get_direct_activation_event("issue-direct-prune"))
+            ledger.close()
 
     def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1998,7 +2174,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -2115,7 +2291,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
@@ -2847,6 +3023,657 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         wait = self.adapter._ledger.get_activation_wait(issue_id)
         self.assertIsNotNone(wait)
         self.assertEqual(wait["session_id"], "session-agent-created-top-level")
+
+    async def test_verified_direct_grant_dispatches_agent_created_top_level_once(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-agent-created-direct"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": "Agent-created top-level direct issue",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "team_states": [],
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-create-1",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-1",
+            source_session_id="hermes-session-1",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", "Agent-created top-level direct issue"
+            ),
+        )
+        self.adapter._ledger.bind_direct_activation_grant(
+            "direct-create-1", issue_id
+        )
+        created = self.make_payload(
+            webhookId="webhook-agent-created-direct",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-agent-created-direct",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-998",
+                    "title": "Agent-created top-level direct issue",
+                },
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 1)
+        self.assertIsNone(self.adapter._ledger.get_activation_wait(issue_id))
+        grant = self.adapter._ledger.get_direct_activation_grant(issue_id)
+        self.assertEqual(grant["state"], "dispatched")
+        self.assertEqual(grant["session_id"], "session-agent-created-direct")
+
+        replay = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(json.loads(replay.text)["status"], "duplicate")
+        self.assertEqual(len(self.events), 1)
+
+        self.adapter._linear.closure_contexts[issue_id]["state"] = {
+            "id": "started-1", "name": "In Progress", "type": "started"
+        }
+        later = self.make_payload(
+            webhookId="webhook-agent-created-direct-later-session",
+            actor={"id": "user-1", "name": "Mutlu"},
+            agentSession={
+                "id": "session-agent-created-direct-later",
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "OPS-998",
+                    "title": "Agent-created top-level direct issue",
+                },
+            },
+        )
+        later_response = await self.adapter._handle_webhook(self.request_for(later))
+        self.assertEqual(json.loads(later_response.text)["status"], "accepted")
+        self.assertEqual(len(self.events), 2)
+        self.assertEqual(
+            self.events[-1].source.chat_id, "session-agent-created-direct-later"
+        )
+
+    async def test_direct_dispatch_exception_is_durably_ambiguous_not_replayed(self):
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-dispatch-unknown"
+        title = "Direct dispatch unknown"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": title,
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-dispatch-unknown",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-dispatch-unknown",
+            source_session_id="hermes-dispatch-unknown",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint("team-ops", title),
+        )
+        self.adapter._ledger.bind_direct_activation_grant(
+            "direct-dispatch-unknown", issue_id
+        )
+        created = self.make_payload(
+            webhookId="webhook-direct-dispatch-unknown",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-direct-dispatch-unknown",
+                "issue": {"id": issue_id, "identifier": "OPS-992", "title": title},
+            },
+        )
+        self.adapter.handle_message = mock.AsyncMock(side_effect=RuntimeError("lost acceptance"))
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "dispatch_unknown",
+        )
+        health = json.loads((await self.adapter._health(None)).text)
+        self.assertEqual(health["direct_activations"]["dispatch_unknown"], 1)
+
+    async def test_stop_after_bound_direct_claim_fences_dispatch_and_dependency_wait(self):
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-claimed-stop-race"
+        session_id = "session-direct-claimed-stop-race"
+        title = "Claimed Direct Stop race"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": title,
+            "state": {"id": "todo-1", "name": "Todo", "type": "unstarted"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.assertTrue(self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-claimed-stop-race",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-claimed-stop-race",
+            source_session_id="hermes-claimed-stop-race",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", title
+            ),
+        ))
+        self.assertTrue(self.adapter._ledger.bind_direct_activation_grant(
+            "direct-claimed-stop-race", issue_id
+        ))
+        claimed = asyncio.Event()
+        release_created = asyncio.Event()
+
+        async def pause_after_claim(requested_issue_id):
+            self.assertEqual(requested_issue_id, issue_id)
+            grant = self.adapter._ledger.get_direct_activation_grant(issue_id)
+            self.assertEqual(grant["state"], "claimed")
+            self.assertEqual(grant["session_id"], session_id)
+            claimed.set()
+            await release_created.wait()
+            return [{"id": "blocker-1", "identifier": "OPS-1"}]
+
+        self.adapter._linear.get_open_blockers = pause_after_claim
+        self.adapter._reconcile_wait = mock.AsyncMock(return_value=True)
+        created = self.make_payload(
+            webhookId="webhook-direct-claimed-stop-race-created",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-205", "title": title},
+            },
+        )
+        stop = self.make_payload(
+            webhookId="webhook-direct-claimed-stop-race-stop",
+            action="prompted",
+            agentActivity={
+                "id": "activity-direct-claimed-stop-race",
+                "signal": "stop",
+                "body": "stop",
+            },
+            agentSession=created["agentSession"],
+        )
+
+        created_task = asyncio.create_task(
+            self.adapter._handle_webhook(self.request_for(created))
+        )
+        await claimed.wait()
+        stop_response = await self.adapter._handle_webhook(self.request_for(stop))
+        release_created.set()
+        created_response = await created_task
+
+        self.assertEqual(json.loads(stop_response.text)["status"], "accepted")
+        self.assertEqual(
+            json.loads(created_response.text)["status"], "direct_activation_canceled"
+        )
+        self.assertEqual([event.text for event in self.events], ["/stop"])
+        self.adapter._reconcile_wait.assert_not_awaited()
+        self.assertIsNone(self.adapter._ledger.get_wait(session_id))
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "canceled",
+        )
+
+    async def test_bound_direct_grant_rejects_foreign_actor_without_consuming_grant(self):
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-actor-fence"
+        title = "Actor-fenced Direct task"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": title,
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.assertTrue(self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-actor-fence",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-actor-fence",
+            source_session_id="hermes-session-actor-fence",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", title
+            ),
+        ))
+        self.assertTrue(self.adapter._ledger.bind_direct_activation_grant(
+            "direct-actor-fence", issue_id
+        ))
+        foreign = self.make_payload(
+            webhookId="webhook-direct-foreign-actor",
+            actor={"id": "human-1", "name": "Human"},
+            agentSession={
+                "id": "session-direct-legitimate",
+                "issue": {"id": issue_id, "identifier": "OPS-995", "title": title},
+            },
+        )
+
+        rejected = await self.adapter._handle_webhook(self.request_for(foreign))
+
+        self.assertEqual(
+            json.loads(rejected.text)["status"], "direct_activation_policy_denied"
+        )
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "granted",
+        )
+
+        legitimate = self.make_payload(
+            webhookId="webhook-direct-legitimate-actor",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-direct-legitimate",
+                "issue": {"id": issue_id, "identifier": "OPS-995", "title": title},
+            },
+        )
+        accepted = await self.adapter._handle_webhook(self.request_for(legitimate))
+        replay = self.make_payload(
+            webhookId="webhook-direct-legitimate-replay",
+            webhookTimestamp=int(time.time() * 1000) + 1,
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession=legitimate["agentSession"],
+        )
+        duplicate = await self.adapter._handle_webhook(self.request_for(replay))
+
+        self.assertEqual(json.loads(accepted.text)["status"], "accepted")
+        self.assertIn(
+            json.loads(duplicate.text)["status"],
+            {"duplicate", "direct_activation_duplicate"},
+        )
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.chat_id, "session-direct-legitimate")
+
+    async def test_direct_webhook_before_grant_binding_recovers_same_native_session(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-race"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": "Race",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-create-race",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-race",
+            source_session_id="hermes-session-race",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", "Race"
+            ),
+        )
+        created = self.make_payload(
+            webhookId="webhook-direct-race",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-direct-race",
+                "issue": {"id": issue_id, "identifier": "OPS-996", "title": "Race"},
+            },
+        )
+
+        waiting = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(
+            json.loads(waiting.text)["status"], "direct_activation_waiting_for_grant"
+        )
+        self.assertEqual(self.events, [])
+        self.assertTrue(self.adapter._ledger.bind_direct_activation_grant(
+            "direct-create-race", issue_id
+        ))
+
+        self.adapter._linear.blockers[issue_id] = [
+            {"id": "blocker-1", "identifier": "OPS-1"}
+        ]
+        self.assertFalse(await self.adapter._reconcile_direct_activation_event(issue_id))
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "claimed",
+        )
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_event(issue_id)["state"],
+            "claimed",
+        )
+        self.adapter._linear.blockers[issue_id] = []
+        self.assertTrue(await self.adapter._reconcile_wait("session-direct-race"))
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.chat_id, "session-direct-race")
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "dispatched",
+        )
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_event(issue_id)["state"],
+            "dispatched",
+        )
+        self.assertFalse(await self.adapter._reconcile_direct_activation_event(issue_id))
+        self.assertEqual(len(self.events), 1)
+
+    async def test_same_title_concurrent_direct_creates_recover_by_bound_issue_after_restart(self):
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        title = "Same concurrent Direct title"
+        issue_ids = ("issue-direct-concurrent-a", "issue-direct-concurrent-b")
+        operation_keys = ("direct-concurrent-a", "direct-concurrent-b")
+        message_ids = ("message-concurrent-a", "message-concurrent-b")
+        source_sessions = ("hermes-concurrent-a", "hermes-concurrent-b")
+        native_sessions = ("linear-concurrent-a", "linear-concurrent-b")
+        fingerprint = DeliveryLedger.direct_issue_fingerprint("team-ops", title)
+        for issue_id in issue_ids:
+            self.adapter._linear.closure_contexts[issue_id] = {
+                "id": issue_id,
+                "title": title,
+                "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+                "team": {"id": "team-ops"},
+                "creator": {"id": "agent-derya"},
+                "parent": {},
+                "assignee": {"id": "user-1", "name": "Mutlu"},
+                "delegate": {"id": "agent-derya", "name": "Derya"},
+            }
+        for operation_key, message_id, source_session in zip(
+            operation_keys, message_ids, source_sessions, strict=True
+        ):
+            self.assertTrue(self.adapter._ledger.reserve_direct_activation_grant(
+                operation_key=operation_key,
+                source_platform="telegram",
+                source_user_id="telegram-mutlu",
+                source_message_id=message_id,
+                source_session_id=source_session,
+                source_profile="general",
+                actor_id="agent-derya",
+                team_id="team-ops",
+                issue_fingerprint=fingerprint,
+            ))
+
+        for index, (issue_id, native_session) in enumerate(
+            zip(issue_ids, native_sessions, strict=True), start=1
+        ):
+            created = self.make_payload(
+                webhookId=f"webhook-direct-concurrent-{index}",
+                actor={"id": "agent-derya", "name": "Derya"},
+                agentSession={
+                    "id": native_session,
+                    "issue": {
+                        "id": issue_id,
+                        "identifier": f"OPS-99{index}",
+                        "title": title,
+                    },
+                },
+            )
+            waiting = await self.adapter._handle_webhook(self.request_for(created))
+            self.assertEqual(
+                json.loads(waiting.text)["status"],
+                "direct_activation_waiting_for_grant",
+            )
+        self.assertEqual(self.events, [])
+        for operation_key, issue_id in zip(operation_keys, issue_ids, strict=True):
+            self.assertTrue(self.adapter._ledger.bind_direct_activation_grant(
+                operation_key, issue_id
+            ))
+
+        database_path = self.adapter._ledger.path
+        self.adapter._ledger.close()
+        self.adapter._ledger = DeliveryLedger(str(database_path))
+        for issue_id in issue_ids:
+            self.assertTrue(
+                await self.adapter._reconcile_direct_activation_event(issue_id)
+            )
+
+        self.assertEqual(
+            [event.source.chat_id for event in self.events], list(native_sessions)
+        )
+        for issue_id, message_id, native_session in zip(
+            issue_ids, message_ids, native_sessions, strict=True
+        ):
+            grant = self.adapter._ledger.get_direct_activation_grant(issue_id)
+            self.assertEqual(grant["source_message_id"], message_id)
+            self.assertEqual(grant["session_id"], native_session)
+            self.assertEqual(grant["state"], "dispatched")
+            self.assertFalse(
+                await self.adapter._reconcile_direct_activation_event(issue_id)
+            )
+        self.assertEqual(len(self.events), 2)
+
+    async def test_restart_recovers_direct_event_when_dependency_wait_is_disabled(self):
+        self.adapter._dependency_wait_enabled = False
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-disabled-restart"
+        title = "Direct recovery independent of dependency waits"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": title,
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "agent-derya", "name": "Derya"},
+        }
+        self.assertTrue(self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-disabled-restart",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-disabled-restart",
+            source_session_id="hermes-disabled-restart",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", title
+            ),
+        ))
+        created = self.make_payload(
+            webhookId="webhook-direct-disabled-restart",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "linear-session-disabled-restart",
+                "issue": {"id": issue_id, "identifier": "OPS-994", "title": title},
+            },
+        )
+        waiting = await self.adapter._handle_webhook(self.request_for(created))
+        self.assertEqual(
+            json.loads(waiting.text)["status"],
+            "direct_activation_waiting_for_grant",
+        )
+        self.assertTrue(self.adapter._ledger.bind_direct_activation_grant(
+            "direct-disabled-restart", issue_id
+        ))
+
+        database_path = str(self.adapter._ledger.path)
+        self.adapter._ledger.close()
+        self.adapter._ledger = None
+        restarted_linear = self.adapter._linear
+        restarted_linear.actor_name = "Derya"
+        restarted_linear.organization_name = "Hermes"
+        restarted_linear.close = mock.AsyncMock()
+
+        async def connect_restarted(*, startup_recovery=False):
+            self.assertTrue(startup_recovery)
+            self.adapter._ledger = DeliveryLedger(database_path)
+            self.adapter._linear = restarted_linear
+            return True
+
+        runner = mock.MagicMock()
+        runner.setup = mock.AsyncMock()
+        runner.cleanup = mock.AsyncMock()
+        site = mock.MagicMock()
+        site.start = mock.AsyncMock()
+        dispatched = asyncio.Event()
+
+        async def capture_restart(event):
+            self.events.append(event)
+            dispatched.set()
+
+        self.adapter.handle_message = capture_restart
+        self.adapter.connect_outbound_only = connect_restarted
+        self.adapter._dependency_poll_seconds = 0.001
+        with (
+            mock.patch.object(
+                adapter_mod, "_read_webhook_credentials",
+                return_value={"LINEAR_WEBHOOK_SECRET": "s" * 32},
+            ),
+            mock.patch.object(adapter_mod.web, "AppRunner", return_value=runner),
+            mock.patch.object(adapter_mod.web, "TCPSite", return_value=site),
+        ):
+            self.assertTrue(await self.adapter.connect())
+            await asyncio.wait_for(dispatched.wait(), timeout=1.0)
+            await self.adapter.disconnect()
+
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(
+            self.events[0].source.chat_id, "linear-session-disabled-restart"
+        )
+
+    async def test_stop_cancels_blocked_direct_claim_and_pending_event(self):
+        issue_id = "issue-direct-stop"
+        session_id = "session-direct-stop"
+        title = "Stopped Direct task"
+        self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-stop",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-direct-stop",
+            source_session_id="hermes-direct-stop",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint("team-ops", title),
+        )
+        self.adapter._ledger.bind_direct_activation_grant("direct-stop", issue_id)
+        created = self.make_payload(
+            webhookId="webhook-direct-stop-created",
+            agentSession={
+                "id": session_id,
+                "issue": {"id": issue_id, "identifier": "OPS-993", "title": title},
+            },
+        )
+        self.adapter._ledger.put_direct_activation_event(
+            issue_id, session_id, "delivery-direct-stop", created
+        )
+        self.adapter._ledger.claim_direct_activation(
+            issue_id,
+            session_id,
+            actor_id="agent-derya",
+            team_id="team-ops",
+        )
+        self.adapter._ledger.mark_direct_activation_event(issue_id, "claimed")
+        self.adapter._ledger.put_wait(
+            session_id,
+            issue_id,
+            "delivery-direct-stop",
+            created,
+            [{"id": "blocker-1", "identifier": "OPS-1"}],
+        )
+        stop = self.make_payload(
+            webhookId="webhook-direct-stop",
+            action="prompted",
+            agentActivity={"id": "activity-direct-stop", "signal": "stop", "body": "stop"},
+            agentSession=created["agentSession"],
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(stop))
+
+        self.assertEqual(json.loads(response.text)["status"], "accepted")
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "canceled",
+        )
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_event(issue_id)["state"],
+            "canceled",
+        )
+        self.assertEqual(self.adapter._ledger.get_wait(session_id)["state"], "canceled")
+
+    async def test_direct_grant_mismatch_produces_zero_execution(self):
+        self.adapter._planned_activation_enabled = True
+        self.adapter._activation_allowed_team_ids = {"team-ops"}
+        self.adapter._planned_owner_ids = {"user-1"}
+        issue_id = "issue-direct-mismatch"
+        self.adapter._linear.closure_contexts[issue_id] = {
+            "id": issue_id,
+            "title": "Mismatch",
+            "state": {"id": "backlog-1", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-ops"},
+            "creator": {"id": "agent-derya"},
+            "parent": {},
+            "assignee": {"id": "user-1", "name": "Mutlu"},
+            "delegate": {"id": "different-agent", "name": "Other"},
+        }
+        self.adapter._ledger.reserve_direct_activation_grant(
+            operation_key="direct-create-mismatch",
+            source_platform="telegram",
+            source_user_id="telegram-mutlu",
+            source_message_id="message-mismatch",
+            source_session_id="hermes-session-mismatch",
+            source_profile="general",
+            actor_id="agent-derya",
+            team_id="team-ops",
+            issue_fingerprint=DeliveryLedger.direct_issue_fingerprint(
+                "team-ops", "Mismatch"
+            ),
+        )
+        self.adapter._ledger.bind_direct_activation_grant(
+            "direct-create-mismatch", issue_id
+        )
+        created = self.make_payload(
+            webhookId="webhook-direct-mismatch",
+            actor={"id": "agent-derya", "name": "Derya"},
+            agentSession={
+                "id": "session-direct-mismatch",
+                "issue": {"id": issue_id, "identifier": "OPS-997", "title": "Mismatch"},
+            },
+        )
+
+        response = await self.adapter._handle_webhook(self.request_for(created))
+
+        self.assertEqual(
+            json.loads(response.text)["status"], "direct_activation_policy_denied"
+        )
+        self.assertEqual(self.events, [])
+        self.assertEqual(
+            self.adapter._ledger.get_direct_activation_grant(issue_id)["state"],
+            "granted",
+        )
 
     async def test_todo_transition_delegates_and_starts_one_manager_session(self):
         self.adapter._planned_activation_enabled = True
