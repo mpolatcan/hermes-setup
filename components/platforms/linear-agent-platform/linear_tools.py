@@ -1764,12 +1764,20 @@ def _direct_instruction_context(
         from gateway.session_context import get_session_env  # type: ignore[import-not-found]
     except ImportError:
         return None
+    source_profile = str(get_session_env("HERMES_SESSION_PROFILE", ""))
+    if not source_profile:
+        try:
+            from hermes_cli.profiles import get_active_profile_name  # type: ignore[import-not-found]
+
+            source_profile = str(get_active_profile_name() or "")
+        except (ImportError, RuntimeError, OSError):
+            return None
     values = {
         "source_platform": str(get_session_env("HERMES_SESSION_PLATFORM", "")).casefold(),
         "source_user_id": str(get_session_env("HERMES_SESSION_USER_ID", "")),
         "source_message_id": str(get_session_env("HERMES_SESSION_MESSAGE_ID", "")),
         "source_session_id": str(get_session_env("HERMES_SESSION_ID", "")),
-        "source_profile": str(get_session_env("HERMES_SESSION_PROFILE", "")),
+        "source_profile": source_profile,
     }
     chat_type = str(get_session_env("HERMES_SESSION_CHAT_TYPE", "")).casefold()
     cron_session = str(get_session_env("HERMES_CRON_SESSION", ""))

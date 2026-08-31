@@ -607,6 +607,38 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(context["source_message_id"], "message-1")
         self.assertIsNone(mismatch)
 
+    def test_direct_instruction_context_uses_active_profile_when_source_profile_is_unset(self):
+        values = {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_CHAT_TYPE": "dm",
+            "HERMES_SESSION_USER_ID": "telegram-mutlu",
+            "HERMES_SESSION_MESSAGE_ID": "message-1",
+            "HERMES_SESSION_ID": "session-1",
+            "HERMES_SESSION_PROFILE": "",
+            "HERMES_CRON_SESSION": "",
+        }
+        with (
+            mock.patch(
+                "gateway.session_context.get_session_env",
+                side_effect=lambda name, default="": values.get(name, default),
+            ),
+            mock.patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="general",
+            ),
+        ):
+            context = _direct_instruction_context(
+                "general", {"session_id": "session-1", "activation_mode": "direct"}
+            )
+            foreign = _direct_instruction_context(
+                "researcher", {"session_id": "session-1", "activation_mode": "direct"}
+            )
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["source_profile"], "general")
+        self.assertIsNone(foreign)
+
     def test_direct_instruction_context_rejects_incomplete_or_foreign_provenance(self):
         valid = {
             "HERMES_SESSION_PLATFORM": "telegram",
