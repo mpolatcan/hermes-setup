@@ -236,6 +236,21 @@ PLAN_READBACK_MANIFEST = {
     "outbound_policy.py": "20aee376ba0377df9091186ddd29ec7c895fd02934e255d06f254d2dabe0a091",
     "plugin.yaml": "80938d5975ef9e08d1a271a223db657c5037adbc7dd7f3c1a932bb2c0fe2f5f6",
 }
+OPS200_COMMIT = "6ee7f438f26328ea268cfb421ea3bb8a54a9020e"
+OPS200_MANIFEST = {
+    "__init__.py": "ffe3b2ffbc61da6798b5eefba972690e299ae9954d9d8350c6d27720d7d11e73",
+    "acceptance.py": "084982c931f57b508d178954219197db9cc2cc2f3089aebc11e514033e72188c",
+    "adapter.py": "5cd0b486298837b13dc8c69b14ff868545a5da79e0b45e2fa5fb58b1ac036b3d",
+    "ledger.py": "dba8bbae22f9d540909e460cb4b71bd08637c714d46569a506afba5b4bdc28be",
+    "linear_client.py": "15b326b72f3b6949f40d565459dd453ac70b9e6dc71dc87361df5bbb5bbaebd3",
+    "oauth_store.py": "d9c310b0da0f19ea66852dba8f0c4dd65c82edeb4b335f4960ab6e668c57fa58",
+    "mcp_client.py": "23ad4ef1bec49332ca95709d493b1d87ebc81ae756bab88042ccea5b26322202",
+    "outbound_policy.py": "f7630b71a6e118597532864164af6b87d7d98689ab9da1cdaa2cfd5a2a5846cd",
+    "outbound_ledger.py": "5795083cc57bc9d88fbabe6dcca50e9a9b2d268c9658768f4a69e8bed8524635",
+    "linear_tools.py": "da490fc2e96a9f0c8bfc78caf6a6a73d782a9d07699d6abd8d214ae7fc77b062",
+    "retention.py": "bdd7657de20c76f622424883e85ae041c9fe953ad1560a9c6f13e51032a963dd",
+    "plugin.yaml": "2eb12f1ddfdc57a5c9ab93a43576a583d064c87b432af43408b86f4059c69c8a",
+}
 
 
 def load_helper():
@@ -283,6 +298,11 @@ class DeployPluginTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_ops200_acceptance_gate_commit_is_reviewed(self) -> None:
+        helper = load_helper()
+        self.assertEqual(helper.REVIEWED_MANIFESTS[OPS200_COMMIT], OPS200_MANIFEST)
+        self.assertEqual(set(OPS200_MANIFEST), set(ALLOWLIST))
 
     def test_tool_result_contract_fix_commit_is_reviewed(self) -> None:
         helper = load_helper()
