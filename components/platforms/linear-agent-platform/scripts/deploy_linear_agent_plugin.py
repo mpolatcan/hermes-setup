@@ -2,7 +2,7 @@
 """Atomically deploy or roll back the reviewed Linear Hermes plugin.
 
 The helper never edits Hermes config and never restarts a gateway. It exports
-only a reviewed eleven-file manifest from a clean, exact Git commit. Promotion and
+only a reviewed twelve-file manifest from a clean, exact Git commit. Promotion and
 rollback use pinned directory descriptors, a profile lock, durable coordinates,
 and same-filesystem rename operations.
 """
@@ -28,6 +28,7 @@ from typing import Any, Callable
 PLUGIN_RELATIVE = Path("components/platforms/linear-agent-platform")
 ALLOWLIST = (
     "__init__.py",
+    "acceptance.py",
     "adapter.py",
     "ledger.py",
     "linear_client.py",

@@ -230,6 +230,8 @@ query LinearAgentIssueStart($id: String!) {
 query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: String) {
   issue(id: $id) {
     id
+    updatedAt
+    description
     state { id name type }
     creator { id }
     delegate { id }
@@ -276,6 +278,8 @@ query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: Stri
                 raise LinearAPIError("Creator-owned child terminal context could not be resolved")
             page_team = page_issue.get("team")
             page_authorization_context = {
+                "updatedAt": page_issue.get("updatedAt"),
+                "description": page_issue.get("description"),
                 "state": page_issue.get("state"),
                 "creator": page_issue.get("creator"),
                 "delegate": page_issue.get("delegate"),
@@ -345,6 +349,8 @@ query LinearCreatorChildTerminal($id: String!, $after: String, $stateAfter: Stri
 query LinearCreatorChildTerminalStates($id: String!, $after: String) {
   issue(id: $id) {
     id
+    updatedAt
+    description
     state { id name type }
     creator { id }
     delegate { id }
@@ -381,6 +387,8 @@ query LinearCreatorChildTerminalStates($id: String!, $after: String) {
                 raise LinearAPIError("Creator-owned child identity changed during pagination")
             state_team = state_issue.get("team")
             state_authorization_context = {
+                "updatedAt": state_issue.get("updatedAt"),
+                "description": state_issue.get("description"),
                 "state": state_issue.get("state"),
                 "creator": state_issue.get("creator"),
                 "delegate": state_issue.get("delegate"),
@@ -441,6 +449,8 @@ query LinearCreatorChildTerminalStates($id: String!, $after: String) {
             })
         return {
             "id": str(issue.get("id") or ""),
+            "updatedAt": str(issue.get("updatedAt") or ""),
+            "description": str(issue.get("description") or ""),
             "state": dict(issue.get("state") or {}),
             "creator": dict(issue.get("creator") or {}),
             "delegate": dict(issue.get("delegate") or {}),
@@ -706,6 +716,13 @@ query LinearAgentSessionDeliveryGuard($id: String!) {
   agentSession(id: $id) {
     id
     appUser { id }
+    issue {
+      id
+      updatedAt
+      description
+      delegate { id }
+      state { id name type }
+    }
   }
 }
 """,
@@ -718,9 +735,31 @@ query LinearAgentSessionDeliveryGuard($id: String!) {
         app_user_id = app_user.get("id") if isinstance(app_user, dict) else None
         if not isinstance(app_user_id, str) or not app_user_id:
             raise LinearAPIError("Agent Session delivery context was incomplete")
+        issue = session.get("issue")
+        if not isinstance(issue, dict) or not isinstance(issue.get("id"), str) or not issue.get("id"):
+            raise LinearAPIError("Linear Agent Session delivery issue context was incomplete")
+        delegate = issue.get("delegate")
+        updated_at = issue.get("updatedAt")
+        raw_description = issue.get("description")
+        description = "" if raw_description is None else raw_description
+        delegate_id = delegate.get("id") if isinstance(delegate, dict) else None
+        if (
+            not isinstance(updated_at, str)
+            or not updated_at
+            or not isinstance(description, str)
+            or not isinstance(delegate_id, str)
+            or not delegate_id
+        ):
+            raise LinearAPIError("Linear Agent Session acceptance metadata was incomplete")
+        state = issue.get("state")
         return {
             "id": session_id,
             "app_user_id": app_user_id,
+            "issue_id": str(issue["id"]),
+            "updated_at": updated_at,
+            "description": description,
+            "delegate_id": delegate_id,
+            "state": dict(state) if isinstance(state, dict) else {},
         }
 
     async def get_issue_closure_context(self, issue_id: str) -> dict[str, Any]:

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deploy_linear_agent_plugin.py"
 ALLOWLIST = (
     "__init__.py",
+    "acceptance.py",
     "adapter.py",
     "ledger.py",
     "linear_client.py",

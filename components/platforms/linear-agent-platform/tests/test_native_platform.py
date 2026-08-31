@@ -36,6 +36,7 @@ spec.loader.exec_module(package)
 from gateway.config import Platform, PlatformConfig  # noqa: E402
 
 adapter_mod = __import__(f"{PACKAGE_NAME}.adapter", fromlist=["*"])
+acceptance_mod = __import__(f"{PACKAGE_NAME}.acceptance", fromlist=["*"])
 client_mod = __import__(f"{PACKAGE_NAME}.linear_client", fromlist=["*"])
 ledger_mod = __import__(f"{PACKAGE_NAME}.ledger", fromlist=["*"])
 linear_tools_mod = __import__(f"{PACKAGE_NAME}.linear_tools", fromlist=["*"])
@@ -48,6 +49,7 @@ ProcessingOutcome = adapter_mod.ProcessingOutcome
 LinearClient = client_mod.LinearClient
 LinearAPIError = client_mod.LinearAPIError
 DeliveryLedger = ledger_mod.DeliveryLedger
+acceptance_criteria = acceptance_mod.acceptance_criteria
 
 
 class FakeRequest:
@@ -112,6 +114,9 @@ class FakeLinear:
             "status": "active",
             "app_user_id": self.actor_id,
             "issue_id": f"issue-for-{session_id}",
+            "delegate_id": self.actor_id,
+            "description": "",
+            "updated_at": "2026-08-30T20:00:00.000Z",
             "state": {"id": "started-1", "name": "In Progress", "type": "started"},
         }))
 
@@ -1827,7 +1832,7 @@ class LedgerTests(unittest.TestCase):
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 7
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 9
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -1880,7 +1885,7 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             recovered.close()
 
     def test_issue_session_binding_is_durable_and_tracks_latest_accepted_creation(self):
@@ -1998,7 +2003,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -2115,7 +2120,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
@@ -4368,6 +4373,20 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(self.adapter._linear.calls, [])
 
+
+    async def test_prompted_non_control_follow_up_remains_contextual_text(self):
+        payload = self.make_payload(
+            webhookId="webhook-normal-follow-up",
+            action="prompted",
+            agentActivity={"id": "activity-normal-follow-up", "body": "continue with tests"},
+        )
+        response = await self.adapter._handle_webhook(self.request_for(payload))
+        self.assertEqual(response.status, 200)
+        event = self.events[-1]
+        self.assertEqual(event.message_type, adapter_mod.MessageType.TEXT)
+        self.assertIn("User follow-up", event.text)
+        self.assertIn("continue with tests", event.text)
+
     async def test_prompted_event_with_terminal_fence_never_dispatches(self):
         self.adapter._closure_reconciliation_enabled = True
         self.adapter._closure_allowed_team_ids = {"team-ops"}
@@ -5937,6 +5956,11 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             self.adapter._ledger.progress_is_allowed("session-progress", "turn-2")
         )
+        self.assertIsNotNone(
+            self.adapter._ledger.get_outbox_item(
+                "activity:final:session-progress:turn-1"
+            )
+        )
 
     async def test_no_tool_terminal_and_fresh_turn_are_serialized_across_threads(self):
         terminal_entered = threading.Event()
@@ -6161,6 +6185,170 @@ class AdapterWebhookTests(unittest.IsolatedAsyncioTestCase):
             ("session-progress", "response", "Final deliverable"),
         )
         self.assertFalse(self.adapter._linear.activity_ephemeral[-1])
+
+    async def test_unchecked_acceptance_blocks_success_response_with_error_activity(self):
+        self.adapter._linear.delivery_contexts["session-acceptance-open"] = {
+            "id": "session-acceptance-open",
+            "status": "active",
+            "app_user_id": "agent-derya",
+            "issue_id": "issue-acceptance-open",
+            "delegate_id": "agent-derya",
+            "description": "## Kabul kriterleri\n- [ ] Live canary passes",
+            "updated_at": "2026-08-30T20:00:00.000Z",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }
+
+        result = await self.adapter.send("session-acceptance-open", "Claimed success")
+
+        self.assertFalse(result.success)
+        self.assertFalse(result.retryable)
+        self.assertEqual(self.adapter._linear.calls[-1][1], "error")
+        self.assertIn("acceptance_unchecked", self.adapter._linear.calls[-1][2])
+        self.assertNotIn(("session-acceptance-open", "response", "Claimed success"), self.adapter._linear.calls)
+
+    async def test_all_checked_with_delegate_evidence_delivers_final_exactly_once(self):
+        description = "## Kabul kriterleri\n- [x] Live canary passes"
+        acceptance_mod = __import__(f"{PACKAGE_NAME}.acceptance", fromlist=["*"])
+        criterion = acceptance_mod.acceptance_criteria(description)[0]
+        self.adapter._linear.delivery_contexts["session-acceptance-complete"] = {
+            "id": "session-acceptance-complete",
+            "status": "active",
+            "app_user_id": "agent-derya",
+            "issue_id": "issue-acceptance-complete",
+            "delegate_id": "agent-derya",
+            "description": description,
+            "updated_at": "2026-08-30T20:01:00.000Z",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }
+        self.adapter._ledger.record_acceptance_evidence(
+            issue_id="issue-acceptance-complete",
+            criterion_hash=criterion.criterion_hash,
+            actor_id="agent-derya",
+            test_class="live",
+            evidence_digest="b" * 64,
+            evidence_pointer="linear://activity/evidence-1",
+            observed_revision="2026-08-30T20:00:00.000Z",
+            accepted_revision="2026-08-30T20:01:00.000Z",
+            result="PASS",
+            timestamp="2026-08-30T20:00:01.000Z",
+        )
+        self.adapter.open_progress_turn("session-acceptance-complete", "turn-final")
+
+        first = await self.adapter.send("session-acceptance-complete", "Verified final")
+        replay = await self.adapter.send("session-acceptance-complete", "Different final must be suppressed")
+
+        self.assertTrue(first.success)
+        self.assertTrue(replay.success)
+        self.assertEqual(first.message_id, replay.message_id)
+        self.assertEqual(
+            [call for call in self.adapter._linear.calls if call[0] == "session-acceptance-complete"],
+            [("session-acceptance-complete", "response", "Verified final")],
+        )
+        item = self.adapter._ledger.get_outbox_item(
+            "activity:final:session-acceptance-complete:turn-final"
+        )
+        self.assertEqual(
+            item["payload"]["acceptance_snapshot"],
+            {
+                "issue_id": "issue-acceptance-complete",
+                "updated_at": "2026-08-30T20:01:00.000Z",
+                "delegate_id": "agent-derya",
+                "criterion_hashes": [criterion.criterion_hash],
+                "evidence_hashes": [criterion.criterion_hash],
+            },
+        )
+
+    async def test_unrelated_issue_revision_does_not_carry_acceptance_evidence(self):
+        description = "## Kabul kriterleri\n- [x] Live canary passes"
+        acceptance_mod = __import__(f"{PACKAGE_NAME}.acceptance", fromlist=["*"])
+        criterion = acceptance_mod.acceptance_criteria(description)[0]
+        self.adapter._linear.delivery_contexts["session-acceptance-revision"] = {
+            "id": "session-acceptance-revision",
+            "status": "active",
+            "app_user_id": "agent-derya",
+            "issue_id": "issue-acceptance-revision",
+            "delegate_id": "agent-derya",
+            "description": description,
+            "updated_at": "2026-08-30T20:02:00.000Z",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }
+        self.adapter._ledger.record_acceptance_evidence(
+            issue_id="issue-acceptance-revision",
+            criterion_hash=criterion.criterion_hash,
+            actor_id="agent-derya",
+            test_class="integration",
+            evidence_digest="d" * 64,
+            evidence_pointer="linear://activity/revision-proof",
+            observed_revision="2026-08-30T20:00:00.000Z",
+            accepted_revision="2026-08-30T20:01:00.000Z",
+            result="PASS",
+            timestamp="2026-08-30T20:00:01.000Z",
+        )
+        self.adapter.open_progress_turn("session-acceptance-revision", "turn-revision")
+
+        result = await self.adapter.send("session-acceptance-revision", "Verified final")
+
+        self.assertFalse(result.success)
+        self.assertEqual(self.adapter._linear.calls[-1][1], "error")
+        self.assertEqual(
+            self.adapter._ledger.acceptance_evidence_hashes(
+                "issue-acceptance-revision",
+                "agent-derya",
+                accepted_revision="2026-08-30T20:02:00.000Z",
+            ),
+            set(),
+        )
+
+    async def test_final_retry_dead_letters_when_authoritative_acceptance_snapshot_drifts(self):
+        description = "## Kabul kriterleri\n- [x] Live canary passes"
+        criterion = acceptance_criteria(description)[0]
+        context = {
+            "id": "session-final-retry",
+            "status": "active",
+            "app_user_id": "agent-derya",
+            "issue_id": "issue-final-retry",
+            "delegate_id": "agent-derya",
+            "description": description,
+            "updated_at": "2026-08-30T20:01:00.000Z",
+            "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+        }
+        self.adapter._linear.delivery_contexts["session-final-retry"] = context
+        self.adapter._ledger.record_acceptance_evidence(
+            issue_id="issue-final-retry",
+            criterion_hash=criterion.criterion_hash,
+            actor_id="agent-derya",
+            test_class="live",
+            evidence_digest="b" * 64,
+            evidence_pointer="linear://activity/evidence-retry",
+            observed_revision="2026-08-30T20:00:00.000Z",
+            accepted_revision="2026-08-30T20:01:00.000Z",
+            result="PASS",
+            timestamp="2026-08-30T20:00:01.000Z",
+        )
+        self.adapter.open_progress_turn("session-final-retry", "turn-final")
+        original_create = self.adapter._linear.create_activity
+
+        async def transient_failure(*_args, **_kwargs):
+            raise LinearAPIError("temporary delivery failure", retryable=True)
+
+        self.adapter._outbox_base_delay = 0
+        self.adapter._linear.create_activity = transient_failure
+        accepted = await self.adapter.send("session-final-retry", "Verified final")
+        self.assertTrue(accepted.success)
+        item_id = "activity:final:session-final-retry:turn-final"
+        self.assertEqual(self.adapter._ledger.get_outbox_item(item_id)["state"], "pending")
+
+        self.adapter._linear.create_activity = original_create
+        self.adapter._linear.delivery_contexts["session-final-retry"] = {
+            **context,
+            "updated_at": "2026-08-30T20:02:00.000Z",
+        }
+        await self.adapter._drain_outbox_once()
+
+        item = self.adapter._ledger.get_outbox_item(item_id)
+        self.assertEqual(item["state"], "dead")
+        self.assertIn("acceptance snapshot", item["last_error"].casefold())
+        self.assertEqual(self.adapter._linear.calls, [])
 
     async def test_operational_inbox_on_terminal_issue_remains_a_valid_transport_anchor(self):
         self.adapter._linear.delivery_contexts["session-terminal-inbox"] = {
@@ -6547,13 +6735,14 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "app_user_id": "actor-1",
         }])
 
-    async def test_agent_session_delivery_context_is_authoritative_and_minimal(self):
+    async def test_agent_session_delivery_context_is_authoritative_for_acceptance_gate(self):
         client = LinearClient("/unused")
 
         async def fake_graphql(query, variables=None):
             self.assertIn("agentSession(id: $id)", query)
-            self.assertNotIn("issue {", query)
-            self.assertNotIn("state {", query)
+            self.assertIn("issue {", query)
+            self.assertIn("description", query)
+            self.assertIn("delegate { id }", query)
             self.assertEqual(variables, {"id": "session-1"})
             return {"agentSession": {
                 "id": "session-1",
@@ -6561,6 +6750,9 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 "appUser": {"id": "actor-1"},
                 "issue": {
                     "id": "issue-1",
+                    "updatedAt": "revision-1",
+                    "description": "## Kabul kriterleri\n- [x] Proven",
+                    "delegate": {"id": "actor-1"},
                     "state": {"id": "done-1", "name": "Done", "type": "completed"},
                 },
             }}
@@ -6572,6 +6764,11 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             {
                 "id": "session-1",
                 "app_user_id": "actor-1",
+                "issue_id": "issue-1",
+                "updated_at": "revision-1",
+                "description": "## Kabul kriterleri\n- [x] Proven",
+                "delegate_id": "actor-1",
+                "state": {"id": "done-1", "name": "Done", "type": "completed"},
             },
         )
 
@@ -6587,6 +6784,30 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(LinearAPIError, "incomplete"):
             await client.get_agent_session_delivery_context("session-1")
+
+    async def test_agent_session_delivery_context_rejects_malformed_acceptance_metadata(self):
+        for field, value in (
+            ("updatedAt", None),
+            ("delegate", None),
+        ):
+            with self.subTest(field=field):
+                issue = {
+                    "id": "issue-1",
+                    "updatedAt": "2026-08-30T20:00:00.000Z",
+                    "description": "",
+                    "delegate": {"id": "actor-1"},
+                    field: value,
+                }
+                client = LinearClient("/unused")
+                client.graphql = mock.AsyncMock(return_value={
+                    "agentSession": {
+                        "id": "session-1",
+                        "appUser": {"id": "actor-1"},
+                        "issue": issue,
+                    }
+                })
+                with self.assertRaisesRegex(LinearAPIError, "acceptance metadata"):
+                    await client.get_agent_session_delivery_context("session-1")
 
     async def test_issue_agent_sessions_paginates_until_open_session_is_visible(self):
         client = LinearClient("/unused")

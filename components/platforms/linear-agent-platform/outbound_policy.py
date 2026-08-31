@@ -20,6 +20,7 @@ SAVE_ISSUE_FIELDS = frozenset(
         "description",
         "lifecycle_action",
         "expected_updated_at",
+        "acceptance_evidence",
         "state",
         "priority",
         "assignee",
@@ -220,6 +221,12 @@ class OutboundPolicy:
                 lifecycle_fields = {"operation_key", "target_team_id", "id", "lifecycle_action"}
                 if lifecycle_action in description_actions:
                     lifecycle_fields |= {"expected_updated_at", "description"}
+                    if lifecycle_action == "mark_acceptance":
+                        lifecycle_fields.add("acceptance_evidence")
+                        if not isinstance(arguments.get("acceptance_evidence"), list) or not arguments.get(
+                            "acceptance_evidence"
+                        ):
+                            return PolicyDecision("deny", "acceptance_evidence_required")
                     if not isinstance(arguments.get("expected_updated_at"), str) or not str(
                         arguments.get("expected_updated_at") or ""
                     ).strip():

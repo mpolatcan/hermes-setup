@@ -9,7 +9,9 @@ import sqlite3
 import stat
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -59,13 +61,22 @@ class DeliveryLedger:
             os.fchmod(fd, 0o600)
             opened = os.fstat(fd)
             self._db = sqlite3.connect(self.path, check_same_thread=False)
+            self._db.execute("PRAGMA busy_timeout=30000")
             actual = os.lstat(self.path)
             if stat.S_ISLNK(actual.st_mode) or (
                 actual.st_dev, actual.st_ino
             ) != (opened.st_dev, opened.st_ino):
                 self._db.close()
                 raise RuntimeError("Linear ledger changed while it was being opened")
-            self._db.execute("PRAGMA journal_mode=WAL")
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    self._db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.execute("PRAGMA foreign_keys=ON")
         finally:
@@ -75,6 +86,7 @@ class DeliveryLedger:
                 self._db.close()
                 raise RuntimeError("Linear ledger SQLite sidecar must not be a symlink")
 
+        self._db.execute("BEGIN IMMEDIATE")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS deliveries ("
             "webhook_id TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at INTEGER NOT NULL)"
@@ -182,8 +194,30 @@ class DeliveryLedger:
             "aggregate_key TEXT PRIMARY KEY, turn_key TEXT NOT NULL, "
             "fenced INTEGER NOT NULL CHECK(fenced IN (0, 1)), updated_at INTEGER NOT NULL)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 7:
-            self._db.execute("PRAGMA user_version=7")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS acceptance_evidence ("
+            "issue_id TEXT NOT NULL, criterion_hash TEXT NOT NULL, actor_id TEXT NOT NULL, "
+            "test_class TEXT NOT NULL, evidence_digest TEXT NOT NULL, evidence_pointer TEXT NOT NULL, "
+            "observed_revision TEXT NOT NULL, accepted_revision TEXT NOT NULL, "
+            "result TEXT NOT NULL CHECK(result = 'PASS'), "
+            "evidence_timestamp TEXT NOT NULL, created_at INTEGER NOT NULL, "
+            "PRIMARY KEY(issue_id, criterion_hash, actor_id))"
+        )
+        acceptance_columns = {
+            str(row[1]) for row in self._db.execute("PRAGMA table_info(acceptance_evidence)").fetchall()
+        }
+        if "accepted_revision" not in acceptance_columns:
+            self._db.execute(
+                "ALTER TABLE acceptance_evidence "
+                "ADD COLUMN accepted_revision TEXT NOT NULL DEFAULT ''"
+            )
+            # Legacy rows predate authoritative post-mutation revision binding.
+            # They cannot satisfy the new gate and must be re-proven, not trusted.
+            self._db.execute(
+                "DELETE FROM acceptance_evidence WHERE accepted_revision=''"
+            )
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 9:
+            self._db.execute("PRAGMA user_version=9")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Outbound-only clients may open this database while
         # the gateway is live, so they must not run process-start recovery.
@@ -1558,6 +1592,210 @@ class DeliveryLedger:
                 int(inbound) + int(outbound) + int(waits)
                 + int(activations) + int(managers) + int(routes)
             )
+
+    def record_acceptance_evidence(
+        self,
+        *,
+        issue_id: str,
+        criterion_hash: str,
+        actor_id: str,
+        test_class: str,
+        evidence_digest: str,
+        evidence_pointer: str,
+        observed_revision: str,
+        accepted_revision: str,
+        result: str,
+        timestamp: str,
+        _commit: bool = True,
+    ) -> None:
+        """Persist one metadata-only PASS envelope for the exact delegate criterion."""
+        qualifying_classes = {
+            "integration", "e2e", "live", "vendor", "file", "api", "runtime", "security"
+        }
+        hex_chars = frozenset("0123456789abcdef")
+        pointer_prefixes = ("linear://", "artifact://", "vendor://", "sha256:")
+        values = (issue_id, actor_id, observed_revision, accepted_revision, timestamp)
+        try:
+            observed_timestamp = datetime.fromisoformat(observed_revision.replace("Z", "+00:00"))
+            accepted_timestamp = datetime.fromisoformat(accepted_revision.replace("Z", "+00:00"))
+            evidence_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Acceptance evidence revision/timestamp is invalid") from exc
+        if (
+            result != "PASS"
+            or test_class not in qualifying_classes
+            or len(criterion_hash) != 64
+            or any(character not in hex_chars for character in criterion_hash)
+            or len(evidence_digest) != 64
+            or any(character not in hex_chars for character in evidence_digest)
+            or not evidence_pointer.startswith(pointer_prefixes)
+            or len(evidence_pointer) > 500
+            or any(character.isspace() or ord(character) < 0x20 for character in evidence_pointer)
+            or any(not value or len(value) > 200 for value in values)
+            or observed_timestamp.tzinfo is None
+            or accepted_timestamp.tzinfo is None
+            or evidence_timestamp.tzinfo is None
+            or observed_timestamp > evidence_timestamp
+            or observed_timestamp > accepted_timestamp
+            or accepted_timestamp > datetime.now(timezone.utc)
+        ):
+            raise ValueError("Acceptance evidence envelope is invalid or non-qualifying")
+        now = int(time.time())
+        lock_context = self._lock if _commit else nullcontext()
+        with lock_context:
+            existing = self._db.execute(
+                "SELECT accepted_revision FROM acceptance_evidence "
+                "WHERE issue_id=? AND criterion_hash=? AND actor_id=?",
+                (issue_id, criterion_hash, actor_id),
+            ).fetchone()
+            if existing:
+                existing_timestamp = datetime.fromisoformat(
+                    str(existing[0]).replace("Z", "+00:00")
+                )
+                target_timestamp = datetime.fromisoformat(
+                    accepted_revision.replace("Z", "+00:00")
+                )
+                if existing_timestamp > target_timestamp:
+                    raise ValueError("Acceptance evidence revision cannot regress")
+            self._db.execute(
+                "INSERT INTO acceptance_evidence ("
+                "issue_id, criterion_hash, actor_id, test_class, evidence_digest, "
+                "evidence_pointer, observed_revision, accepted_revision, result, "
+                "evidence_timestamp, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PASS', ?, ?) "
+                "ON CONFLICT(issue_id, criterion_hash, actor_id) DO UPDATE SET "
+                "test_class=excluded.test_class, evidence_digest=excluded.evidence_digest, "
+                "evidence_pointer=excluded.evidence_pointer, "
+                "observed_revision=excluded.observed_revision, "
+                "accepted_revision=excluded.accepted_revision, "
+                "evidence_timestamp=excluded.evidence_timestamp, created_at=excluded.created_at",
+                (
+                    issue_id,
+                    criterion_hash,
+                    actor_id,
+                    test_class,
+                    evidence_digest,
+                    evidence_pointer,
+                    observed_revision,
+                    accepted_revision,
+                    timestamp,
+                    now,
+                ),
+            )
+            if _commit:
+                self._db.commit()
+                self._secure_state_files()
+
+    def acceptance_evidence_hashes(
+        self,
+        issue_id: str,
+        actor_id: str,
+        *,
+        accepted_revision: str | None = None,
+    ) -> set[str]:
+        if not issue_id or not actor_id:
+            return set()
+        query = (
+            "SELECT criterion_hash FROM acceptance_evidence "
+            "WHERE issue_id=? AND actor_id=? AND result='PASS'"
+        )
+        parameters: tuple[str, ...] = (issue_id, actor_id)
+        if accepted_revision is not None:
+            if not accepted_revision:
+                return set()
+            query += " AND accepted_revision=?"
+            parameters += (accepted_revision,)
+        with self._lock:
+            rows = self._db.execute(query, parameters).fetchall()
+        return {str(row[0]) for row in rows}
+
+    def latest_acceptance_evidence(
+        self, issue_id: str, actor_id: str,
+    ) -> tuple[str, set[str]] | None:
+        """Return the newest revision and its PASS hashes for one exact delegate."""
+        if not issue_id or not actor_id:
+            return None
+        with self._lock:
+            revision_row = self._db.execute(
+                "SELECT accepted_revision FROM acceptance_evidence "
+                "WHERE issue_id=? AND actor_id=? AND result='PASS' "
+                "ORDER BY accepted_revision DESC LIMIT 1",
+                (issue_id, actor_id),
+            ).fetchone()
+            if revision_row is None:
+                return None
+            revision = str(revision_row[0])
+            rows = self._db.execute(
+                "SELECT criterion_hash FROM acceptance_evidence "
+                "WHERE issue_id=? AND actor_id=? AND accepted_revision=? AND result='PASS'",
+                (issue_id, actor_id, revision),
+            ).fetchall()
+        return revision, {str(row[0]) for row in rows}
+
+    def persist_acceptance_batch(
+        self,
+        issue_id: str,
+        actor_id: str,
+        *,
+        from_revision: str,
+        accepted_revision: str,
+        evidence: list[dict[str, str]],
+    ) -> None:
+        """Atomically carry old evidence and insert a newly verified PASS batch."""
+        if not evidence:
+            raise ValueError("Acceptance evidence batch is empty")
+        values = (issue_id, actor_id, from_revision, accepted_revision)
+        try:
+            source_timestamp = datetime.fromisoformat(from_revision.replace("Z", "+00:00"))
+            target_timestamp = datetime.fromisoformat(accepted_revision.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Acceptance revision transition is invalid") from exc
+        same_revision = hmac.compare_digest(from_revision, accepted_revision)
+        if (
+            any(not value or len(value) > 200 for value in values)
+            or source_timestamp.tzinfo is None
+            or target_timestamp.tzinfo is None
+            or target_timestamp < source_timestamp
+        ):
+            raise ValueError("Acceptance revision transition is invalid")
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                existing_revisions = {
+                    str(row[0])
+                    for row in self._db.execute(
+                        "SELECT DISTINCT accepted_revision FROM acceptance_evidence "
+                        "WHERE issue_id=? AND actor_id=? AND result='PASS'",
+                        (issue_id, actor_id),
+                    ).fetchall()
+                }
+                if existing_revisions and existing_revisions != {from_revision}:
+                    raise ValueError("Acceptance evidence base revision changed")
+                if not same_revision:
+                    self._db.execute(
+                        "UPDATE acceptance_evidence SET accepted_revision=? "
+                        "WHERE issue_id=? AND actor_id=? AND accepted_revision=? AND result='PASS'",
+                        (accepted_revision, issue_id, actor_id, from_revision),
+                    )
+                for item in evidence:
+                    self.record_acceptance_evidence(
+                        issue_id=issue_id,
+                        criterion_hash=item["criterion_hash"],
+                        actor_id=actor_id,
+                        test_class=item["test_class"],
+                        evidence_digest=item["evidence_digest"],
+                        evidence_pointer=item["evidence_pointer"],
+                        observed_revision=item["observed_revision"],
+                        accepted_revision=accepted_revision,
+                        result=item["result"],
+                        timestamp=item["timestamp"],
+                        _commit=False,
+                    )
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        self._secure_state_files()
 
     def close(self) -> None:
         with self._lock:

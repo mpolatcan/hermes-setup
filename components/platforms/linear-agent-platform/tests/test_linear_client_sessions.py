@@ -110,6 +110,26 @@ class AgentSessionPolicyEvidenceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(LinearAPIError, "plan context was unavailable"):
             await client.get_issue_plan_context("OPS-404")
 
+    async def test_delivery_context_normalizes_null_issue_description(self):
+        client = self.client()
+        client.graphql = mock.AsyncMock(return_value={
+            "agentSession": {
+                "id": "session-1",
+                "appUser": {"id": "actor-1"},
+                "issue": {
+                    "id": "issue-1",
+                    "updatedAt": "2026-08-30T20:00:00.000Z",
+                    "description": None,
+                    "delegate": {"id": "actor-1"},
+                    "state": {"id": "started-1", "name": "In Progress", "type": "started"},
+                },
+            },
+        })
+
+        result = await client.get_agent_session_delivery_context("session-1")
+
+        self.assertEqual(result["description"], "")
+
     async def test_complete_session_counts_nonempty_terminal_responses(self):
         client = self.client()
         client.graphql = mock.AsyncMock(
