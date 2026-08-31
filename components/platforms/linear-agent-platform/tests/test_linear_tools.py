@@ -16,11 +16,13 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from linear_tools import (  # noqa: E402
     _canonicalize_vendor_markdown,
+    _direct_instruction_context,
     _evaluate_acceptance_context,
     _parse_plan_sections,
     execute_with_clients,
     register_outbound_tools,
 )
+from ledger import DeliveryLedger  # noqa: E402
 from mcp_client import MCPOutcomeUnknown, LinearMCPToolError  # noqa: E402
 from oauth_store import LinearAPIError  # noqa: E402
 from outbound_ledger import (  # noqa: E402
@@ -416,6 +418,247 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(
             execute.await_args.kwargs["quota_team_ids"],
             frozenset({"ops-1", "game-1"}),
+        )
+
+    def test_runtime_top_level_create_persists_verified_direct_grant(self):
+        extra = self.extra(mutations=True)
+        ctx = FakeContext()
+        callback = mock.Mock()
+        register_outbound_tools(
+            ctx, extra=extra, direct_grant_bound_callback=callback
+        )
+        handler = ctx.tools["linear_save_issue"]["handler"]
+        graphql = mock.MagicMock(actor_id="actor-1", organization_id="org-1")
+        graphql.connect = mock.AsyncMock()
+        graphql.close = mock.AsyncMock()
+        graphql.get_issue_closure_context = mock.AsyncMock(return_value={
+            "title": "Direct task",
+            "team": {"id": "ops-1"},
+            "creator": {"id": "actor-1"},
+            "delegate": {"id": "actor-1"},
+            "parent": {},
+        })
+        mcp = mock.MagicMock()
+        mcp.connect = mock.AsyncMock()
+        mcp.close = mock.AsyncMock()
+        direct_context = {
+            "source_platform": "telegram",
+            "source_user_id": "telegram-mutlu",
+            "source_message_id": "message-1",
+            "source_session_id": "session-1",
+            "source_profile": "general",
+        }
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+            mock.patch("linear_tools.FleetGlobalLock"),
+            mock.patch("linear_tools._direct_instruction_context", return_value=direct_context),
+            mock.patch(
+                "linear_tools.execute_with_clients",
+                new=mock.AsyncMock(return_value={"status": "success", "result_id": "OPS-300"}),
+            ),
+        ):
+            result = json.loads(asyncio.run(handler({
+                "operation_key": "runtime-direct-create",
+                "target_team_id": "ops-1",
+                "team": "ops-1",
+                "title": "Direct task",
+                "delegate": "actor-1",
+            })))
+
+        self.assertEqual(result["result_id"], "OPS-300")
+        inbound = DeliveryLedger(extra["database_path"], startup_recovery=False)
+        try:
+            grant = inbound.get_direct_activation_grant("OPS-300")
+        finally:
+            inbound.close()
+        self.assertIsNotNone(grant)
+        assert grant is not None
+        self.assertEqual(grant["state"], "granted")
+        self.assertEqual(grant["source_message_id"], "message-1")
+        self.assertEqual(grant["policy_result"], "gateway_authorized_direct_dm")
+        self.assertEqual(
+            grant["issue_fingerprint"],
+            DeliveryLedger.direct_issue_fingerprint("ops-1", "Direct task"),
+        )
+        callback.assert_called_once_with("general", "OPS-300")
+
+    def test_failed_direct_create_closes_reserved_provenance(self):
+        extra = self.extra(mutations=True)
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        handler = ctx.tools["linear_save_issue"]["handler"]
+        graphql = mock.MagicMock(actor_id="actor-1", organization_id="org-1")
+        graphql.connect = mock.AsyncMock()
+        graphql.close = mock.AsyncMock()
+        mcp = mock.MagicMock()
+        mcp.connect = mock.AsyncMock()
+        mcp.close = mock.AsyncMock()
+        direct_context = {
+            "source_platform": "telegram",
+            "source_user_id": "telegram-mutlu",
+            "source_message_id": "message-failed",
+            "source_session_id": "session-failed",
+            "source_profile": "general",
+        }
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+            mock.patch("linear_tools.FleetGlobalLock"),
+            mock.patch("linear_tools._direct_instruction_context", return_value=direct_context),
+            mock.patch(
+                "linear_tools.execute_with_clients",
+                new=mock.AsyncMock(return_value={"error": "linear_policy_denied", "reason": "quota"}),
+            ),
+        ):
+            result = json.loads(asyncio.run(handler({
+                "operation_key": "runtime-direct-failed",
+                "target_team_id": "ops-1",
+                "team": "ops-1",
+                "title": "Direct task",
+                "delegate": "actor-1",
+            })))
+
+        self.assertEqual(result["reason"], "quota")
+        inbound = DeliveryLedger(extra["database_path"], startup_recovery=False)
+        try:
+            state = inbound._db.execute(
+                "SELECT state FROM direct_activation_grants WHERE operation_key=?",
+                ("runtime-direct-failed",),
+            ).fetchone()[0]
+        finally:
+            inbound.close()
+        self.assertEqual(state, "failed")
+
+    def test_direct_grant_readback_failure_preserves_committed_create_result(self):
+        extra = self.extra(mutations=True)
+        ctx = FakeContext()
+        register_outbound_tools(ctx, extra=extra)
+        handler = ctx.tools["linear_save_issue"]["handler"]
+        graphql = mock.MagicMock(actor_id="actor-1", organization_id="org-1")
+        graphql.connect = mock.AsyncMock()
+        graphql.close = mock.AsyncMock()
+        graphql.get_issue_closure_context = mock.AsyncMock(side_effect=RuntimeError("temporary"))
+        mcp = mock.MagicMock()
+        mcp.connect = mock.AsyncMock()
+        mcp.close = mock.AsyncMock()
+        direct_context = {
+            "source_platform": "telegram",
+            "source_user_id": "telegram-mutlu",
+            "source_message_id": "message-readback",
+            "source_session_id": "session-readback",
+            "source_profile": "general",
+        }
+        with (
+            mock.patch("linear_tools.LinearOAuthStore"),
+            mock.patch("linear_tools.LinearClient", return_value=graphql),
+            mock.patch("linear_tools.LinearMCPClient", return_value=mcp),
+            mock.patch("linear_tools.FleetGlobalLock"),
+            mock.patch("linear_tools._direct_instruction_context", return_value=direct_context),
+            mock.patch(
+                "linear_tools.execute_with_clients",
+                new=mock.AsyncMock(return_value={"status": "success", "result_id": "OPS-301"}),
+            ),
+        ):
+            result = json.loads(asyncio.run(handler({
+                "operation_key": "runtime-direct-readback",
+                "target_team_id": "ops-1",
+                "team": "ops-1",
+                "title": "Direct task",
+                "delegate": "actor-1",
+            })))
+
+        self.assertEqual(result, {"status": "success", "result_id": "OPS-301"})
+        inbound = DeliveryLedger(extra["database_path"], startup_recovery=False)
+        try:
+            state = inbound._db.execute(
+                "SELECT state FROM direct_activation_grants WHERE operation_key=?",
+                ("runtime-direct-readback",),
+            ).fetchone()[0]
+        finally:
+            inbound.close()
+        self.assertEqual(state, "reserved")
+
+    def test_direct_instruction_context_uses_only_matching_task_local_gateway_identity(self):
+        values = {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_CHAT_TYPE": "dm",
+            "HERMES_SESSION_USER_ID": "telegram-mutlu",
+            "HERMES_SESSION_MESSAGE_ID": "message-1",
+            "HERMES_SESSION_ID": "session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_CRON_SESSION": "",
+        }
+        with mock.patch(
+            "gateway.session_context.get_session_env",
+            side_effect=lambda name, default="": values.get(name, default),
+        ):
+            context = _direct_instruction_context(
+                "general", {"session_id": "session-1", "activation_mode": "direct"}
+            )
+            mismatch = _direct_instruction_context(
+                "general", {"session_id": "different", "activation_mode": "direct"}
+            )
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["source_message_id"], "message-1")
+        self.assertIsNone(mismatch)
+
+    def test_direct_instruction_context_rejects_incomplete_or_foreign_provenance(self):
+        valid = {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_CHAT_TYPE": "dm",
+            "HERMES_SESSION_USER_ID": "telegram-mutlu",
+            "HERMES_SESSION_MESSAGE_ID": "message-1",
+            "HERMES_SESSION_ID": "session-1",
+            "HERMES_SESSION_PROFILE": "general",
+            "HERMES_CRON_SESSION": "",
+        }
+        negatives = {
+            "cron": {"HERMES_CRON_SESSION": "cron-1"},
+            "non_telegram": {"HERMES_SESSION_PLATFORM": "discord"},
+            "group_chat": {"HERMES_SESSION_CHAT_TYPE": "group"},
+            "profile_mismatch": {"HERMES_SESSION_PROFILE": "researcher"},
+            "missing_message_identity": {"HERMES_SESSION_MESSAGE_ID": ""},
+            "missing_user_identity": {"HERMES_SESSION_USER_ID": ""},
+        }
+
+        for label, overrides in negatives.items():
+            with self.subTest(label=label):
+                values = {**valid, **overrides}
+                with mock.patch(
+                    "gateway.session_context.get_session_env",
+                    side_effect=lambda name, default="": values.get(name, default),
+                ):
+                    self.assertIsNone(
+                        _direct_instruction_context(
+                            "general",
+                            {"session_id": "session-1", "activation_mode": "direct"},
+                        )
+                    )
+
+    def test_direct_instruction_context_rejects_cleared_context_vars(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_type="dm",
+            user_id="telegram-mutlu",
+            message_id="message-1",
+            session_id="session-1",
+            profile="general",
+            cron_session="",
+        )
+        clear_session_vars(tokens)
+
+        self.assertIsNone(
+            _direct_instruction_context(
+                "general",
+                {"session_id": "session-1", "activation_mode": "direct"},
+            )
         )
 
 

@@ -487,8 +487,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             self._accepting_tool_progress = True
             self._outbox_task = asyncio.create_task(self._outbox_loop())
             self._channel_route_task = asyncio.create_task(self._channel_route_loop())
-            if self._dependency_wait_enabled:
-                self._dependency_task = asyncio.create_task(self._dependency_loop())
+            # Direct activation recovery is a core durable lifecycle, independent
+            # of the optional dependency-wait and planned-activation features.
+            self._dependency_task = asyncio.create_task(self._dependency_loop())
             logger.info(
                 "[linear] Native adapter listening on %s:%d%s actor=%s organization=%s",
                 self.host,
@@ -696,6 +697,9 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         manager_activations = (
             self._ledger.manager_activation_counts() if self._ledger is not None else {}
         )
+        direct_activations = (
+            self._ledger.direct_activation_counts() if self._ledger is not None else {}
+        )
         closures = self._ledger.closure_counts() if self._ledger is not None else {}
         channel_routes = (
             self._ledger.channel_route_counts() if self._ledger is not None else {}
@@ -708,6 +712,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             or int(manager_activations.get("failed", 0))
             or int(manager_activations.get("delegation_unknown", 0))
             or int(manager_activations.get("dispatch_unknown", 0))
+            or int(direct_activations.get("stuck_active", 0))
+            or int(direct_activations.get("stuck_events", 0))
+            or int(direct_activations.get("dispatch_unknown", 0))
+            or int(direct_activations.get("failed", 0))
             or int(closures.get("failed", 0))
             or int(closures.get("blocked_dispatch", 0))
             or int(channel_routes.get("failed", 0))
@@ -719,7 +727,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             {
                 "status": status,
                 "adapter": "linear-native",
-                "version": "0.8.20",
+                "version": "0.8.21",
                 "features": {
                     "data_change_events": self._data_change_events_enabled,
                     "data_event_types": sorted(_DATA_EVENT_TYPES),
@@ -732,6 +740,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 "waiting": waiting,
                 "activations": activations,
                 "manager_activations": manager_activations,
+                "direct_activations": direct_activations,
                 "closures": closures,
                 "channel_routes": channel_routes,
                 "oauth_revoked": self._oauth_revoked,
@@ -799,6 +808,10 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         is_stop = action == "prompted" and signal == "stop"
         delivery_key = _delivery_key(payload, raw)
         claimed = False
+        direct_activation_created = False
+        direct_dispatch_attempted = False
+        direct_issue_lock: asyncio.Lock | None = None
+        direct_issue_lock_held = False
         dispatch_lock: asyncio.Lock | None = None
         dispatch_lock_held = False
         try:
@@ -820,6 +833,88 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 manager_activation
                 and manager_activation.get("state") == "delegated"
             )
+            if action == "created" and issue_id:
+                direct_grant = self._ledger.get_direct_activation_grant(issue_id)
+                if direct_grant is not None:
+                    if direct_grant.get("state") == "dispatched":
+                        if hmac.compare_digest(
+                            str(direct_grant.get("session_id") or ""), agent_session_id
+                        ):
+                            self._ledger.mark_done(delivery_key)
+                            return web.json_response(
+                                {"status": "direct_activation_duplicate"}, status=200
+                            )
+                        direct_grant = None
+                if direct_grant is not None:
+                    if not (
+                        event_actor_id
+                        and self._linear.actor_id
+                        and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+                    ):
+                        # A foreign event must neither claim the Direct grant nor
+                        # poison semantic dedup for the self-authored delivery of
+                        # this same native session that may arrive afterward.
+                        self._ledger.release(delivery_key)
+                        claimed = False
+                        return web.json_response(
+                            {"status": "direct_activation_policy_denied"}, status=200
+                        )
+                    context = await self._linear.get_issue_closure_context(issue_id)
+                    team_id = str((context.get("team") or {}).get("id") or "")
+                    direct_authoritative = bool(
+                        self._direct_activation_policy_allows(context, direct_grant)
+                        and event_actor_id
+                        and self._linear.actor_id
+                        and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+                    )
+                    if not direct_authoritative or not self._ledger.claim_direct_activation(
+                        issue_id,
+                        agent_session_id,
+                        actor_id=str(self._linear.actor_id or ""),
+                        team_id=team_id,
+                    ):
+                        self._ledger.mark_done(delivery_key)
+                        return web.json_response(
+                            {"status": "direct_activation_policy_denied"}, status=200
+                        )
+                    direct_activation_created = True
+            if (
+                action == "created"
+                and issue_id
+                and not direct_activation_created
+                and manager_activation is None
+                and event_actor_id
+                and self._linear.actor_id
+                and hmac.compare_digest(event_actor_id, self._linear.actor_id)
+            ):
+                context = await self._linear.get_issue_closure_context(issue_id)
+                team_id = str((context.get("team") or {}).get("id") or "")
+                owner_id = str((context.get("assignee") or {}).get("id") or "")
+                creator_id = str((context.get("creator") or {}).get("id") or "")
+                delegate_id = str((context.get("delegate") or {}).get("id") or "")
+                parent_id = str((context.get("parent") or {}).get("id") or "")
+                if (
+                    not parent_id
+                    and team_id in self._activation_allowed_team_ids
+                    and owner_id in self._planned_owner_ids
+                    and hmac.compare_digest(creator_id, self._linear.actor_id)
+                    and hmac.compare_digest(delegate_id, self._linear.actor_id)
+                    and self._ledger.has_unbound_direct_reservation(
+                        actor_id=self._linear.actor_id,
+                        team_id=team_id,
+                        issue_fingerprint=self._ledger.direct_issue_fingerprint(
+                            team_id, str(context.get("title") or "")
+                        ),
+                    )
+                ):
+                    self._ledger.put_direct_activation_event(
+                        issue_id, agent_session_id, delivery_key, payload
+                    )
+                    self._ledger.bind_issue_session(issue_id, agent_session_id)
+                    self._ledger.mark_done(delivery_key)
+                    return web.json_response(
+                        {"status": "direct_activation_waiting_for_grant"}, status=200
+                    )
             manager_activation_state = str(
                 (manager_activation or {}).get("state") or ""
             )
@@ -849,7 +944,7 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 event_actor_id
                 and self._linear.actor_id
                 and hmac.compare_digest(event_actor_id, self._linear.actor_id)
-                and not planned_intake_created
+                and not (planned_intake_created or direct_activation_created)
             ):
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "ignored_self"}, status=200)
@@ -905,13 +1000,20 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     if is_stop:
                         self._ledger.cancel_wait(agent_session_id)
                         self._ledger.cancel_activation_for_session(agent_session_id)
+                        self._ledger.cancel_direct_activation_for_session(agent_session_id)
                         if self._ledger.get_manager_activation(issue_id):
                             self._ledger.mark_manager_activation(issue_id, "canceled")
             if is_stop:
                 if not issue_id:
                     self._ledger.cancel_wait(agent_session_id)
                     self._ledger.cancel_activation_for_session(agent_session_id)
-            if action == "created" and self._planned_activation_enabled and issue_id:
+                    self._ledger.cancel_direct_activation_for_session(agent_session_id)
+            if (
+                action == "created"
+                and self._planned_activation_enabled
+                and issue_id
+                and not direct_activation_created
+            ):
                 async with self._issue_lock(issue_id):
                     context = await self._linear.get_issue_closure_context(issue_id)
                     state_type = str((context.get("state") or {}).get("type") or "").casefold()
@@ -970,6 +1072,20 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                         )
             if action == "created" and self._dependency_wait_enabled and issue_id:
                 blockers = await self._linear.get_open_blockers(issue_id)
+                if direct_activation_created:
+                    direct_issue_lock = self._issue_lock(issue_id)
+                    await direct_issue_lock.acquire()
+                    direct_issue_lock_held = True
+                if (
+                    direct_activation_created
+                    and not self._direct_activation_claim_is_current(
+                        issue_id, agent_session_id
+                    )
+                ):
+                    self._ledger.mark_done(delivery_key)
+                    return web.json_response(
+                        {"status": "direct_activation_canceled"}, status=200
+                    )
                 if blockers:
                     self._ledger.put_wait(
                         agent_session_id,
@@ -993,17 +1109,39 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     return web.json_response(
                         {"status": "accepted" if resumed else "awaiting_input"}, status=200
                     )
+            if direct_activation_created and issue_id and not direct_issue_lock_held:
+                direct_issue_lock = self._issue_lock(issue_id)
+                await direct_issue_lock.acquire()
+                direct_issue_lock_held = True
+                if not self._direct_activation_claim_is_current(
+                    issue_id, agent_session_id
+                ):
+                    self._ledger.mark_done(delivery_key)
+                    return web.json_response(
+                        {"status": "direct_activation_canceled"}, status=200
+                    )
             dispatch_lock = self._session_lock(agent_session_id)
             await dispatch_lock.acquire()
             dispatch_lock_held = True
             if not is_stop and self._ledger.has_session_closure(agent_session_id):
                 self._ledger.mark_done(delivery_key)
                 return web.json_response({"status": "closure_reconciled"}, status=200)
+            if (
+                direct_activation_created
+                and issue_id
+                and not self._direct_activation_claim_is_current(
+                    issue_id, agent_session_id
+                )
+            ):
+                self._ledger.mark_done(delivery_key)
+                return web.json_response(
+                    {"status": "direct_activation_canceled"}, status=200
+                )
             event = self._message_event(
                 payload,
                 delivery_key,
                 webhook_id,
-                activation_resume=planned_intake_created,
+                activation_resume=planned_intake_created or direct_activation_created,
             )
             if not is_stop:
                 self._schedule_thought(
@@ -1012,8 +1150,15 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                     delivery_key,
                     include_queued=action == "created",
                 )
+            if direct_activation_created:
+                direct_dispatch_attempted = True
             await self.handle_message(event)
-            if planned_intake_created and issue_id:
+            if direct_activation_created and issue_id:
+                if not self._ledger.mark_direct_activation_dispatched(
+                    issue_id, agent_session_id
+                ):
+                    raise RuntimeError("direct activation dispatch state changed")
+            elif planned_intake_created and issue_id:
                 self._ledger.mark_manager_activation(
                     issue_id, "session_started", session_id=agent_session_id
                 )
@@ -1028,6 +1173,15 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             )
             return web.json_response({"status": "accepted"}, status=200)
         except Exception as exc:
+            if claimed and direct_activation_created and issue_id:
+                if direct_dispatch_attempted:
+                    self._ledger.mark_direct_activation_unknown(
+                        issue_id, agent_session_id, str(exc)
+                    )
+                else:
+                    self._ledger.reset_direct_activation_claim(
+                        issue_id, agent_session_id, str(exc)
+                    )
             if claimed:
                 try:
                     self._ledger.release(delivery_key)
@@ -1049,6 +1203,53 @@ class LinearPlatformAdapter(BasePlatformAdapter):
         finally:
             if dispatch_lock_held and dispatch_lock is not None:
                 dispatch_lock.release()
+            if direct_issue_lock_held and direct_issue_lock is not None:
+                direct_issue_lock.release()
+
+    def _direct_activation_policy_allows(
+        self, context: dict[str, Any], grant: dict[str, Any]
+    ) -> bool:
+        team_id = str((context.get("team") or {}).get("id") or "")
+        owner_id = str((context.get("assignee") or {}).get("id") or "")
+        creator_id = str((context.get("creator") or {}).get("id") or "")
+        delegate_id = str((context.get("delegate") or {}).get("id") or "")
+        parent_id = str((context.get("parent") or {}).get("id") or "")
+        return bool(
+            grant.get("source_platform") == "telegram"
+            and grant.get("source_user_id")
+            and grant.get("source_message_id")
+            and grant.get("source_session_id")
+            and grant.get("source_profile")
+            and grant.get("policy_result") == "gateway_authorized_direct_dm"
+            and not parent_id
+            and team_id in self._activation_allowed_team_ids
+            and owner_id in self._planned_owner_ids
+            and self._linear is not None
+            and self._linear.actor_id
+            and hmac.compare_digest(creator_id, self._linear.actor_id)
+            and hmac.compare_digest(delegate_id, self._linear.actor_id)
+            and hmac.compare_digest(str(grant.get("actor_id") or ""), self._linear.actor_id)
+            and hmac.compare_digest(str(grant.get("team_id") or ""), team_id)
+            and self._ledger is not None
+            and hmac.compare_digest(
+                str(grant.get("issue_fingerprint") or ""),
+                self._ledger.direct_issue_fingerprint(
+                    team_id, str(context.get("title") or "")
+                ),
+            )
+        )
+
+    def _direct_activation_claim_is_current(
+        self, issue_id: str, session_id: str
+    ) -> bool:
+        if self._ledger is None:
+            return False
+        grant = self._ledger.get_direct_activation_grant(issue_id)
+        return bool(
+            grant
+            and grant.get("state") == "claimed"
+            and hmac.compare_digest(str(grant.get("session_id") or ""), session_id)
+        )
 
     def _live_activation_policy_allows(
         self, context: dict[str, Any], *, allow_started: bool = False
@@ -2405,6 +2606,12 @@ class LinearPlatformAdapter(BasePlatformAdapter):
                 if self._ledger.has_session_closure(session_id):
                     return False
                 await self.handle_message(event)
+                if self._ledger.mark_direct_activation_dispatched(
+                    wait["issue_id"], session_id
+                ):
+                    self._ledger.mark_direct_activation_event(
+                        wait["issue_id"], "dispatched"
+                    )
                 self._ledger.mark_wait_resumed(session_id)
             logger.info("[linear] resumed waiting session=%s issue=%s", session_id, wait["issue_id"])
             return True
@@ -2413,13 +2620,138 @@ class LinearPlatformAdapter(BasePlatformAdapter):
             logger.exception("[linear] Failed to resume waiting session=%s: %s", session_id, exc)
             return False
 
+    def schedule_direct_activation_reconcile(self, issue_id: str) -> None:
+        """Wake durable Direct reconciliation from an outbound tool thread."""
+        loop = self._event_loop
+        if not issue_id or loop is None or loop.is_closed() or not self._running:
+            return
+
+        def start() -> None:
+            if not self._running:
+                return
+            task = loop.create_task(self._reconcile_direct_activation_event(issue_id))
+            self._tool_progress_tasks.add(task)
+            task.add_done_callback(self._tool_progress_tasks.discard)
+
+        try:
+            if asyncio.get_running_loop() is loop:
+                start()
+                return
+        except RuntimeError:
+            pass
+        loop.call_soon_threadsafe(start)
+
+    async def _reconcile_direct_activation_event(self, issue_id: str) -> bool:
+        if self._ledger is None or self._linear is None:
+            return False
+        async with self._issue_lock(issue_id):
+            pending = self._ledger.get_direct_activation_event(issue_id)
+            grant = self._ledger.get_direct_activation_grant(issue_id)
+            if pending is None or pending.get("state") != "waiting" or grant is None:
+                return False
+            context = await self._linear.get_issue_closure_context(issue_id)
+            if not self._direct_activation_policy_allows(context, grant):
+                self._ledger.mark_direct_activation_event(
+                    issue_id, "failed", error="direct_activation_policy_denied"
+                )
+                self._ledger.fail_direct_activation_grant(
+                    str(grant.get("operation_key") or ""),
+                    "direct_activation_policy_denied",
+                )
+                return False
+            team_id = str((context.get("team") or {}).get("id") or "")
+            session_id = str(pending.get("session_id") or "")
+            blockers = (
+                await self._linear.get_open_blockers(issue_id)
+                if self._dependency_wait_enabled
+                else []
+            )
+            if not self._ledger.claim_direct_activation(
+                issue_id,
+                session_id,
+                actor_id=str(self._linear.actor_id or ""),
+                team_id=team_id,
+            ):
+                return False
+            if not self._ledger.mark_direct_activation_event(issue_id, "claimed"):
+                return False
+            if blockers:
+                self._ledger.put_wait(
+                    session_id,
+                    issue_id,
+                    str(pending["delivery_key"]),
+                    pending["prompt"],
+                    blockers,
+                )
+                labels = ", ".join(
+                    str(item.get("identifier") or item.get("id"))
+                    for item in blockers
+                )
+                self._enqueue_activity(
+                    session_id,
+                    "elicitation",
+                    f"Waiting for blocking issue(s): {labels}. I will resume automatically when they are completed.",
+                    item_key=f"direct-waiting:{pending['delivery_key']}",
+                )
+                self._enqueue_status(
+                    session_id,
+                    issue_id,
+                    "blocked",
+                    str(pending["delivery_key"]),
+                )
+                return await self._reconcile_wait(session_id)
+            dispatch_attempted = False
+            try:
+                async with self._session_lock(session_id):
+                    if self._ledger.has_session_closure(session_id):
+                        self._ledger.cancel_direct_activation_for_session(session_id)
+                        return False
+                    event = self._message_event(
+                        pending["prompt"],
+                        str(pending["delivery_key"]),
+                        "direct-activation-recovery",
+                        activation_resume=True,
+                    )
+                    self._schedule_thought(
+                        session_id,
+                        issue_id,
+                        str(pending["delivery_key"]),
+                        include_queued=True,
+                        body="Verified Direct instruction grant bound; Hermes resumed the native session.",
+                    )
+                    dispatch_attempted = True
+                    await self.handle_message(event)
+                    if not self._ledger.mark_direct_activation_dispatched(issue_id, session_id):
+                        raise RuntimeError("direct activation dispatch state changed")
+                    if not self._ledger.mark_direct_activation_event(issue_id, "dispatched"):
+                        raise RuntimeError("direct activation event state changed")
+                return True
+            except Exception as exc:
+                if dispatch_attempted:
+                    self._ledger.mark_direct_activation_unknown(
+                        issue_id, session_id, str(exc)
+                    )
+                else:
+                    self._ledger.reset_direct_activation_claim(
+                        issue_id, session_id, str(exc)
+                    )
+                logger.exception(
+                    "[linear] Direct activation recovery failed issue=%s: %s",
+                    issue_id,
+                    exc,
+                )
+                return False
+
     async def _dependency_loop(self) -> None:
         """Low-frequency recovery path; webhook events remain the primary wake-up."""
         while self._running:
             try:
                 if self._ledger is not None:
-                    for wait in self._ledger.list_waiting():
-                        await self._reconcile_wait(wait["session_id"])
+                    for pending in self._ledger.list_direct_activation_events():
+                        await self._reconcile_direct_activation_event(pending["issue_id"])
+                    if self._dependency_wait_enabled:
+                        for wait in self._ledger.list_waiting():
+                            await self._reconcile_wait(wait["session_id"])
                 await asyncio.sleep(self._dependency_poll_seconds)
             except asyncio.CancelledError:
                 raise

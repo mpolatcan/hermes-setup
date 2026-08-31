@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -126,6 +127,35 @@ class DeliveryLedger:
             "ON activation_waits(state, updated_at)"
         )
         self._db.execute(
+            "CREATE TABLE IF NOT EXISTS direct_activation_grants ("
+            "operation_key TEXT PRIMARY KEY, issue_id TEXT UNIQUE, "
+            "source_platform TEXT NOT NULL, source_user_id TEXT NOT NULL, "
+            "source_message_id TEXT NOT NULL, source_session_id TEXT NOT NULL, "
+            "source_profile TEXT NOT NULL, policy_result TEXT NOT NULL, "
+            "actor_id TEXT NOT NULL, team_id TEXT NOT NULL, issue_fingerprint TEXT NOT NULL, "
+            "session_id TEXT NOT NULL DEFAULT '', activation_key TEXT NOT NULL DEFAULT '', "
+            "state TEXT NOT NULL CHECK(state IN "
+            "('reserved', 'granted', 'claimed', 'dispatch_unknown', 'dispatched', "
+            "'canceled', 'failed')), "
+            "last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS direct_activation_state_idx "
+            "ON direct_activation_grants(state, updated_at)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS direct_activation_events ("
+            "issue_id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, "
+            "delivery_key TEXT NOT NULL, prompt_json TEXT NOT NULL, "
+            "state TEXT NOT NULL CHECK(state IN "
+            "('waiting', 'claimed', 'dispatch_unknown', 'dispatched', 'canceled', 'failed')), "
+            "last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS direct_activation_event_state_idx "
+            "ON direct_activation_events(state, updated_at)"
+        )
+        self._db.execute(
             "CREATE TABLE IF NOT EXISTS manager_activations ("
             "issue_id TEXT PRIMARY KEY, activation_key TEXT NOT NULL UNIQUE, "
             "state TEXT NOT NULL CHECK(state IN "
@@ -182,8 +212,8 @@ class DeliveryLedger:
             "aggregate_key TEXT PRIMARY KEY, turn_key TEXT NOT NULL, "
             "fenced INTEGER NOT NULL CHECK(fenced IN (0, 1)), updated_at INTEGER NOT NULL)"
         )
-        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 7:
-            self._db.execute("PRAGMA user_version=7")
+        if int(self._db.execute("PRAGMA user_version").fetchone()[0]) < 8:
+            self._db.execute("PRAGMA user_version=8")
         # A process restart proves that no previous local worker still owns a
         # resuming claim. Outbound-only clients may open this database while
         # the gateway is live, so they must not run process-start recovery.
@@ -560,6 +590,360 @@ class DeliveryLedger:
                 (now, issue_id),
             )
             self._db.commit()
+
+    @staticmethod
+    def direct_issue_fingerprint(team_id: str, title: str) -> str:
+        if not team_id or not title:
+            return ""
+        return hashlib.sha256(f"{team_id}\0{title}".encode("utf-8")).hexdigest()
+
+    def reserve_direct_activation_grant(
+        self,
+        *,
+        operation_key: str,
+        source_platform: str,
+        source_user_id: str,
+        source_message_id: str,
+        source_session_id: str,
+        source_profile: str,
+        actor_id: str,
+        team_id: str,
+        issue_fingerprint: str,
+        policy_result: str = "gateway_authorized_direct_dm",
+        now: int | None = None,
+    ) -> bool:
+        """Persist metadata-safe direct instruction provenance before create dispatch."""
+        values = (
+            operation_key, source_platform, source_user_id, source_message_id,
+            source_session_id, source_profile, policy_result, actor_id, team_id,
+            issue_fingerprint,
+        )
+        if any(not isinstance(value, str) or not value for value in values):
+            return False
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO direct_activation_grants("
+                "operation_key, source_platform, source_user_id, source_message_id, "
+                "source_session_id, source_profile, policy_result, actor_id, team_id, "
+                "issue_fingerprint, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)",
+                (*values, now, now),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def bind_direct_activation_grant(
+        self, operation_key: str, issue_id: str, *, now: int | None = None,
+    ) -> bool:
+        """Bind a reserved provenance grant to the authoritative vendor issue ID."""
+        if not operation_key or not issue_id:
+            return False
+        now = int(time.time()) if now is None else int(now)
+        cutoff = now - self.processing_timeout_seconds
+        with self._lock:
+            self._db.execute(
+                "UPDATE direct_activation_grants SET state='failed', "
+                "last_error='unbound_reservation_expired', updated_at=? "
+                "WHERE operation_key=? AND issue_id IS NULL AND state='reserved' "
+                "AND updated_at <= ?",
+                (now, operation_key, cutoff),
+            )
+            cursor = self._db.execute(
+                "UPDATE direct_activation_grants SET issue_id=?, state='granted', "
+                "last_error=NULL, updated_at=? WHERE operation_key=? AND ("
+                "(state='reserved' AND issue_id IS NULL AND updated_at > ?) OR "
+                "(state='granted' AND issue_id=?))",
+                (issue_id, now, operation_key, cutoff, issue_id),
+            )
+            if cursor.rowcount == 1:
+                self._db.execute(
+                    "UPDATE direct_activation_grants SET state='canceled', "
+                    "last_error='session_stopped_before_grant_binding', updated_at=? "
+                    "WHERE operation_key=? AND EXISTS (SELECT 1 FROM direct_activation_events "
+                    "WHERE direct_activation_events.issue_id=? "
+                    "AND direct_activation_events.state='canceled')",
+                    (now, operation_key, issue_id),
+                )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def fail_direct_activation_grant(
+        self, operation_key: str, error: str, *, now: int | None = None,
+    ) -> bool:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE direct_activation_grants SET state='failed', last_error=?, updated_at=? "
+                "WHERE operation_key=? AND state IN ('reserved', 'granted')",
+                (str(error)[:1000], now, operation_key),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def has_unbound_direct_reservation(
+        self,
+        *,
+        actor_id: str,
+        team_id: str,
+        issue_fingerprint: str,
+        now: int | None = None,
+    ) -> bool:
+        if not all((actor_id, team_id, issue_fingerprint)):
+            return False
+        now = int(time.time()) if now is None else int(now)
+        cutoff = now - self.processing_timeout_seconds
+        with self._lock:
+            self._db.execute(
+                "UPDATE direct_activation_grants SET state='failed', "
+                "last_error='unbound_reservation_expired', updated_at=? "
+                "WHERE issue_id IS NULL AND state='reserved' AND updated_at <= ?",
+                (now, cutoff),
+            )
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM direct_activation_grants WHERE issue_id IS NULL "
+                "AND actor_id=? AND team_id=? AND issue_fingerprint=? "
+                "AND state='reserved' AND updated_at > ?",
+                (actor_id, team_id, issue_fingerprint, cutoff),
+            ).fetchone()
+            self._db.commit()
+        # Early webhooks are keyed by authoritative issue/session IDs. Binding
+        # the operation key to the returned issue later correlates concurrent
+        # identical creates without guessing between their provenance records.
+        return bool(row and int(row[0]) >= 1)
+
+    def put_direct_activation_event(
+        self,
+        issue_id: str,
+        session_id: str,
+        delivery_key: str,
+        prompt: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> bool:
+        if not all((issue_id, session_id, delivery_key)):
+            return False
+        now = int(time.time()) if now is None else int(now)
+        prompt_json = json.dumps(
+            prompt, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO direct_activation_events("
+                "issue_id, session_id, delivery_key, prompt_json, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'waiting', ?, ?)",
+                (issue_id, session_id, delivery_key, prompt_json, now, now),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def get_direct_activation_event(self, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT issue_id, session_id, delivery_key, prompt_json, state, last_error, "
+                "created_at, updated_at FROM direct_activation_events WHERE issue_id=?",
+                (issue_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "issue_id": str(row[0]),
+            "session_id": str(row[1]),
+            "delivery_key": str(row[2]),
+            "prompt": json.loads(row[3]),
+            "state": str(row[4]),
+            "last_error": row[5],
+            "created_at": int(row[6]),
+            "updated_at": int(row[7]),
+        }
+
+    def list_direct_activation_events(self) -> list[dict[str, Any]]:
+        now = int(time.time())
+        with self._lock:
+            self._db.execute(
+                "UPDATE direct_activation_events SET state='failed', "
+                "last_error='unbound_event_expired', updated_at=? "
+                "WHERE state='waiting' AND updated_at <= ?",
+                (now, now - self.processing_timeout_seconds),
+            )
+            issue_ids = [
+                str(row[0]) for row in self._db.execute(
+                    "SELECT issue_id FROM direct_activation_events WHERE state='waiting' "
+                    "ORDER BY created_at"
+                ).fetchall()
+            ]
+            self._db.commit()
+        return [
+            event
+            for issue_id in issue_ids
+            if (event := self.get_direct_activation_event(issue_id)) is not None
+        ]
+
+    def mark_direct_activation_event(
+        self,
+        issue_id: str,
+        state: str,
+        *,
+        error: str | None = None,
+        now: int | None = None,
+    ) -> bool:
+        if state not in {"claimed", "dispatched", "failed"}:
+            return False
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            if state == "failed":
+                cursor = self._db.execute(
+                    "UPDATE direct_activation_events SET state=?, last_error=?, updated_at=? "
+                    "WHERE issue_id=? AND state IN ('waiting', 'claimed')",
+                    (state, str(error)[:1000] if error else None, now, issue_id),
+                )
+            else:
+                expected = "waiting" if state == "claimed" else "claimed"
+                cursor = self._db.execute(
+                    "UPDATE direct_activation_events SET state=?, last_error=?, updated_at=? "
+                    "WHERE issue_id=? AND state=?",
+                    (state, str(error)[:1000] if error else None, now, issue_id, expected),
+                )
+            self._db.commit()
+        return cursor.rowcount == 1
+
+    def cancel_direct_activation_for_session(
+        self, session_id: str, *, now: int | None = None,
+    ) -> bool:
+        if not session_id:
+            return False
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            grant_count = self._db.execute(
+                "UPDATE direct_activation_grants SET state='canceled', "
+                "last_error='session_stopped', updated_at=? "
+                "WHERE session_id=? AND state='claimed'",
+                (now, session_id),
+            ).rowcount
+            event_count = self._db.execute(
+                "UPDATE direct_activation_events SET state='canceled', "
+                "last_error='session_stopped', updated_at=? "
+                "WHERE session_id=? AND state IN ('waiting', 'claimed')",
+                (now, session_id),
+            ).rowcount
+            self._db.commit()
+        return bool(grant_count or event_count)
+
+    def get_direct_activation_grant(self, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT operation_key, issue_id, source_platform, source_user_id, "
+                "source_message_id, source_session_id, source_profile, policy_result, "
+                "actor_id, team_id, issue_fingerprint, "
+                "session_id, activation_key, state, last_error, created_at, updated_at "
+                "FROM direct_activation_grants WHERE issue_id=?",
+                (issue_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "operation_key", "issue_id", "source_platform", "source_user_id",
+            "source_message_id", "source_session_id", "source_profile", "policy_result",
+            "actor_id", "team_id", "issue_fingerprint", "session_id", "activation_key",
+            "state", "last_error",
+            "created_at", "updated_at",
+        )
+        result: dict[str, Any] = dict(zip(keys, row, strict=True))
+        result["created_at"] = int(result["created_at"])
+        result["updated_at"] = int(result["updated_at"])
+        return result
+
+    def claim_direct_activation(
+        self,
+        issue_id: str,
+        session_id: str,
+        *,
+        actor_id: str,
+        team_id: str,
+        now: int | None = None,
+    ) -> bool:
+        """Atomically fence one Direct AgentSession dispatch."""
+        if not all((issue_id, session_id, actor_id, team_id)):
+            return False
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT operation_key, actor_id, team_id, state FROM direct_activation_grants "
+                "WHERE issue_id=?",
+                (issue_id,),
+            ).fetchone()
+            if row is None or str(row[3]) != "granted" or not (
+                hmac.compare_digest(str(row[1]), actor_id)
+                and hmac.compare_digest(str(row[2]), team_id)
+            ):
+                self._db.rollback()
+                return False
+            activation_key = hashlib.sha256(
+                "\0".join((str(row[0]), issue_id, session_id, actor_id, team_id)).encode()
+            ).hexdigest()
+            self._db.execute(
+                "UPDATE direct_activation_grants SET state='claimed', session_id=?, "
+                "activation_key=?, last_error=NULL, updated_at=? "
+                "WHERE issue_id=? AND state='granted'",
+                (session_id, activation_key, now, issue_id),
+            )
+            self._db.commit()
+            return True
+
+    def reset_direct_activation_claim(
+        self, issue_id: str, session_id: str, error: str, *, now: int | None = None,
+    ) -> bool:
+        """Restore retryability only when Hermes dispatch was not attempted."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            grant_count = self._db.execute(
+                "UPDATE direct_activation_grants SET state='granted', session_id='', "
+                "activation_key='', last_error=?, updated_at=? "
+                "WHERE issue_id=? AND session_id=? AND state='claimed'",
+                (str(error)[:1000], now, issue_id, session_id),
+            ).rowcount
+            self._db.execute(
+                "UPDATE direct_activation_events SET state='waiting', last_error=?, updated_at=? "
+                "WHERE issue_id=? AND session_id=? AND state='claimed'",
+                (str(error)[:1000], now, issue_id, session_id),
+            )
+            self._db.commit()
+        return grant_count == 1
+
+    def mark_direct_activation_unknown(
+        self, issue_id: str, session_id: str, error: str, *, now: int | None = None,
+    ) -> bool:
+        """Fence an attempted dispatch whose acceptance outcome is unknown."""
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            grant_count = self._db.execute(
+                "UPDATE direct_activation_grants SET state='dispatch_unknown', "
+                "last_error=?, updated_at=? WHERE issue_id=? AND session_id=? "
+                "AND state='claimed'",
+                (str(error)[:1000], now, issue_id, session_id),
+            ).rowcount
+            self._db.execute(
+                "UPDATE direct_activation_events SET state='dispatch_unknown', "
+                "last_error=?, updated_at=? WHERE issue_id=? AND session_id=? "
+                "AND state='claimed'",
+                (str(error)[:1000], now, issue_id, session_id),
+            )
+            self._db.commit()
+        return grant_count == 1
+
+    def mark_direct_activation_dispatched(
+        self, issue_id: str, session_id: str, *, now: int | None = None,
+    ) -> bool:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE direct_activation_grants SET state='dispatched', updated_at=? "
+                "WHERE issue_id=? AND session_id=? AND state='claimed'",
+                (now, issue_id, session_id),
+            )
+            self._db.commit()
+        return cursor.rowcount == 1
 
     def claim_manager_activation(
         self,
@@ -1524,6 +1908,52 @@ class DeliveryLedger:
         result.update({str(state): int(count) for state, count in rows})
         return result
 
+    def direct_activation_counts(self, *, now: int | None = None) -> dict[str, Any]:
+        now = int(time.time()) if now is None else int(now)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, COUNT(*) FROM direct_activation_grants GROUP BY state"
+            ).fetchall()
+            oldest = self._db.execute(
+                "SELECT MIN(updated_at) FROM direct_activation_grants "
+                "WHERE state IN ('reserved', 'granted', 'claimed')"
+            ).fetchone()[0]
+            stuck_active = self._db.execute(
+                "SELECT COUNT(*) FROM direct_activation_grants "
+                "WHERE state IN ('reserved', 'granted', 'claimed') AND updated_at <= ?",
+                (now - self.processing_timeout_seconds,),
+            ).fetchone()[0]
+            waiting_events = self._db.execute(
+                "SELECT COUNT(*) FROM direct_activation_events WHERE state='waiting'"
+            ).fetchone()[0]
+            stuck_events = self._db.execute(
+                "SELECT COUNT(*) FROM direct_activation_events "
+                "WHERE state IN ('waiting', 'claimed') AND updated_at <= ?",
+                (now - self.processing_timeout_seconds,),
+            ).fetchone()[0]
+            error_row = self._db.execute(
+                "SELECT last_error FROM direct_activation_grants WHERE last_error IS NOT NULL "
+                "ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        result: dict[str, Any] = {
+            "reserved": 0,
+            "granted": 0,
+            "claimed": 0,
+            "dispatch_unknown": 0,
+            "dispatched": 0,
+            "canceled": 0,
+            "failed": 0,
+            "stuck_active": int(stuck_active),
+            "waiting_events": int(waiting_events),
+            "stuck_events": int(stuck_events),
+            "oldest_active_seconds": (
+                max(0, now - int(oldest)) if oldest is not None else None
+            ),
+            "last_error": error_row[0] if error_row else None,
+        }
+        result.update({str(state): int(count) for state, count in rows})
+        return result
+
     def prune(self, *, now: int | None = None) -> int:
         now = int(time.time()) if now is None else int(now)
         cutoff = now - self.retention_seconds
@@ -1548,6 +1978,16 @@ class DeliveryLedger:
                 "DELETE FROM manager_activations WHERE state IN ('session_started', 'canceled') "
                 "AND updated_at < ?", (cutoff,),
             ).rowcount
+            direct_grants = self._db.execute(
+                "DELETE FROM direct_activation_grants "
+                "WHERE state IN ('dispatched', 'canceled', 'failed') "
+                "AND updated_at < ?", (cutoff,),
+            ).rowcount
+            direct_events = self._db.execute(
+                "DELETE FROM direct_activation_events "
+                "WHERE state IN ('dispatched', 'canceled', 'failed') "
+                "AND updated_at < ?", (cutoff,),
+            ).rowcount
             routes = self._db.execute(
                 "DELETE FROM channel_routes WHERE state IN "
                 "('dispatched', 'blocked', 'failed', 'ambiguous') AND updated_at < ?",
@@ -1556,7 +1996,8 @@ class DeliveryLedger:
             self._db.commit()
             return (
                 int(inbound) + int(outbound) + int(waits)
-                + int(activations) + int(managers) + int(routes)
+                + int(activations) + int(managers) + int(direct_grants)
+                + int(direct_events) + int(routes)
             )
 
     def close(self) -> None:

@@ -1,5 +1,5 @@
 name: linear
-version: 0.8.20
-description: Native Linear Agent Sessions, evidence-gated acceptance, create-time quota retention, and policy-gated MCP tools
+version: 0.8.21
+description: Native Linear Agent Sessions, provenance-bound Direct activation, evidence-gated acceptance, create-time quota retention, and policy-gated MCP tools
 kind: platform
 author: Polatcan Studio

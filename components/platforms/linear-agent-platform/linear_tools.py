@@ -36,6 +36,7 @@ try:
         MCPOutcomeUnknown,
     )
     from .oauth_store import LinearOAuthStore
+    from .ledger import DeliveryLedger
     from .outbound_ledger import (
         FleetGlobalLock,
         FleetGlobalLockError,
@@ -59,6 +60,7 @@ except ImportError:  # Direct module loading in standalone tests/scripts.
         MCPOutcomeUnknown,
     )
     from oauth_store import LinearOAuthStore
+    from ledger import DeliveryLedger
     from outbound_ledger import (
         FleetGlobalLock,
         FleetGlobalLockError,
@@ -1754,6 +1756,37 @@ def _load_linear_extra() -> dict[str, Any]:
     )
 
 
+def _direct_instruction_context(
+    profile_id: str, handler_kwargs: dict[str, Any]
+) -> dict[str, str] | None:
+    """Read trusted task-local gateway provenance without model-supplied prose."""
+    try:
+        from gateway.session_context import get_session_env  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    values = {
+        "source_platform": str(get_session_env("HERMES_SESSION_PLATFORM", "")).casefold(),
+        "source_user_id": str(get_session_env("HERMES_SESSION_USER_ID", "")),
+        "source_message_id": str(get_session_env("HERMES_SESSION_MESSAGE_ID", "")),
+        "source_session_id": str(get_session_env("HERMES_SESSION_ID", "")),
+        "source_profile": str(get_session_env("HERMES_SESSION_PROFILE", "")),
+    }
+    chat_type = str(get_session_env("HERMES_SESSION_CHAT_TYPE", "")).casefold()
+    cron_session = str(get_session_env("HERMES_CRON_SESSION", ""))
+    hook_session_id = str(handler_kwargs.get("session_id") or "")
+    if not (
+        values["source_platform"] == "telegram"
+        and chat_type == "dm"
+        and not cron_session
+        and all(values.values())
+        and hmac.compare_digest(values["source_profile"], profile_id)
+        and hook_session_id
+        and hmac.compare_digest(values["source_session_id"], hook_session_id)
+    ):
+        return None
+    return values
+
+
 def _policy_from_outbound(outbound: dict[str, Any]) -> OutboundPolicy:
     return OutboundPolicy(
         expected_actor_id=str(outbound.get("expected_actor_id") or ""),
@@ -1810,7 +1843,12 @@ def _outbound_ledger_runtime_path_safe(database_path: str) -> bool:
         return False
 
 
-def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None:
+def register_outbound_tools(
+    ctx,
+    *,
+    extra: dict[str, Any] | None = None,
+    direct_grant_bound_callback: Callable[[str, str], None] | None = None,
+) -> None:
     extra = dict(extra if extra is not None else _load_linear_extra())
     outbound = dict(extra.get("outbound_mcp") or {})
     if outbound.get("enabled") is not True:
@@ -1873,7 +1911,7 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
             return False
 
     def make_handler(model_tool: str, vendor_tool: str, mutation: bool):
-        async def handler(args: dict[str, Any], **_kwargs) -> dict[str, Any]:
+        async def handler(args: dict[str, Any], **handler_kwargs) -> dict[str, Any]:
             safe_args = dict(args or {})
             if mutation:
                 preflight = policy.preflight(vendor_tool, safe_args)
@@ -1886,6 +1924,7 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
             graphql = LinearClient(oauth_store=store)
             mcp = LinearMCPClient(store, endpoint=endpoint)
             ledger: OutboundLedger | None = None
+            direct_ledger: DeliveryLedger | None = None
             quota_admission_lock: FleetGlobalLock | None = None
             try:
                 if mutation:
@@ -1897,6 +1936,32 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                         quota_admission_lock = None
                 await graphql.connect()
                 await mcp.connect()
+                direct_context = None
+                if (
+                    vendor_tool == "save_issue"
+                    and not safe_args.get("id")
+                    and not safe_args.get("parentId")
+                ):
+                    direct_context = _direct_instruction_context(profile_id, handler_kwargs)
+                if direct_context is not None:
+                    direct_ledger = await asyncio.to_thread(
+                        DeliveryLedger, inbound_database_path, startup_recovery=False
+                    )
+                    await asyncio.to_thread(
+                        direct_ledger.reserve_direct_activation_grant,
+                        operation_key=str(safe_args.get("operation_key") or ""),
+                        actor_id=str(graphql.actor_id or ""),
+                        team_id=str(safe_args.get("target_team_id") or ""),
+                        issue_fingerprint=direct_ledger.direct_issue_fingerprint(
+                            str(safe_args.get("target_team_id") or ""),
+                            str(safe_args.get("title") or ""),
+                        ),
+                        source_platform=direct_context["source_platform"],
+                        source_user_id=direct_context["source_user_id"],
+                        source_message_id=direct_context["source_message_id"],
+                        source_session_id=direct_context["source_session_id"],
+                        source_profile=direct_context["source_profile"],
+                    )
                 retention_runner: Callable[[], Awaitable[dict[str, Any]]] | None = None
                 if retention_team_id and retention_team_key and retention_minimum_age_days:
                     async def configured_retention_runner() -> dict[str, Any]:
@@ -1907,7 +1972,7 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                             minimum_age_days=retention_minimum_age_days,
                         )
                     retention_runner = configured_retention_runner
-                return await execute_with_clients(
+                result = await execute_with_clients(
                     profile_id=profile_id,
                     vendor_tool=vendor_tool,
                     arguments=safe_args,
@@ -1920,6 +1985,59 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                     graphql_client=graphql,
                     mcp_client=mcp,
                 )
+                if direct_context is not None and direct_ledger is not None:
+                    operation_key = str(safe_args.get("operation_key") or "")
+                    result_id = str(result.get("result_id") or "")
+                    if result.get("status") == "success" and result_id:
+                        bound = False
+                        try:
+                            context = await graphql.get_issue_closure_context(result_id)
+                            creator_id = str((context.get("creator") or {}).get("id") or "")
+                            delegate_id = str((context.get("delegate") or {}).get("id") or "")
+                            team_id = str((context.get("team") or {}).get("id") or "")
+                            parent_id = str((context.get("parent") or {}).get("id") or "")
+                            actor_id = str(graphql.actor_id or "")
+                            authoritative = bool(
+                                not parent_id
+                                and hmac.compare_digest(creator_id, actor_id)
+                                and hmac.compare_digest(delegate_id, actor_id)
+                                and hmac.compare_digest(
+                                    str(context.get("title") or ""),
+                                    str(safe_args.get("title") or ""),
+                                )
+                                and hmac.compare_digest(
+                                    team_id, str(safe_args.get("target_team_id") or "")
+                                )
+                            )
+                            if authoritative:
+                                bound = await asyncio.to_thread(
+                                    direct_ledger.bind_direct_activation_grant,
+                                    operation_key,
+                                    result_id,
+                                )
+                            else:
+                                await asyncio.to_thread(
+                                    direct_ledger.fail_direct_activation_grant,
+                                    operation_key,
+                                    "direct_create_readback_policy_mismatch",
+                                )
+                        except Exception:
+                            # The issue mutation is already durably successful. Keep the
+                            # reservation recoverable by an idempotent tool replay rather
+                            # than misreporting the committed vendor create as failed.
+                            bound = False
+                        if bound and direct_grant_bound_callback is not None:
+                            try:
+                                direct_grant_bound_callback(profile_id, result_id)
+                            except Exception:
+                                pass
+                    else:
+                        await asyncio.to_thread(
+                            direct_ledger.fail_direct_activation_grant,
+                            operation_key,
+                            str(result.get("reason") or result.get("error") or "create_failed"),
+                        )
+                return result
             except Exception as exc:
                 return {"error": "linear_tool_failed", "reason": type(exc).__name__}
             finally:
@@ -1927,6 +2045,8 @@ def register_outbound_tools(ctx, *, extra: dict[str, Any] | None = None) -> None
                 await graphql.close()
                 if ledger is not None:
                     await asyncio.to_thread(ledger.close)
+                if direct_ledger is not None:
+                    await asyncio.to_thread(direct_ledger.close)
 
         async def registry_handler(args: dict[str, Any], **kwargs) -> str:
             result = await handler(args, **kwargs)
