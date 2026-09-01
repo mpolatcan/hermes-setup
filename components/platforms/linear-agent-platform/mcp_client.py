@@ -70,8 +70,8 @@ LIVE_TOOL_PROPERTY_FIELDS = {
     "save_issue": REQUIRED_TOOL_INPUT_FIELDS["save_issue"]
     | frozenset(
         {
-            "addReleases", "duplicateOf", "links", "patch", "removeReleases",
-            "setReleases", "slaBreachesAt", "slaType", "template",
+            "addLabels", "addReleases", "duplicateOf", "links", "patch", "removeLabels",
+            "removeReleases", "setReleases", "slaBreachesAt", "slaType", "template",
         }
     ),
     "save_comment": REQUIRED_TOOL_INPUT_FIELDS["save_comment"]

@@ -77,9 +77,9 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
                 "id", "title", "description", "team", "state", "assignee", "delegate",
                 "project", "milestone", "cycle", "labels", "parentId", "priority",
                 "estimate", "dueDate", "blocks", "blockedBy", "relatedTo", "removeBlocks",
-                "removeBlockedBy", "removeRelatedTo", "addReleases", "duplicateOf", "links",
-                "patch", "removeReleases", "setReleases", "slaBreachesAt", "slaType",
-                "template",
+                "removeBlockedBy", "removeRelatedTo", "addLabels", "removeLabels",
+                "addReleases", "duplicateOf", "links", "patch", "removeReleases",
+                "setReleases", "slaBreachesAt", "slaType", "template",
             },
             "save_comment": {
                 "id", "issueId", "body", "documentId", "initiativeId", "milestoneId",
@@ -87,7 +87,7 @@ class LinearMCPClientTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         array_fields = {
-            "labels", "blocks", "blockedBy", "relatedTo",
+            "labels", "addLabels", "removeLabels", "blocks", "blockedBy", "relatedTo",
             "removeBlocks", "removeBlockedBy", "removeRelatedTo",
         }
         integer_fields = set()
