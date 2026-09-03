@@ -316,44 +316,6 @@ def _linear_adapter_factory(config: Any) -> Any:
     return adapter
 
 
-def _on_session_end(
-    *,
-    session_id: str = "",
-    turn_id: str = "",
-    completed: bool = False,
-    failed: bool = False,
-    interrupted: bool = False,
-    turn_exit_reason: str = "",
-    platform: str = "",
-    **_kwargs: Any,
-) -> None:
-    """Bridge Hermes' supported structured turn hook to the Linear adapter."""
-    if str(platform or "").casefold() != "linear":
-        return
-    try:
-        from gateway.session_context import get_session_env  # type: ignore[import-not-found]
-
-        chat_id = str(get_session_env("HERMES_SESSION_CHAT_ID", "")).strip()
-        profile = str(get_session_env("HERMES_SESSION_PROFILE", "")).strip()
-        if not chat_id:
-            return
-        for adapter in list(_progress_adapters):
-            record = getattr(adapter, "record_completed_turn", None)
-            if callable(record):
-                record(
-                    chat_id=chat_id,
-                    profile=profile,
-                    hermes_session_id=str(session_id or ""),
-                    turn_id=str(turn_id or ""),
-                    completed=completed,
-                    failed=failed,
-                    interrupted=interrupted,
-                    turn_exit_reason=str(turn_exit_reason or ""),
-                )
-    except Exception:
-        logger.warning("[linear] Structured turn hook could not be recorded", exc_info=True)
-
-
 def _progress_adapter(profile: str = "") -> Any | None:
     """Return the profile-matching live adapter, failing closed on ambiguity."""
     candidates = list(_progress_adapters)
@@ -628,7 +590,6 @@ def register(ctx) -> None:
         register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
         register_hook("pre_tool_call", _pre_tool_progress)
         register_hook("on_interim_message", _on_interim_message)
-        register_hook("on_session_end", _on_session_end)
     register_outbound_tools(
         ctx, direct_grant_bound_callback=_notify_direct_grant_bound
     )

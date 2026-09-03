@@ -135,41 +135,6 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertIs(context.hooks["pre_gateway_dispatch"], package._pre_gateway_dispatch)
         self.assertIs(context.hooks["pre_tool_call"], package._pre_tool_progress)
         self.assertIs(context.hooks["on_interim_message"], package._on_interim_message)
-        self.assertIs(context.hooks["on_session_end"], package._on_session_end)
-
-    def test_session_end_hook_forwards_structured_result_to_profile_adapter(self):
-        adapter = mock.Mock()
-
-        def session_env(name, default=""):
-            return {
-                "HERMES_SESSION_CHAT_ID": "linear-session",
-                "HERMES_SESSION_PROFILE": "researcher",
-            }.get(name, default)
-
-        with (
-            mock.patch.object(package, "_progress_adapters", [adapter]),
-            mock.patch("gateway.session_context.get_session_env", side_effect=session_env),
-        ):
-            package._on_session_end(
-                session_id="hermes-session",
-                turn_id="turn-1",
-                completed=False,
-                failed=False,
-                interrupted=False,
-                turn_exit_reason="max_iterations_reached(90/90)",
-                platform="linear",
-            )
-
-        adapter.record_completed_turn.assert_called_once_with(
-            chat_id="linear-session",
-            profile="researcher",
-            hermes_session_id="hermes-session",
-            turn_id="turn-1",
-            completed=False,
-            failed=False,
-            interrupted=False,
-            turn_exit_reason="max_iterations_reached(90/90)",
-        )
 
     def test_codex_streamed_commentary_hook_gap_is_an_explicit_residual(self):
         from run_agent import AIAgent
@@ -1864,7 +1829,7 @@ class LedgerTests(unittest.TestCase):
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 10
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 9
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -1924,7 +1889,7 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             recovered.close()
 
     def test_direct_activation_claim_is_restart_ambiguous_and_watchdog_visible(self):
@@ -2211,7 +2176,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -2328,7 +2293,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
