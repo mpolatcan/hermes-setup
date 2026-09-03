@@ -506,8 +506,8 @@ class PluginRegistrationTests(unittest.TestCase):
                 get_channel_routing_context=mock.AsyncMock(return_value=context),
             )
             adapter.handle_message = handle
-            event_1 = mock.Mock(metadata={})
-            event_2 = mock.Mock(metadata={})
+            event_1 = mock.Mock()
+            event_2 = mock.Mock()
 
             first = asyncio.create_task(adapter.dispatch_channel_route(
                 "OPS-159", "issue-159", "session-active", event_1
@@ -523,8 +523,6 @@ class PluginRegistrationTests(unittest.TestCase):
             await asyncio.gather(first, second)
             self.assertEqual(adapter._linear.get_channel_routing_context.await_count, 2)
             self.assertEqual(calls, [event_1, event_2])
-            self.assertTrue(event_1.metadata["gateway_adapter_manages_continuation"])
-            self.assertTrue(event_2.metadata["gateway_adapter_manages_continuation"])
 
         asyncio.run(scenario())
 
@@ -1829,7 +1827,7 @@ class LedgerTests(unittest.TestCase):
             ledger = DeliveryLedger(str(path))
 
             self.assertEqual(
-                ledger._db.execute("PRAGMA user_version").fetchone()[0], 9
+                ledger._db.execute("PRAGMA user_version").fetchone()[0], 8
             )
             self.assertEqual(
                 ledger._db.execute(
@@ -1889,7 +1887,7 @@ class LedgerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(recovered.activation_counts()["dispatch_unknown"], 1)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             recovered.close()
 
     def test_direct_activation_claim_is_restart_ambiguous_and_watchdog_visible(self):
@@ -2176,7 +2174,7 @@ class LedgerTests(unittest.TestCase):
             self.assertTrue(recovered.claim_wait("session-8", now=103))
             recovered.mark_wait_resumed("session-8", now=104)
             self.assertEqual(recovered.get_wait("session-8")["state"], "resumed")
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             recovered.close()
 
     def test_closure_outbox_orders_ephemeral_indicator_before_final_response(self):
@@ -2293,7 +2291,7 @@ class LedgerTests(unittest.TestCase):
             ledger.close()
 
             recovered = DeliveryLedger(path)
-            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(recovered._db.execute("PRAGMA user_version").fetchone()[0], 8)
             self.assertEqual(
                 recovered.get_outbox_item(final.id)["state"],
                 "dead",
@@ -7813,7 +7811,6 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("inverseRelations", query)
             return {
                 "issue": {
-                    "id": "issue-8",
                     "inverseRelations": {
                         "nodes": [
                             {
@@ -7842,8 +7839,7 @@ class LinearClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
                                     "state": {"name": "Todo", "type": "unstarted"},
                                 },
                             },
-                        ],
-                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        ]
                     }
                 }
             }

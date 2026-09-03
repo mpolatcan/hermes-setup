@@ -24,7 +24,6 @@ MAX_AGENT_SESSION_PAGES = 100
 MAX_AGENT_ACTIVITY_PAGES = 100
 MAX_USER_PAGES = 100
 MAX_CHILD_RELATION_PAGES = 100
-MAX_BLOCKER_RELATION_PAGES = 100
 MAX_ISSUE_QUOTA_PAGES = 100
 
 
@@ -724,56 +723,6 @@ query LinearAgentSessionDeliveryGuard($id: String!) {
             "app_user_id": app_user_id,
         }
 
-    async def get_agent_turn_context(self, session_id: str) -> dict[str, Any]:
-        """Read the live session, issue, delegate, state, and complete blocker set."""
-        data = await self.graphql(
-            """
-query LinearAgentTurnContext($id: String!) {
-  agentSession(id: $id) {
-    id status appUser { id }
-    issue {
-      id identifier title description
-      state { id name type }
-      delegate { id name }
-    }
-  }
-}
-""",
-            {"id": session_id},
-        )
-        session = data.get("agentSession")
-        if not isinstance(session, dict) or str(session.get("id") or "") != session_id:
-            raise LinearAPIError("Agent turn context did not resolve the requested session")
-        status = session.get("status")
-        app_user = session.get("appUser")
-        issue = session.get("issue")
-        if (
-            not isinstance(status, str)
-            or status not in AGENT_SESSION_STATUSES
-            or not isinstance(app_user, dict)
-            or not str(app_user.get("id") or "")
-            or not isinstance(issue, dict)
-            or not str(issue.get("id") or "")
-            or not isinstance(issue.get("state"), dict)
-            or not isinstance(issue.get("delegate"), dict)
-        ):
-            raise LinearAPIError("Agent turn context was incomplete")
-        issue_id = str(issue["id"])
-        return {
-            "id": session_id,
-            "status": status,
-            "app_user_id": str(app_user["id"]),
-            "issue": {
-                "id": issue_id,
-                "identifier": str(issue.get("identifier") or issue_id),
-                "title": str(issue.get("title") or ""),
-                "description": str(issue.get("description") or ""),
-                "state": dict(issue["state"]),
-                "delegate": dict(issue["delegate"]),
-            },
-            "open_blockers": await self.get_open_blockers(issue_id),
-        }
-
     async def get_issue_closure_context(self, issue_id: str) -> dict[str, Any]:
         """Read authoritative fields required to accept a human terminal transition."""
         query = """
@@ -927,73 +876,37 @@ query LinearNativeAgentActivityById($id: String!) {
     async def get_open_blockers(self, issue_id: str) -> list[dict[str, str]]:
         """Return incomplete issues that block issue_id through inverse `blocks` relations."""
         query = """
-query LinearNativeIssueBlockers($id: String!, $after: String) {
+query LinearNativeIssueBlockers($id: String!) {
   issue(id: $id) {
-    id
-    inverseRelations(first: 100, after: $after) {
+    inverseRelations(first: 100) {
       nodes {
         type
         issue { id identifier title state { id name type } }
       }
-      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
+        data = await self.graphql(query, {"id": issue_id})
+        issue = data.get("issue") or {}
+        relations = ((issue.get("inverseRelations") or {}).get("nodes")) or []
         blockers: list[dict[str, str]] = []
-        after: str | None = None
-        seen_cursors: set[str] = set()
-        seen_blockers: set[str] = set()
-        for _page in range(MAX_BLOCKER_RELATION_PAGES):
-            data = await self.graphql(query, {"id": issue_id, "after": after})
-            issue = data.get("issue")
-            if not isinstance(issue, dict) or str(issue.get("id") or "") != issue_id:
-                if after is not None:
-                    raise LinearAPIError("Blocker issue identity changed during pagination")
-                raise LinearAPIError("Blocker issue could not be resolved")
-            connection = issue.get("inverseRelations")
-            if not isinstance(connection, dict):
-                raise LinearAPIError("Blocker relation connection was incomplete")
-            relations = connection.get("nodes")
-            page_info = connection.get("pageInfo")
-            if not isinstance(relations, list) or not isinstance(page_info, dict):
-                raise LinearAPIError("Blocker relation pagination was incomplete")
-            for relation in relations:
-                if not isinstance(relation, dict):
-                    raise LinearAPIError("Blocker relation was malformed")
-                if str(relation.get("type") or "").casefold() != "blocks":
-                    continue
-                blocker = relation.get("issue")
-                state = blocker.get("state") if isinstance(blocker, dict) else None
-                if not isinstance(blocker, dict) or not isinstance(state, dict):
-                    raise LinearAPIError("Blocker issue was malformed")
-                if str(state.get("type") or "").casefold() in {"completed", "canceled"}:
-                    continue
-                blocker_id = str(blocker.get("id") or "")
-                if not blocker_id:
-                    raise LinearAPIError("Blocker issue identity was missing")
-                if blocker_id in seen_blockers:
-                    continue
-                seen_blockers.add(blocker_id)
+        for relation in relations:
+            if str(relation.get("type") or "").casefold() != "blocks":
+                continue
+            blocker = relation.get("issue") or {}
+            state = blocker.get("state") or {}
+            if str(state.get("type") or "") in {"completed", "canceled"}:
+                continue
+            blocker_id = str(blocker.get("id") or "")
+            if blocker_id:
                 blockers.append({
                     "id": blocker_id,
                     "identifier": str(blocker.get("identifier") or blocker_id),
                     "title": str(blocker.get("title") or ""),
                     "state": str(state.get("name") or ""),
                 })
-            has_next = page_info.get("hasNextPage")
-            cursor = page_info.get("endCursor")
-            if not isinstance(has_next, bool) or (
-                cursor is not None and not isinstance(cursor, str)
-            ):
-                raise LinearAPIError("Blocker relation pagination was incomplete")
-            if not has_next:
-                return blockers
-            if not cursor or cursor in seen_cursors:
-                raise LinearAPIError("Blocker relation pagination did not advance")
-            seen_cursors.add(cursor)
-            after = cursor
-        raise LinearAPIError("Blocker relation pagination exceeded the policy limit")
+        return blockers
 
     async def update_issue_state(
         self,
